@@ -4,15 +4,15 @@ Status: architecture locked for V1. Changes to a hard invariant require an archi
 
 ## Product and Research Question
 
-Crypteo is an agentic crypto trade-analysis and paper-trading platform. Its primary user is a crypto trader or researcher seeking an auditable AI second opinion on candidate setups. AI researchers and portfolio reviewers are secondary users.
+Crypteo is an agentic crypto research copilot for traders and researchers with existing market knowledge. Its long-term product is a live, up-to-date research assistant that investigates market opportunities, gathers and synthesizes evidence, challenges trade theses, surfaces uncertainty and counterevidence, and supports more informed trading decisions. AI researchers and portfolio reviewers are secondary users.
 
-V1 is specifically an agentic market-analysis and trade-selection system, not a general research platform. It asks:
+V1 is the first market-analysis capability of the broader Crypteo research platform. It uses historical OHLCV-derived evidence and does not yet implement the wider research domains intended for the eventual live product. It asks:
 
 > Given the same deterministic trade opportunities, does bounded agentic market analysis improve trade-selection quality relative to deterministic baselines under identical execution and risk assumptions?
 
-V1 tests selection, not autonomous strategy invention or LLM price prediction. It makes no profitability claim and can never trade real money.
+Historical replay, the deterministic scanner, paper trading, and structured trade-selection decisions form an evaluation lab for testing whether Crypteo's research improves trade selection. They are not Crypteo's primary product identity. V1 tests selection, not autonomous strategy invention or LLM price prediction. It makes no profitability claim and can never trade real money.
 
-Long term, Crypteo may test whether progressively richer, temporally valid research improves selection. Market, derivatives, on-chain, news, fundamental, tokenomics, macro, and sentiment capabilities should contribute normalized evidence to one integrated thesis—not independent buy/sell votes. A capability may later be a tool, service, node, subgraph, or agent only when its complexity warrants that form.
+Long term, Crypteo may test whether progressively richer, temporally valid research improves selection. Market, derivatives, on-chain, news/catalyst, fundamentals/protocol, tokenomics, macro, and sentiment capabilities should contribute normalized evidence to one integrated thesis—not independent buy/sell votes. A future live research orchestrator may dynamically select the capabilities relevant to a trader's question or setup instead of invoking every research domain indiscriminately. A capability may later be a tool, service, node, subgraph, or agent only when its complexity warrants that form. V1 does not implement this orchestrator.
 
 ## V1 Scope and Market Environment
 
@@ -21,7 +21,7 @@ Long term, Crypteo may test whether progressively richer, temporally valid resea
 - Exactly one deterministic scanner shared by Crypteo and scanner-only baseline.
 - Long positions only; domain direction remains an enum to permit a later `SHORT` value.
 - Market-derived evidence only: price, returns, volume, trend, momentum, volatility, relative strength, support/resistance, and deterministic regime measures.
-- Historical replay is the first complete product mode.
+- Historical replay is the first complete evaluation mode.
 - Decisions are `TRADE`, `NO_TRADE`, or `ABSTAIN`; `RISK_REJECTED` is a separate deterministic outcome.
 
 Excluded from V1 research are web/news, social, on-chain, derivatives, macro, protocol/fundamental, and tokenomics data.
@@ -37,6 +37,13 @@ The invariant is: LLM for judgment and orchestration; deterministic software for
 ## Components and Extension Seams
 
 Crypteo is a modular monolith composed of point-in-time data, deterministic analytics and scanner, research tools, LangGraph workflow, risk service, simulated broker/portfolio, append-only journal, replay engine, and evaluation harness.
+
+The eventual product supports two research entry modes:
+
+- **Trader-led research:** the user supplies a market question, trade idea, or thesis for Crypteo to investigate. This mode does not require a scanner.
+- **Opportunity-led research:** a deterministic scanner or another discovery mechanism supplies a candidate setup.
+
+Both converge on `research context -> normalized evidence -> integrated thesis -> critic -> assessment`. V1 historical evaluation implements opportunity-led research first because identical scanner-generated opportunities provide a controlled basis for agent-versus-baseline comparison.
 
 The minimal extension seams are:
 
@@ -158,7 +165,7 @@ V1 is complete only when it:
 - enforces the simulation clock, completed-bar rule, and future-data isolation;
 - generates candidates with the single locked scanner;
 - runs scanner-only through the paper simulator;
-- exposes bounded typed market tools and the five-node LangGraph;
+- exposes bounded typed market tools and the locked minimal LangGraph workflow;
 - produces grounded, critiqued, schema-valid decisions and distinct risk outcomes;
 - applies deterministic sizing/risk and next-open fills with fees, slippage, stops, targets, gaps, and time exits;
 - journals the complete append-only lifecycle and reproducibility metadata;
@@ -172,4 +179,4 @@ V1 is complete only when it:
 
 Post-V1: multiple scanners, shorts, live ingestion/paper mode, alerts, all non-market research, multi-agent teams, delegation/recursive planning, embeddings/vector or thesis memory, PostgreSQL unless demonstrated necessary, FastAPI/UI/authentication, multiple venues, order books/ticks, limit/partial fills, Docker/cloud unless reproducibility requires it, and all real-exchange connectivity.
 
-Future live mode must reuse domain services, scanner, agent, evidence, risk, broker contract, journal, portfolio, and evaluation logic; only clock and providers fundamentally change.
+Future live mode reuses the core domain services, research engine, evidence model, agent workflow, journal, and applicable evaluation and risk infrastructure. Opportunity-led live research may reuse the scanner; trader-led research does not require one. Live operation fundamentally changes the clock and data providers, not the core research contracts.
