@@ -6,7 +6,7 @@ Status: architecture locked for V1. Changes to a hard invariant require an archi
 
 Crypteo is an agentic crypto trade-analysis and paper-trading platform. Its primary user is a crypto trader or researcher seeking an auditable AI second opinion on candidate setups. AI researchers and portfolio reviewers are secondary users.
 
-V1 is specifically an **agentic market-analysis and trade-selection system**, not a general research platform. It asks:
+V1 is specifically an agentic market-analysis and trade-selection system, not a general research platform. It asks:
 
 > Given the same deterministic trade opportunities, does bounded agentic market analysis improve trade-selection quality relative to deterministic baselines under identical execution and risk assumptions?
 
@@ -32,7 +32,7 @@ The LLM chooses permitted tools, interprets evidence, identifies conflict and as
 
 Deterministic Python owns OHLCV, indicators, returns, volatility, scanning, all arithmetic, candidate price levels, reward/risk, sizing, exposure, portfolio/risk rules, validation, fills, fees, slippage, stops, targets, time exits, accounting, P&L, clocks, replay, and metrics.
 
-The invariant is: **LLM for judgment and orchestration; deterministic software for calculation, authorization, execution, and accounting.** A `TRADE` decision references deterministically calculated entry/stop/target candidates or a versioned risk template; it does not invent calculated values, quantity, P&L, exposure, reward/risk, or execution price.
+The invariant is: LLM for judgment and orchestration; deterministic software for calculation, authorization, execution, and accounting. A `TRADE` decision references deterministically calculated entry/stop/target candidates or a versioned risk template; it does not invent calculated values, quantity, P&L, exposure, reward/risk, or execution price.
 
 ## Components and Extension Seams
 
@@ -77,7 +77,7 @@ Model parametric knowledge is a residual replay limitation: a model may remember
 
 ## Scanner Lock
 
-V1 uses one **hourly lower-Bollinger-band breach scanner**. After each completed bar, emit one opportunity when close crosses from at/above to below `SMA(20) - 2 * population_standard_deviation(20)`; require 20 valid hourly closes and suppress repeat opportunities until price closes back at/above the lower band. The scanner supplies a candidate, not a trade signal.
+V1 uses one hourly lower-Bollinger-band breach scanner. After each completed bar, emit one opportunity when close crosses from at/above to below `SMA(20) - 2 * population_standard_deviation(20)`; require 20 valid hourly closes and suppress repeat opportunities until price closes back at/above the lower band. The scanner supplies a candidate, not a trade signal.
 
 This rule is transparent, intentionally untuned, volatility-scaled across assets, and active in both ranges and selloffs. It should create a manageable order of several opportunities per asset-month, but frequency is an unverified planning estimate and must be measured on development data before freezing configuration. In ranges it often identifies potentially reversible extremes; in downtrends it produces falling-knife candidates. That ambiguity gives the agent meaningful work: assess trend, regime, momentum, relative strength, volume, volatility, and nearby levels. Scanner-only measures naive dip buying; the agent is tested on whether it filters poor breaches without receiving different opportunities. If frequency is inadequate, changing parameters is a versioned design change made using development data only.
 
@@ -132,23 +132,23 @@ Normal CI mocks model responses. Unit, property, golden, contract, graph-routing
 
 Each slice ends with passing automated tests and a usable repository state.
 
-1. **Project quality shell:** package metadata, formatter/linter/type-checker/pytest configuration, CI, and architecture-invariant tests; acceptance: documented local checks pass on an empty package.
-2. **Market domain schemas:** UTC timestamps, pair/venue/timeframe enums, candle and dataset-manifest models; acceptance: serialization and invalid-value tests pass.
-3. **Decision/evidence schemas:** opportunity, evidence, thesis, critique, outcome, and run-manifest contracts; acceptance: forbidden calculated LLM fields and invalid states are rejected.
-4. **Clock and temporal gateway:** simulation clock plus in-memory provider; acceptance: completed-bar and planted-future-data tests pass before real ingestion exists.
-5. **Coinbase ingestion:** paginated raw capture, normalization, validation, version hashing, and gap report; acceptance: fixture-based ingestion is deterministic and never forward-fills.
-6. **Deterministic analytics:** only calculations required by scanner and initial tools; acceptance: independent golden examples and gap/warm-up behavior pass.
-7. **Locked scanner:** Bollinger breach through `OpportunityScanner`; acceptance: crossover, reset, duplicate suppression, and cutoff tests pass.
-8. **Execution kernel:** orders, fills, portfolio ledger, fees/slippage, gaps, intrabar priority, and time exits; acceptance: accounting invariants and scenario tables pass.
-9. **Risk gate:** versioned sizing and portfolio constraints; acceptance: known boundary cases approve/reject deterministically with reason codes.
-10. **Scanner-only replay:** event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results.
-11. **Market tool contracts:** typed bounded tools returning normalized evidence; acceptance: provenance, cutoff, artifact, stale-data, and failure contracts pass.
-12. **Minimal LangGraph:** investigate, draft, critic, finalize with mocked model adapter and budgets; acceptance: all routes, retries, fail-closed abstention, and schema repair limits pass.
-13. **Append-only journal:** durable local persistence for the complete lifecycle; acceptance: linkage/audit tests pass and decision-time reads cannot access memory.
-14. **Integrated agent replay:** same opportunities flow through agent, risk, broker, and journal; acceptance: frozen-response replay is deterministic and baseline inputs are identical.
-15. **Agent evaluation:** labeled process cases, graders, cost/latency capture, critic and no-tool/no-critic ablations as selected; acceptance: versioned report separates process and trading metrics.
-16. **Walk-forward runner:** enforce split roles and final-test access guard; acceptance: development/validation reports run while outcome-level test access remains disabled.
-17. **Final experiment and presentation:** unlock test once, generate reproducible report and architecture narrative; acceptance: clean-environment instructions reproduce frozen results and disclose limitations.
+1. Project quality shell:mpackage metadata, formatter/linter/type-checker/pytest configuration, CI, and architecture-invariant tests; acceptance: documented local checks pass on an empty package.
+2. Market domain schemas: UTC timestamps, pair/venue/timeframe enums, candle and dataset-manifest models; acceptance: serialization and invalid-value tests pass.
+3. Decision/evidence schemas: opportunity, evidence, thesis, critique, outcome, and run-manifest contracts; acceptance: forbidden calculated LLM fields and invalid states are rejected.
+4. Clock and temporal gateway: simulation clock plus in-memory provider; acceptance: completed-bar and planted-future-data tests pass before real ingestion exists.
+5. Coinbase ingestion: paginated raw capture, normalization, validation, version hashing, and gap report; acceptance: fixture-based ingestion is deterministic and never forward-fills.
+6. Deterministic analytics: only calculations required by scanner and initial tools; acceptance: independent golden examples and gap/warm-up behavior pass.
+7. Locked scanner: Bollinger breach through `OpportunityScanner`; acceptance: crossover, reset, duplicate suppression, and cutoff tests pass.
+8. Execution kernel: orders, fills, portfolio ledger, fees/slippage, gaps, intrabar priority, and time exits; acceptance: accounting invariants and scenario tables pass.
+9. Risk gate: versioned sizing and portfolio constraints; acceptance: known boundary cases approve/reject deterministically with reason codes.
+10. Scanner-only replay: event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results.
+11. Market tool contracts: typed bounded tools returning normalized evidence; acceptance: provenance, cutoff, artifact, stale-data, and failure contracts pass.
+12. Minimal LangGraph: investigate, draft, critic, finalize with mocked model adapter and budgets; acceptance: all routes, retries, fail-closed abstention, and schema repair limits pass.
+13. Append-only journal: durable local persistence for the complete lifecycle; acceptance: linkage/audit tests pass and decision-time reads cannot access memory.
+14. Integrated agent replay: same opportunities flow through agent, risk, broker, and journal; acceptance: frozen-response replay is deterministic and baseline inputs are identical.
+15. Agent evaluation: labeled process cases, graders, cost/latency capture, critic and no-tool/no-critic ablations as selected; acceptance: versioned report separates process and trading metrics.
+16. Walk-forward runner: enforce split roles and final-test access guard; acceptance: development/validation reports run while outcome-level test access remains disabled.
+17. Final experiment and presentation: unlock test once, generate reproducible report and architecture narrative; acceptance: clean-environment instructions reproduce frozen results and disclose limitations.
 
 ## V1 Definition of Done
 
