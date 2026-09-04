@@ -3,9 +3,10 @@
 Crypteo is an agentic crypto research copilot that gathers and evaluates evidence
 to support informed trading decisions. Trading decisions remain with the user.
 
-This repository currently contains the Python and quality-tooling foundation plus
-validated market-domain schemas. It does not yet contain market-data ingestion,
-trading behavior, research-agent behavior, or simulation and replay behavior.
+This repository currently contains the Python and quality-tooling foundation,
+validated market-domain schemas, and validated research, evidence, and decision
+schemas. It does not yet contain live data ingestion, market analytics, agents,
+trading behavior, or simulation and replay behavior.
 
 ## Local development
 

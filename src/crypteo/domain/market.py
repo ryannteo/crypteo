@@ -14,6 +14,8 @@ from pydantic import (
     model_validator,
 )
 
+from crypteo.domain.time import UtcDatetime
+
 
 class Venue(StrEnum):
     """Canonical market venue identifiers supported by V1."""
@@ -53,13 +55,6 @@ ExactDecimal = Annotated[
 ]
 PositiveDecimal = Annotated[ExactDecimal, Field(gt=0)]
 NonNegativeDecimal = Annotated[ExactDecimal, Field(ge=0)]
-StrictDatetime = Annotated[datetime, Field(strict=True)]
-
-
-def _require_utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() != timedelta(0):
-        raise ValueError("timestamp must be timezone-aware UTC")
-    return value
 
 
 class Candle(BaseModel):
@@ -70,19 +65,14 @@ class Candle(BaseModel):
     venue: Venue
     pair: TradingPair
     timeframe: Timeframe
-    open_time: StrictDatetime
-    close_time: StrictDatetime
-    available_at: StrictDatetime
+    open_time: UtcDatetime
+    close_time: UtcDatetime
+    available_at: UtcDatetime
     open: PositiveDecimal
     high: PositiveDecimal
     low: PositiveDecimal
     close: PositiveDecimal
     volume: NonNegativeDecimal
-
-    @field_validator("open_time", "close_time", "available_at")
-    @classmethod
-    def validate_utc_timestamp(cls, value: datetime) -> datetime:
-        return _require_utc(value)
 
     @field_validator("open_time")
     @classmethod
@@ -119,9 +109,9 @@ class DatasetManifest(BaseModel):
     venue: Venue
     pair: TradingPair
     timeframe: Timeframe
-    start_time: StrictDatetime
-    end_time: StrictDatetime
-    created_at: StrictDatetime
+    start_time: UtcDatetime
+    end_time: UtcDatetime
+    created_at: UtcDatetime
     row_count: int = Field(strict=True, ge=0)
 
     @field_validator("dataset_version", "source")
@@ -130,11 +120,6 @@ class DatasetManifest(BaseModel):
         if not value.strip():
             raise ValueError("identifying and version fields must be non-empty")
         return value
-
-    @field_validator("start_time", "end_time", "created_at")
-    @classmethod
-    def validate_utc_timestamp(cls, value: datetime) -> datetime:
-        return _require_utc(value)
 
     @model_validator(mode="after")
     def validate_coverage(self) -> Self:
