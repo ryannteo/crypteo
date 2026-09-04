@@ -1,1 +1,25 @@
 .Rhistory
+
+# Virtual environments and local configuration
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and coverage artifacts
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+
+# macOS
+.DS_Store
