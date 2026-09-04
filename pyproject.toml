@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "An agentic crypto research copilot for evidence-based trade research."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pydantic>=2.11,<3"]
 
 [project.optional-dependencies]
 dev = [
@@ -35,4 +35,3 @@ testpaths = ["tests"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
-

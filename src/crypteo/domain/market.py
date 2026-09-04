@@ -1,0 +1,144 @@
+"""Validated market-data value objects for Crypteo V1."""
+
+from datetime import datetime, timedelta
+from decimal import Decimal
+from enum import StrEnum
+from typing import Annotated, Any, Self
+
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+
+class Venue(StrEnum):
+    """Canonical market venue identifiers supported by V1."""
+
+    COINBASE = "COINBASE"
+
+
+class TradingPair(StrEnum):
+    """Coinbase spot trading pairs supported by V1."""
+
+    BTC_USD = "BTC-USD"
+    ETH_USD = "ETH-USD"
+    SOL_USD = "SOL-USD"
+
+
+class Timeframe(StrEnum):
+    """Normalized candle timeframes supported by V1."""
+
+    ONE_HOUR = "1h"
+
+    @property
+    def duration(self) -> timedelta:
+        """Return the exact duration of this timeframe."""
+        return timedelta(hours=1)
+
+
+def _reject_float(value: Any) -> Any:
+    if isinstance(value, float):
+        raise ValueError("financial values must not be provided as float")
+    return value
+
+
+ExactDecimal = Annotated[
+    Decimal,
+    BeforeValidator(_reject_float),
+    Field(allow_inf_nan=False),
+]
+PositiveDecimal = Annotated[ExactDecimal, Field(gt=0)]
+NonNegativeDecimal = Annotated[ExactDecimal, Field(ge=0)]
+
+
+def _require_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError("timestamp must be timezone-aware UTC")
+    return value
+
+
+class Candle(BaseModel):
+    """An immutable normalized OHLCV record covering ``[open_time, close_time)``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    venue: Venue
+    pair: TradingPair
+    timeframe: Timeframe
+    open_time: datetime
+    close_time: datetime
+    available_at: datetime
+    open: PositiveDecimal
+    high: PositiveDecimal
+    low: PositiveDecimal
+    close: PositiveDecimal
+    volume: NonNegativeDecimal
+
+    @field_validator("open_time", "close_time", "available_at")
+    @classmethod
+    def validate_utc_timestamp(cls, value: datetime) -> datetime:
+        return _require_utc(value)
+
+    @field_validator("open_time")
+    @classmethod
+    def validate_open_time_alignment(cls, value: datetime) -> datetime:
+        if value.minute != 0 or value.second != 0 or value.microsecond != 0:
+            raise ValueError("open_time must align to the beginning of an hour")
+        return value
+
+    @model_validator(mode="after")
+    def validate_interval_and_prices(self) -> Self:
+        if self.close_time != self.open_time + self.timeframe.duration:
+            raise ValueError("close_time must be exactly one timeframe after open_time")
+        if self.available_at < self.close_time:
+            raise ValueError("available_at must be at or after close_time")
+        if self.high < max(self.open, self.close, self.low):
+            raise ValueError("high must be at least open, close, and low")
+        if self.low > min(self.open, self.close, self.high):
+            raise ValueError("low must be at most open, close, and high")
+        return self
+
+
+class DatasetManifest(BaseModel):
+    """Metadata for one normalized dataset covering ``[start_time, end_time)``.
+
+    ``start_time`` is the first candle's open time. ``end_time`` is the final
+    candle's close time, not its open time.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: str
+    dataset_version: str
+    source: str
+    venue: Venue
+    pair: TradingPair
+    timeframe: Timeframe
+    start_time: datetime
+    end_time: datetime
+    created_at: datetime
+    row_count: int = Field(ge=0)
+
+    @field_validator("schema_version", "dataset_version", "source")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("identifying and version fields must be non-empty")
+        return value
+
+    @field_validator("start_time", "end_time", "created_at")
+    @classmethod
+    def validate_utc_timestamp(cls, value: datetime) -> datetime:
+        return _require_utc(value)
+
+    @model_validator(mode="after")
+    def validate_coverage(self) -> Self:
+        if self.end_time < self.start_time:
+            raise ValueError("end_time must be at or after start_time")
+        if self.row_count > 0 and self.end_time == self.start_time:
+            raise ValueError("a non-empty dataset must have a non-empty interval")
+        return self
