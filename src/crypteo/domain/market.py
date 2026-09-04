@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -53,6 +53,7 @@ ExactDecimal = Annotated[
 ]
 PositiveDecimal = Annotated[ExactDecimal, Field(gt=0)]
 NonNegativeDecimal = Annotated[ExactDecimal, Field(ge=0)]
+StrictDatetime = Annotated[datetime, Field(strict=True)]
 
 
 def _require_utc(value: datetime) -> datetime:
@@ -69,9 +70,9 @@ class Candle(BaseModel):
     venue: Venue
     pair: TradingPair
     timeframe: Timeframe
-    open_time: datetime
-    close_time: datetime
-    available_at: datetime
+    open_time: StrictDatetime
+    close_time: StrictDatetime
+    available_at: StrictDatetime
     open: PositiveDecimal
     high: PositiveDecimal
     low: PositiveDecimal
@@ -112,18 +113,18 @@ class DatasetManifest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    schema_version: str
+    schema_version: Literal["1"]
     dataset_version: str
     source: str
     venue: Venue
     pair: TradingPair
     timeframe: Timeframe
-    start_time: datetime
-    end_time: datetime
-    created_at: datetime
-    row_count: int = Field(ge=0)
+    start_time: StrictDatetime
+    end_time: StrictDatetime
+    created_at: StrictDatetime
+    row_count: int = Field(strict=True, ge=0)
 
-    @field_validator("schema_version", "dataset_version", "source")
+    @field_validator("dataset_version", "source")
     @classmethod
     def validate_identifier(cls, value: str) -> str:
         if not value.strip():

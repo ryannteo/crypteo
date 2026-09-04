@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from crypteo.domain.market import (
     Candle,
@@ -126,6 +126,13 @@ def test_candle_rejects_non_utc_timestamps(field: str) -> None:
         Candle.model_validate(candle_data(**{field: non_utc}))
 
 
+@pytest.mark.parametrize("field", ["open_time", "close_time", "available_at"])
+@pytest.mark.parametrize("value", [1767261600, "2026-01-01T10:00:00Z"])
+def test_candle_rejects_coercive_python_timestamps(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        Candle.model_validate(candle_data(**{field: value}))
+
+
 def test_candle_accepts_distinct_zero_offset_timezone() -> None:
     zero_offset = timezone(timedelta(0), name="ZERO")
     candle = Candle.model_validate(
@@ -227,6 +234,13 @@ def test_manifest_rejects_naive_and_non_utc_timestamps(field: str) -> None:
             DatasetManifest.model_validate(manifest_data(**{field: invalid}))
 
 
+@pytest.mark.parametrize("field", ["start_time", "end_time", "created_at"])
+@pytest.mark.parametrize("value", [1767261600, "2026-01-01T10:00:00Z"])
+def test_manifest_rejects_coercive_python_timestamps(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        DatasetManifest.model_validate(manifest_data(**{field: value}))
+
+
 def test_manifest_rejects_end_before_start() -> None:
     with pytest.raises(ValidationError, match="at or after start_time"):
         DatasetManifest.model_validate(
@@ -239,7 +253,18 @@ def test_manifest_rejects_negative_row_count() -> None:
         DatasetManifest.model_validate(manifest_data(row_count=-1))
 
 
-@pytest.mark.parametrize("field", ["schema_version", "dataset_version", "source"])
+@pytest.mark.parametrize("value", [True, "1"])
+def test_manifest_rejects_coercive_row_counts(value: object) -> None:
+    with pytest.raises(ValidationError):
+        DatasetManifest.model_validate(manifest_data(row_count=value))
+
+
+def test_manifest_rejects_unsupported_schema_version() -> None:
+    with pytest.raises(ValidationError):
+        DatasetManifest.model_validate(manifest_data(schema_version="2"))
+
+
+@pytest.mark.parametrize("field", ["dataset_version", "source"])
 @pytest.mark.parametrize("value", ["", "   "])
 def test_manifest_rejects_empty_identifying_fields(field: str, value: str) -> None:
     with pytest.raises(ValidationError, match="must be non-empty"):
@@ -256,3 +281,14 @@ def test_empty_manifest_may_have_empty_coverage() -> None:
         manifest_data(end_time=OPEN_TIME, row_count=0)
     )
     assert manifest.start_time == manifest.end_time
+
+
+@pytest.mark.parametrize(
+    ("model", "data"),
+    [(Candle, candle_data()), (DatasetManifest, manifest_data())],
+)
+def test_market_models_reject_undeclared_fields(
+    model: type[BaseModel], data: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(data | {"undeclared": "value"})
