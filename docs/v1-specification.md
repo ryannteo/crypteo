@@ -12,7 +12,7 @@ V1 is the first market-analysis capability of the broader Crypteo research platf
 
 Historical replay, the deterministic scanner, paper trading, and structured trade-selection decisions form an evaluation lab for testing whether Crypteo's research improves trade selection. They are not Crypteo's primary product identity. V1 tests selection, not autonomous strategy invention or LLM price prediction. It makes no profitability claim and can never trade real money.
 
-Long term, Crypteo may test whether progressively richer, temporally valid research improves selection. Market, derivatives, on-chain, news/catalyst, fundamentals/protocol, tokenomics, macro, and sentiment capabilities should contribute normalized evidence to one integrated thesis—not independent buy/sell votes. A future live research orchestrator may dynamically select the capabilities relevant to a trader's question or setup instead of invoking every research domain indiscriminately. A capability may later be a tool, service, node, subgraph, or agent only when its complexity warrants that form. V1 does not implement this orchestrator.
+Long term, Crypteo is expected to evolve into a bounded multi-agent research system that tests whether progressively richer, temporally valid research improves selection. Market, derivatives, on-chain, news/catalyst, fundamentals/protocol, tokenomics, macro, and sentiment specialists should contribute normalized evidence to one integrated thesis—not independent buy/sell votes. A future research coordinator dynamically selects only the specialists relevant to a trader's question or setup instead of invoking every research domain indiscriminately. A capability may later be a tool, service, node, subgraph, or agent only when its complexity warrants that form. V1 intentionally remains one bounded research workflow and does not implement the coordinator or specialist agents.
 
 ## V1 Scope and Market Environment
 
@@ -79,14 +79,35 @@ Tool runtime, not the model, injects asset, venue, timeframe, and authoritative 
 
 ```text
 Research context -> Investigate (bounded tools) -> Draft thesis -> Critic
-                 -> Final schema-validated decision
+                 -> Final schema-validated research assessment
 ```
 
-For the V1 opportunity-led path, the research context is an `Opportunity`; a future trader-led path may use its own request/context contract. Investigation dynamically selects relevant typed market tools. Future orchestration likewise selects only capabilities relevant to its research context rather than invoking every research domain. The critic is a distinct model call receiving the evidence and draft. There is no planning agent, specialist-agent team, delegation, debate, recursive hierarchy, or repeated autonomous research loop.
+For the V1 opportunity-led path, the research context is an `Opportunity`; a future trader-led path may use its own request/context contract. Investigation dynamically selects relevant typed market tools. The critic is a distinct model call receiving the evidence and draft. V1 has no planning agent, specialist-agent team, delegation, debate, recursive hierarchy, or repeated autonomous research loop. This bounded single workflow validates the common research, evidence, critique, and evaluation architecture before later specialist orchestration is introduced.
 
 Configurable limits cover tool calls, total tokens, graph iterations, retries, model calls, and decision age. Exhaustion, malformed output, unavailable/stale evidence, or unrecoverable tool/model failure fails closed to `ABSTAIN`. The graph may retry only within its fixed budget.
 
 Graph state contains runtime-owned identity/context and compact structured results: evidence references, tool-call records, draft thesis, critique, final decision, budgets consumed, status, and errors. It does not contain raw candle collections. Runtime identity is associated with model-facing records by orchestration and journaling rather than generated inside those records.
+
+## Long-Term Research Architecture and Presentation
+
+The intended long-term research flow is:
+
+```text
+Research request / opportunity
+        -> Research coordinator
+        -> Select only relevant specialist research agents
+        -> Normalized evidence
+        -> Integrated synthesis / thesis
+        -> Critic
+        -> Final structured research assessment
+        -> Interactive research dashboard
+```
+
+Potential specialists include market, derivatives, on-chain, news/catalysts, protocol/fundamentals, tokenomics, macro, and sentiment research. The coordinator selects only those relevant to the request; not every specialist runs every time. Specialists produce normalized, provenance-aware evidence and do not independently emit `BUY` or `SELL` decisions. Integrated synthesis owns the combined interpretation, the critic remains distinct from synthesis, and the final result remains a structured research assessment rather than execution authorization.
+
+Multi-agent orchestration must remain bounded and auditable. It must not introduce recursive delegation, unrestricted autonomous loops, or independently trading agent teams. These are long-term product directions, not V1 implementation requirements.
+
+The interactive research dashboard is intended to be the primary structured presentation layer. It may eventually visualize price and market data, evidence and provenance, bull and bear cases, uncertainty, critic output, research activity, and domain-specific research results. Chat remains available for follow-up questions, refinement, and re-running research. Domain models remain frontend-independent, and no frontend technology choice is prescribed here.
 
 ## Temporal and Replay Invariants
 
@@ -195,6 +216,6 @@ V1 is complete only when it:
 
 ## Explicitly Postponed
 
-Post-V1: multiple scanners, shorts, live ingestion/paper mode, alerts, all non-market research, multi-agent teams, delegation/recursive planning, embeddings/vector or thesis memory, PostgreSQL unless demonstrated necessary, FastAPI/UI/authentication, multiple venues, order books/ticks, limit/partial fills, Docker/cloud unless reproducibility requires it, and all real-exchange connectivity.
+Post-V1: multiple scanners, shorts, live ingestion/paper mode, alerts, all non-market research, bounded specialist-agent orchestration, interactive dashboard/UI/authentication, embeddings/vector or thesis memory, PostgreSQL unless demonstrated necessary, multiple venues, order books/ticks, limit/partial fills, Docker/cloud unless reproducibility requires it, and all real-exchange connectivity. Recursive delegation and unrestricted autonomous planning remain excluded.
 
 Future live mode reuses the core domain services, research engine, evidence model, agent workflow, journal, and applicable evaluation and risk infrastructure. Opportunity-led live research may reuse the scanner; trader-led research does not require one. Live operation fundamentally changes the clock and data providers, not the core research contracts.

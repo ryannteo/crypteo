@@ -20,7 +20,7 @@ Use the LLM for research orchestration and qualitative judgment: deciding what e
 
 Deterministic Python owns market calculations, scanning, arithmetic, risk authorization, sizing, simulation, accounting, replay, and metrics. Never ask a model to calculate a value that code can calculate reliably.
 
-LangGraph nodes should be few, explicit, bounded, and typed. Do not add agents, services, infrastructure, or abstraction layers without a demonstrated need. Avoid generic `utils` modules and deep class hierarchies.
+V1 LangGraph nodes should be few, explicit, bounded, and typed; do not add specialist agents or multi-agent orchestration to V1. Long term, the bounded research coordinator and specialist-agent architecture described in `docs/v1-specification.md` is permitted, but planning-agent hierarchies, recursive delegation, unrestricted autonomous loops, and independently trading agents remain prohibited. Do not add services, infrastructure, or abstraction layers without a demonstrated need. Avoid generic `utils` modules and deep class hierarchies.
 
 The architecture should support two eventual research entry modes without duplicating the research engine:
 
