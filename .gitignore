@@ -23,3 +23,15 @@ htmlcov/
 
 # macOS
 .DS_Store
+
+# Local application/runtime data
+data/
+logs/
+artifacts/
+
+# Local editor state
+.vscode/
+.idea/
+
+# Codex/local agent state
+.codex/
