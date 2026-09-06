@@ -1,0 +1,328 @@
+import json
+from collections.abc import Mapping
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from pydantic import TypeAdapter
+
+from crypteo.coinbase import (
+    CoinbaseCandleRequest,
+    CoinbaseCandleRetriever,
+    CoinbaseRawCandleResponse,
+)
+from crypteo.coinbase_dataset import (
+    CoinbaseHistoricalDataset,
+    compose_coinbase_dataset,
+)
+from crypteo.coinbase_persistence import (
+    CoinbaseLocalPersistence,
+    ingest_coinbase_candles,
+)
+from crypteo.domain.market import Candle, DatasetManifest, TradingPair
+
+START = datetime(2026, 1, 1, tzinfo=UTC)
+CREATED_AT = datetime(2026, 2, 1, tzinfo=UTC)
+_CANDLES_ADAPTER = TypeAdapter(tuple[Candle, ...])
+
+
+class FakeTransport:
+    def __init__(self, bodies: list[bytes]) -> None:
+        self._bodies = bodies
+        self.calls: list[tuple[str, dict[str, str | int]]] = []
+
+    def get(self, url: str, params: Mapping[str, str | int]) -> bytes:
+        self.calls.append((url, dict(params)))
+        return self._bodies[len(self.calls) - 1]
+
+
+def body(hours: list[int]) -> bytes:
+    rows = [
+        [
+            int((START + timedelta(hours=hour)).timestamp()),
+            99.125,
+            105.875,
+            100.25,
+            103.5,
+            12.125,
+        ]
+        for hour in hours
+    ]
+    return json.dumps(rows, separators=(",", ":")).encode()
+
+
+def response(
+    response_body: bytes,
+    *,
+    start: datetime = START,
+    end: datetime = START + timedelta(hours=1),
+) -> CoinbaseRawCandleResponse:
+    return CoinbaseRawCandleResponse(
+        request=CoinbaseCandleRequest(
+            pair=TradingPair.BTC_USD,
+            start=start,
+            end=end,
+        ),
+        body=response_body,
+    )
+
+
+def canonical_dataset(
+    *, created_at: datetime = CREATED_AT
+) -> CoinbaseHistoricalDataset:
+    return compose_coinbase_dataset(
+        pair=TradingPair.BTC_USD,
+        raw_responses=[response(body([0]))],
+        created_at=created_at,
+    )
+
+
+def test_persists_exact_raw_body_and_request_metadata(tmp_path: Path) -> None:
+    raw = response(b"[ [1767225600, 99, 105, 100, 103, 12] ]\n")
+    persistence = CoinbaseLocalPersistence(tmp_path)
+
+    persistence.persist_raw([raw])
+
+    artifact_dir = persistence.raw_artifact_dir(raw)
+    assert (artifact_dir / "body.json").read_bytes() == raw.body
+    assert json.loads((artifact_dir / "request.json").read_bytes()) == {
+        "pair": "BTC-USD",
+        "timeframe": "1h",
+        "granularity": 3600,
+        "start": "2026-01-01T00:00:00.000000Z",
+        "end": "2026-01-01T01:00:00.000000Z",
+        "url": "https://api.exchange.coinbase.com/products/BTC-USD/candles",
+        "params": {
+            "start": "2026-01-01T00:00:00Z",
+            "end": "2026-01-01T01:00:00Z",
+            "granularity": 3600,
+        },
+    }
+
+
+def test_different_request_ranges_have_different_raw_artifact_dirs(
+    tmp_path: Path,
+) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    first = response(b"[]")
+    second = response(
+        b"[]",
+        start=START + timedelta(hours=1),
+        end=START + timedelta(hours=2),
+    )
+
+    assert persistence.raw_artifact_dir(first) != persistence.raw_artifact_dir(second)
+
+
+def test_raw_artifacts_survive_later_normalization_failure(tmp_path: Path) -> None:
+    malformed_body = b"[[1767225600,1]]"
+    transport = FakeTransport([malformed_body])
+    retriever = CoinbaseCandleRetriever(transport)
+    raw = response(malformed_body)
+    persistence = CoinbaseLocalPersistence(tmp_path)
+
+    with pytest.raises(ValueError, match="six"):
+        ingest_coinbase_candles(
+            retriever=retriever,
+            artifact_root=tmp_path,
+            pair=TradingPair.BTC_USD,
+            start=START,
+            end=START + timedelta(hours=1),
+            created_at=CREATED_AT,
+        )
+
+    artifact_dir = persistence.raw_artifact_dir(raw)
+    assert (artifact_dir / "body.json").read_bytes() == malformed_body
+    assert (artifact_dir / "request.json").is_file()
+    assert not (tmp_path / "canonical").exists()
+
+
+def test_repeated_identical_raw_persistence_is_safe(tmp_path: Path) -> None:
+    raw = response(body([0]))
+    persistence = CoinbaseLocalPersistence(tmp_path)
+
+    persistence.persist_raw([raw])
+    persistence.persist_raw([raw])
+
+    assert (persistence.raw_artifact_dir(raw) / "body.json").read_bytes() == raw.body
+
+
+def test_conflicting_raw_overwrite_is_rejected(tmp_path: Path) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    original = response(b"[]")
+    conflicting = response(body([0]))
+
+    persistence.persist_raw([original])
+
+    with pytest.raises(FileExistsError, match="different content"):
+        persistence.persist_raw([conflicting])
+
+    assert (persistence.raw_artifact_dir(original) / "body.json").read_bytes() == b"[]"
+
+
+def test_success_persists_versioned_candles_and_manifest_that_round_trip(
+    tmp_path: Path,
+) -> None:
+    precise_close = "103.5000000000000000000000001"
+    precise_body = (
+        f"[[{int(START.timestamp())},99.125,105.875,100.25,{precise_close},12.125]]"
+    ).encode()
+    transport = FakeTransport([precise_body])
+    dataset = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(transport),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=1),
+        created_at=CREATED_AT,
+    )
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    artifact_dir = persistence.dataset_artifact_dir(dataset.manifest.dataset_version)
+
+    restored_candles = _CANDLES_ADAPTER.validate_json(
+        (artifact_dir / "candles.json").read_bytes()
+    )
+    restored_manifest = DatasetManifest.model_validate_json(
+        (artifact_dir / "manifest.json").read_bytes()
+    )
+
+    digest = dataset.manifest.dataset_version.removeprefix("sha256:")
+    assert artifact_dir == tmp_path / "canonical" / "sha256" / digest
+    assert artifact_dir.is_relative_to(tmp_path)
+    assert restored_candles == dataset.candles
+    assert restored_candles[0].close == Decimal(precise_close)
+    assert restored_manifest == dataset.manifest
+    assert restored_manifest.dataset_version == dataset.manifest.dataset_version
+
+
+def test_repeated_identical_canonical_persistence_is_safe(tmp_path: Path) -> None:
+    transport = FakeTransport([body([0])])
+    dataset = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(transport),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=1),
+        created_at=CREATED_AT,
+    )
+    persistence = CoinbaseLocalPersistence(tmp_path)
+
+    persistence.persist_dataset(dataset)
+
+    artifact_dir = persistence.dataset_artifact_dir(dataset.manifest.dataset_version)
+    assert (artifact_dir / "candles.json").is_file()
+    assert (artifact_dir / "manifest.json").is_file()
+
+
+def test_conflicting_canonical_overwrite_is_rejected(tmp_path: Path) -> None:
+    transport = FakeTransport([body([0])])
+    dataset = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(transport),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=1),
+        created_at=CREATED_AT,
+    )
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    candles_path = (
+        persistence.dataset_artifact_dir(dataset.manifest.dataset_version)
+        / "candles.json"
+    )
+    candles_path.write_bytes(b"[]")
+
+    with pytest.raises(FileExistsError, match="different content"):
+        persistence.persist_dataset(dataset)
+
+
+@pytest.mark.parametrize(
+    "invalid_version",
+    [
+        "../outside",
+        "/absolute/path",
+        "sha1:" + "a" * 64,
+        "sha256:" + "a" * 63,
+        "sha256:" + "a" * 65,
+        "sha256:" + "A" * 64,
+        "sha256:" + "g" * 64,
+        "sha256:" + "a" * 63 + "/",
+    ],
+)
+def test_rejects_invalid_dataset_versions_before_writing(
+    tmp_path: Path, invalid_version: str
+) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    dataset = canonical_dataset()
+    invalid_manifest = dataset.manifest.model_copy(
+        update={"dataset_version": invalid_version}
+    )
+    invalid_dataset = replace(dataset, manifest=invalid_manifest)
+
+    with pytest.raises(ValueError, match="64 lowercase hex"):
+        persistence.persist_dataset(invalid_dataset)
+
+    assert not (tmp_path / "canonical").exists()
+
+
+def test_valid_generated_version_path_is_contained_by_root(tmp_path: Path) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    version = canonical_dataset().manifest.dataset_version
+
+    artifact_dir = persistence.dataset_artifact_dir(version)
+
+    assert artifact_dir == (
+        tmp_path / "canonical" / "sha256" / version.removeprefix("sha256:")
+    )
+    assert artifact_dir.is_relative_to(tmp_path)
+
+
+def test_same_version_with_different_created_at_preserves_first_manifest(
+    tmp_path: Path,
+) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    first = canonical_dataset(created_at=CREATED_AT)
+    second = canonical_dataset(created_at=CREATED_AT + timedelta(days=1))
+    assert first.manifest.dataset_version == second.manifest.dataset_version
+
+    persistence.persist_dataset(first)
+    manifest_path = (
+        persistence.dataset_artifact_dir(first.manifest.dataset_version)
+        / "manifest.json"
+    )
+    first_bytes = manifest_path.read_bytes()
+
+    with pytest.raises(FileExistsError, match="different content"):
+        persistence.persist_dataset(second)
+
+    assert manifest_path.read_bytes() == first_bytes
+    assert DatasetManifest.model_validate_json(first_bytes) == first.manifest
+
+
+def test_fixture_end_to_end_persists_gap_dataset(tmp_path: Path) -> None:
+    raw_body = body([2, 0])
+    transport = FakeTransport([raw_body])
+
+    dataset = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(transport),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=3),
+        created_at=CREATED_AT,
+    )
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    raw = response(raw_body, end=START + timedelta(hours=3))
+    canonical_dir = persistence.dataset_artifact_dir(dataset.manifest.dataset_version)
+
+    assert len(transport.calls) == 1
+    assert (persistence.raw_artifact_dir(raw) / "body.json").read_bytes() == raw_body
+    assert [candle.open_time for candle in dataset.candles] == [
+        START,
+        START + timedelta(hours=2),
+    ]
+    assert dataset.manifest.missing_open_times == (START + timedelta(hours=1),)
+    assert dataset.manifest.dataset_version.startswith("sha256:")
+    assert (canonical_dir / "candles.json").is_file()
+    assert (canonical_dir / "manifest.json").is_file()
