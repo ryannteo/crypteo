@@ -209,6 +209,178 @@ def test_valid_manifest_represents_half_open_coverage() -> None:
     assert manifest.start_time == OPEN_TIME
     assert manifest.end_time == CLOSE_TIME
     assert manifest.row_count == 1
+    assert manifest.missing_open_times == ()
+
+
+def test_manifest_accepts_valid_missing_open_times() -> None:
+    missing = (OPEN_TIME + timedelta(hours=1), OPEN_TIME + timedelta(hours=2))
+    manifest = DatasetManifest.model_validate(
+        manifest_data(
+            end_time=OPEN_TIME + timedelta(hours=4),
+            row_count=2,
+            missing_open_times=missing,
+        )
+    )
+
+    assert manifest.missing_open_times == missing
+    assert isinstance(manifest.missing_open_times, tuple)
+
+
+def test_manifest_accepts_valid_multi_hour_coverage_without_gaps() -> None:
+    manifest = DatasetManifest.model_validate(
+        manifest_data(end_time=OPEN_TIME + timedelta(hours=3), row_count=3)
+    )
+
+    assert manifest.row_count == 3
+    assert manifest.missing_open_times == ()
+
+
+@pytest.mark.parametrize(
+    ("row_count", "missing_open_times"),
+    [
+        (2, [OPEN_TIME + timedelta(hours=1)]),
+        (
+            3,
+            [
+                OPEN_TIME + timedelta(hours=1),
+                OPEN_TIME + timedelta(hours=2),
+            ],
+        ),
+    ],
+)
+def test_manifest_rejects_under_or_over_accounted_gaps(
+    row_count: int, missing_open_times: list[datetime]
+) -> None:
+    with pytest.raises(ValidationError, match="account for coverage"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=4),
+                row_count=row_count,
+                missing_open_times=missing_open_times,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("start_time", "end_time"),
+    [
+        (OPEN_TIME + timedelta(minutes=1), OPEN_TIME + timedelta(hours=2)),
+        (OPEN_TIME, OPEN_TIME + timedelta(hours=2, minutes=1)),
+    ],
+)
+def test_non_empty_manifest_rejects_independently_misaligned_boundaries(
+    start_time: datetime, end_time: datetime
+) -> None:
+    with pytest.raises(ValidationError, match="boundaries must align"):
+        DatasetManifest.model_validate(
+            manifest_data(start_time=start_time, end_time=end_time, row_count=2)
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        OPEN_TIME.replace(tzinfo=None),
+        OPEN_TIME.astimezone(timezone(timedelta(hours=8))),
+        "2026-01-01T11:00:00Z",
+        1767265200,
+    ],
+)
+def test_manifest_missing_open_times_require_strict_utc(invalid: object) -> None:
+    with pytest.raises(ValidationError):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=3),
+                missing_open_times=[invalid],
+            )
+        )
+
+
+def test_manifest_rejects_duplicate_missing_open_times() -> None:
+    missing = OPEN_TIME + timedelta(hours=1)
+
+    with pytest.raises(ValidationError, match="unique"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=3),
+                missing_open_times=[missing, missing],
+            )
+        )
+
+
+def test_manifest_rejects_unsorted_missing_open_times() -> None:
+    with pytest.raises(ValidationError, match="ascending"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=4),
+                missing_open_times=[
+                    OPEN_TIME + timedelta(hours=2),
+                    OPEN_TIME + timedelta(hours=1),
+                ],
+            )
+        )
+
+
+def test_manifest_rejects_misaligned_missing_open_time() -> None:
+    with pytest.raises(ValidationError, match="align"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=3),
+                missing_open_times=[OPEN_TIME + timedelta(hours=1, minutes=1)],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        OPEN_TIME - timedelta(hours=1),
+        OPEN_TIME,
+        OPEN_TIME + timedelta(hours=2),
+        OPEN_TIME + timedelta(hours=3),
+    ],
+)
+def test_manifest_rejects_missing_times_outside_actual_candle_coverage(
+    missing: datetime,
+) -> None:
+    with pytest.raises(ValidationError, match="within dataset coverage"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=3),
+                missing_open_times=[missing],
+            )
+        )
+
+
+def test_manifest_missing_open_times_serialize_and_round_trip_json() -> None:
+    missing = OPEN_TIME + timedelta(hours=1)
+    manifest = DatasetManifest.model_validate(
+        manifest_data(
+            end_time=OPEN_TIME + timedelta(hours=3),
+            row_count=2,
+            missing_open_times=[missing],
+        )
+    )
+
+    assert manifest.model_dump(mode="json")["missing_open_times"] == [
+        "2026-01-01T11:00:00Z"
+    ]
+    assert DatasetManifest.model_validate_json(manifest.model_dump_json()) == manifest
+
+
+def test_manifest_missing_open_times_are_frozen_and_immutable() -> None:
+    manifest = DatasetManifest.model_validate(
+        manifest_data(
+            end_time=OPEN_TIME + timedelta(hours=3),
+            row_count=2,
+            missing_open_times=[OPEN_TIME + timedelta(hours=1)],
+        )
+    )
+
+    with pytest.raises(ValidationError):
+        manifest.missing_open_times = ()
+    with pytest.raises(TypeError):
+        manifest.missing_open_times[0] = OPEN_TIME  # type: ignore[index]
 
 
 def test_manifest_json_round_trip_preserves_enums_and_utc() -> None:
@@ -281,6 +453,29 @@ def test_empty_manifest_may_have_empty_coverage() -> None:
         manifest_data(end_time=OPEN_TIME, row_count=0)
     )
     assert manifest.start_time == manifest.end_time
+
+
+def test_empty_manifest_may_have_wider_unaligned_coverage_without_gaps() -> None:
+    manifest = DatasetManifest.model_validate(
+        manifest_data(
+            end_time=OPEN_TIME + timedelta(hours=2, minutes=30),
+            row_count=0,
+        )
+    )
+
+    assert manifest.end_time > manifest.start_time
+    assert manifest.missing_open_times == ()
+
+
+def test_empty_manifest_rejects_non_empty_gap_metadata() -> None:
+    with pytest.raises(ValidationError, match="must not contain"):
+        DatasetManifest.model_validate(
+            manifest_data(
+                end_time=OPEN_TIME + timedelta(hours=3),
+                row_count=0,
+                missing_open_times=[OPEN_TIME + timedelta(hours=1)],
+            )
+        )
 
 
 @pytest.mark.parametrize(

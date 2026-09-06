@@ -113,6 +113,7 @@ class DatasetManifest(BaseModel):
     end_time: UtcDatetime
     created_at: UtcDatetime
     row_count: int = Field(strict=True, ge=0)
+    missing_open_times: tuple[UtcDatetime, ...] = ()
 
     @field_validator("dataset_version", "source")
     @classmethod
@@ -125,6 +126,39 @@ class DatasetManifest(BaseModel):
     def validate_coverage(self) -> Self:
         if self.end_time < self.start_time:
             raise ValueError("end_time must be at or after start_time")
-        if self.row_count > 0 and self.end_time == self.start_time:
+        if self.row_count == 0:
+            if self.missing_open_times:
+                raise ValueError("an empty dataset must not contain missing open times")
+            return self
+        if self.end_time == self.start_time:
             raise ValueError("a non-empty dataset must have a non-empty interval")
+        for boundary in (self.start_time, self.end_time):
+            if (
+                boundary.minute != 0
+                or boundary.second != 0
+                or boundary.microsecond != 0
+            ):
+                raise ValueError("dataset boundaries must align to the timeframe")
+        coverage = self.end_time - self.start_time
+        if coverage % self.timeframe.duration != timedelta(0):
+            raise ValueError("dataset coverage must contain integral timeframe slots")
+        if len(self.missing_open_times) != len(set(self.missing_open_times)):
+            raise ValueError("missing_open_times must be unique")
+        if self.missing_open_times != tuple(sorted(self.missing_open_times)):
+            raise ValueError("missing_open_times must be strictly ascending")
+        final_open_time = self.end_time - self.timeframe.duration
+        for missing_open_time in self.missing_open_times:
+            if (
+                missing_open_time.minute != 0
+                or missing_open_time.second != 0
+                or missing_open_time.microsecond != 0
+            ):
+                raise ValueError("missing open times must align to the timeframe")
+            if not self.start_time < missing_open_time < final_open_time:
+                raise ValueError("missing open times must be within dataset coverage")
+        expected_slots = coverage // self.timeframe.duration
+        if expected_slots != self.row_count + len(self.missing_open_times):
+            raise ValueError(
+                "row count and missing open times must account for coverage"
+            )
         return self
