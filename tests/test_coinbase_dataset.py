@@ -1,4 +1,6 @@
+import inspect
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -15,6 +17,12 @@ from crypteo.domain.market import Candle, TradingPair, Venue
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 CREATED_AT = datetime(2026, 2, 1, tzinfo=UTC)
+
+
+def test_composition_api_does_not_accept_dataset_version() -> None:
+    assert (
+        "dataset_version" not in inspect.signature(compose_coinbase_dataset).parameters
+    )
 
 
 def row(
@@ -53,12 +61,12 @@ def compose(
     responses: list[CoinbaseRawCandleResponse] | tuple[CoinbaseRawCandleResponse, ...],
     *,
     pair: TradingPair = TradingPair.BTC_USD,
+    created_at: datetime = CREATED_AT,
 ) -> dataset_module.CoinbaseHistoricalDataset:
     return compose_coinbase_dataset(
         pair=pair,
         raw_responses=responses,
-        dataset_version="fixture-v1",
-        created_at=CREATED_AT,
+        created_at=created_at,
     )
 
 
@@ -208,6 +216,101 @@ def test_chunk_order_does_not_change_candles_or_manifest() -> None:
         START + timedelta(hours=1),
         START + timedelta(hours=2),
     ]
+
+
+def test_dataset_version_has_sha256_format() -> None:
+    version = compose([raw_response([row()])]).manifest.dataset_version
+
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", version)
+
+
+def test_equivalent_reversed_and_rechunked_responses_have_same_version() -> None:
+    combined = raw_response([row(0), row(1)], request_end=START + timedelta(hours=2))
+    first = raw_response([row(0)])
+    second = raw_response(
+        [row(1)],
+        request_start=START + timedelta(hours=1),
+        request_end=START + timedelta(hours=2),
+    )
+
+    versions = {
+        compose([combined]).manifest.dataset_version,
+        compose([first, second]).manifest.dataset_version,
+        compose([second, first]).manifest.dataset_version,
+    }
+
+    assert len(versions) == 1
+
+
+def test_created_at_does_not_affect_version_for_same_canonical_dataset() -> None:
+    response = raw_response([row()])
+
+    first = compose([response], created_at=CREATED_AT)
+    later = compose([response], created_at=CREATED_AT + timedelta(days=1))
+
+    assert first.manifest.created_at != later.manifest.created_at
+    assert first.manifest.dataset_version == later.manifest.dataset_version
+
+
+def test_relevant_candle_content_changes_version() -> None:
+    original = compose([raw_response([row(close=103.5)])])
+    changed = compose([raw_response([row(close=104.0)])])
+
+    assert original.manifest.dataset_version != changed.manifest.dataset_version
+
+
+def test_numerically_equal_decimal_spellings_have_same_version() -> None:
+    request = raw_response([]).request
+    timestamp = int(START.timestamp())
+    integer_body = f"[[{timestamp},99,105,100,100,12]]".encode()
+    decimal_body = f"[[{timestamp},99.0,105.00,100.0,100.00,12.000]]".encode()
+
+    integer_result = compose(
+        [CoinbaseRawCandleResponse(request=request, body=integer_body)]
+    )
+    decimal_result = compose(
+        [CoinbaseRawCandleResponse(request=request, body=decimal_body)]
+    )
+
+    assert integer_result.candles == decimal_result.candles
+    assert (
+        integer_result.manifest.dataset_version
+        == decimal_result.manifest.dataset_version
+    )
+
+
+def test_pair_changes_version() -> None:
+    bitcoin = compose([raw_response([row()])], pair=TradingPair.BTC_USD)
+    ether = compose(
+        [raw_response([row()], pair=TradingPair.ETH_USD)],
+        pair=TradingPair.ETH_USD,
+    )
+
+    assert bitcoin.manifest.dataset_version != ether.manifest.dataset_version
+
+
+def test_empty_coverage_changes_version() -> None:
+    one_hour = compose([raw_response([])])
+    two_hours = compose([raw_response([], request_end=START + timedelta(hours=2))])
+
+    assert one_hour.manifest.dataset_version != two_hours.manifest.dataset_version
+
+
+def test_gap_structure_changes_version() -> None:
+    with_gap = compose(
+        [raw_response([row(0), row(2)], request_end=START + timedelta(hours=3))]
+    )
+    without_gap = compose(
+        [
+            raw_response(
+                [row(0), row(1), row(2)],
+                request_end=START + timedelta(hours=3),
+            )
+        ]
+    )
+
+    assert with_gap.manifest.missing_open_times != ()
+    assert with_gap.manifest.dataset_version != without_gap.manifest.dataset_version
 
 
 @pytest.mark.parametrize(
