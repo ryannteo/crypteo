@@ -61,5 +61,35 @@ The capture ID is `sha256:` followed by the SHA-256 of that envelope encoded as
 UTF-8 JSON with sorted keys and compact separators. Provenance timestamps use UTC
 `Z` and six fractional digits. Identical captures are idempotent; revised bodies
 or acquisition boundaries coexist. Existing request-only raw directories are not
-migrated. Dataset schema version, empty-coverage semantics, and canonical
-persistence remain unchanged.
+migrated. Dataset schema version remains "1"; canonical persistence is unchanged.
+
+Composition now requires explicit `requested_start` and `requested_end`.
+Capture request ranges must account for that interval; no captures represent only
+a zero-length acquisition. Empty canonical datasets have `None` start/end coverage
+and no canonical gaps, independent of requested bounds or creation time.
+Non-empty manifests continue to describe first open through final close, with
+internal gaps only.
+
+`CoinbaseHistoricalDataset.acquisition` contains an immutable
+`CoinbaseAcquisitionRecord`: schema version "1", dataset version, creation time,
+requested start/end, sorted unique capture IDs, and sorted unique requested
+missing opens. Requested missing opens include leading, internal, and trailing
+slots; an all-empty acquisition reports every requested slot, and a zero-length
+acquisition reports none. All timestamps require strict UTC and requested slots
+are hourly aligned.
+
+Ingestion publishes
+`acquisitions/coinbase/sha256/<acquisition-digest>/acquisition.json` only after
+canonical persistence succeeds. The digest is SHA-256 of the complete record's
+UTF-8 JSON with sorted keys, compact separators, and UTC timestamps using `Z`
+and six fractional digits. It includes `created_at`. The record links to exact
+capture IDs and the canonical dataset version without mutable backlinks.
+Raw and canonical paths remain as documented above and
+`canonical/sha256/<dataset-digest>/{candles.json,manifest.json}`, respectively.
+`persist_acquisition(dataset)` verifies that the record matches the dataset's
+manifest and exact raw-response capture IDs, and that both canonical files and
+both files for every referenced raw capture already exist before publishing.
+Existing canonical creation-time conflicts and serialization behavior are
+unchanged; a canonical conflict prevents acquisition publication. Artifact writes
+are not a crash-atomic transaction, so a failure may leave raw or canonical
+artifacts without a completed acquisition record.

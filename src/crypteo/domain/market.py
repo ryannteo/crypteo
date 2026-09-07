@@ -98,7 +98,7 @@ class DatasetManifest(BaseModel):
     """Metadata for one normalized dataset covering ``[start_time, end_time)``.
 
     ``start_time`` is the first candle's open time. ``end_time`` is the final
-    candle's close time, not its open time.
+    candle's close time, not its open time. Empty datasets have None boundaries.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -109,8 +109,8 @@ class DatasetManifest(BaseModel):
     venue: Venue
     pair: TradingPair
     timeframe: Timeframe
-    start_time: UtcDatetime
-    end_time: UtcDatetime
+    start_time: UtcDatetime | None
+    end_time: UtcDatetime | None
     created_at: UtcDatetime
     row_count: int = Field(strict=True, ge=0)
     missing_open_times: tuple[UtcDatetime, ...] = ()
@@ -124,12 +124,16 @@ class DatasetManifest(BaseModel):
 
     @model_validator(mode="after")
     def validate_coverage(self) -> Self:
-        if self.end_time < self.start_time:
-            raise ValueError("end_time must be at or after start_time")
         if self.row_count == 0:
+            if self.start_time is not None or self.end_time is not None:
+                raise ValueError("an empty dataset must have None coverage boundaries")
             if self.missing_open_times:
                 raise ValueError("an empty dataset must not contain missing open times")
             return self
+        if self.start_time is None or self.end_time is None:
+            raise ValueError("a non-empty dataset requires coverage boundaries")
+        if self.end_time < self.start_time:
+            raise ValueError("end_time must be at or after start_time")
         if self.end_time == self.start_time:
             raise ValueError("a non-empty dataset must have a non-empty interval")
         for boundary in (self.start_time, self.end_time):

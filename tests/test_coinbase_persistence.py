@@ -76,6 +76,8 @@ def canonical_dataset(
     return compose_coinbase_dataset(
         pair=TradingPair.BTC_USD,
         raw_responses=[response(body([0]))],
+        requested_start=START,
+        requested_end=START + timedelta(hours=1),
         created_at=created_at,
     )
 
@@ -139,6 +141,7 @@ def test_raw_artifacts_survive_later_normalization_failure(tmp_path: Path) -> No
     assert (artifact_dir / "body.json").read_bytes() == malformed_body
     assert (artifact_dir / "request.json").is_file()
     assert not (tmp_path / "canonical").exists()
+    assert not (tmp_path / "acquisitions").exists()
 
 
 def test_repeated_identical_raw_persistence_is_safe(tmp_path: Path) -> None:
@@ -274,6 +277,7 @@ def test_rejects_invalid_dataset_versions_before_writing(
         persistence.persist_dataset(invalid_dataset)
 
     assert not (tmp_path / "canonical").exists()
+    assert not (tmp_path / "acquisitions").exists()
 
 
 def test_valid_generated_version_path_is_contained_by_root(tmp_path: Path) -> None:
@@ -373,6 +377,7 @@ def test_successful_capture_is_persisted_before_later_transport_failure(
         persistence.raw_artifact_dir(first) / "body.json"
     ).read_bytes() == first.body
     assert not (tmp_path / "canonical").exists()
+    assert not (tmp_path / "acquisitions").exists()
 
 
 def test_capture_id_matches_persisted_canonical_envelope(tmp_path: Path) -> None:
@@ -410,3 +415,182 @@ def test_acquisition_provenance_changes_capture_identity(tmp_path: Path) -> None
     later = replace(first, acquisition_started_at=CREATED_AT + timedelta(seconds=1))
     persistence.persist_raw([first, later])
     assert persistence.raw_artifact_dir(first) != persistence.raw_artifact_dir(later)
+
+
+@pytest.mark.parametrize("hours", [0, 1, 3])
+def test_persisted_acquisition_resolves_exact_captures_and_dataset(
+    tmp_path: Path,
+    hours: int,
+) -> None:
+    from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
+    from crypteo.coinbase_capture import coinbase_capture_id
+
+    dataset = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(FakeTransport([b"[]"])),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=hours),
+        acquisition_started_at=CREATED_AT,
+        created_at=CREATED_AT,
+    )
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    record = dataset.acquisition
+    path = persistence.acquisition_artifact_dir(record) / "acquisition.json"
+    assert (
+        path
+        == tmp_path
+        / "acquisitions"
+        / "coinbase"
+        / "sha256"
+        / record.acquisition_id.removeprefix("sha256:")
+        / "acquisition.json"
+    )
+    assert CoinbaseAcquisitionRecord.model_validate_json(path.read_bytes()) == record
+    assert record.missing_open_times == tuple(
+        START + timedelta(hours=h) for h in range(hours)
+    )
+    canonical = persistence.dataset_artifact_dir(record.dataset_version)
+    assert (
+        DatasetManifest.model_validate_json((canonical / "manifest.json").read_bytes())
+        == dataset.manifest
+    )
+    assert (
+        _CANDLES_ADAPTER.validate_json((canonical / "candles.json").read_bytes())
+        == dataset.candles
+    )
+    assert record.capture_ids == tuple(
+        sorted(coinbase_capture_id(raw) for raw in dataset.raw_responses)
+    )
+    for raw in dataset.raw_responses:
+        assert (
+            persistence.raw_artifact_dir(raw) / "body.json"
+        ).read_bytes() == raw.body
+    before = path.stat().st_mtime_ns
+    persistence.persist_acquisition(dataset)
+    assert path.stat().st_mtime_ns == before
+
+
+def test_same_canonical_dataset_can_link_multiple_requested_intervals(
+    tmp_path: Path,
+) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    results = [
+        ingest_coinbase_candles(
+            retriever=CoinbaseCandleRetriever(FakeTransport([body([0])])),
+            artifact_root=tmp_path,
+            pair=TradingPair.BTC_USD,
+            start=START,
+            end=START + timedelta(hours=hours),
+            acquisition_started_at=CREATED_AT,
+            created_at=CREATED_AT,
+        )
+        for hours in (1, 2)
+    ]
+    assert results[0].manifest == results[1].manifest
+    assert (
+        results[0].acquisition.acquisition_id != results[1].acquisition.acquisition_id
+    )
+    assert all(
+        (
+            persistence.acquisition_artifact_dir(d.acquisition) / "acquisition.json"
+        ).is_file()
+        for d in results
+    )
+
+
+def test_canonical_conflict_prevents_new_acquisition_publication(
+    tmp_path: Path,
+) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    first = ingest_coinbase_candles(
+        retriever=CoinbaseCandleRetriever(FakeTransport([body([0])])),
+        artifact_root=tmp_path,
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=1),
+        acquisition_started_at=CREATED_AT,
+        created_at=CREATED_AT,
+    )
+    before = sorted((tmp_path / "acquisitions").rglob("acquisition.json"))
+    with pytest.raises(FileExistsError, match="different content"):
+        ingest_coinbase_candles(
+            retriever=CoinbaseCandleRetriever(FakeTransport([body([0])])),
+            artifact_root=tmp_path,
+            pair=TradingPair.BTC_USD,
+            start=START,
+            end=START + timedelta(hours=1),
+            acquisition_started_at=CREATED_AT,
+            created_at=CREATED_AT + timedelta(days=1),
+        )
+    assert sorted((tmp_path / "acquisitions").rglob("acquisition.json")) == before
+    assert before == [
+        persistence.acquisition_artifact_dir(first.acquisition) / "acquisition.json"
+    ]
+
+
+def test_acquisition_cannot_publish_with_missing_raw_references(
+    tmp_path: Path,
+) -> None:
+    dataset = canonical_dataset()
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_dataset(dataset)
+
+    with pytest.raises(FileNotFoundError, match="raw capture artifact"):
+        persistence.persist_acquisition(dataset)
+
+    assert not (tmp_path / "acquisitions").exists()
+
+
+def test_acquisition_cannot_publish_without_canonical_artifacts(
+    tmp_path: Path,
+) -> None:
+    dataset = canonical_dataset()
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_raw(dataset.raw_responses)
+
+    with pytest.raises(FileNotFoundError, match="canonical dataset artifact"):
+        persistence.persist_acquisition(dataset)
+
+    assert not (tmp_path / "acquisitions").exists()
+
+
+def test_persisted_raw_and_canonical_artifacts_allow_acquisition_publication(
+    tmp_path: Path,
+) -> None:
+    dataset = canonical_dataset()
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_raw(dataset.raw_responses)
+    persistence.persist_dataset(dataset)
+
+    persistence.persist_acquisition(dataset)
+
+    acquisition_path = (
+        persistence.acquisition_artifact_dir(dataset.acquisition) / "acquisition.json"
+    )
+    assert acquisition_path.read_bytes() == dataset.acquisition.canonical_bytes()
+
+
+def test_acquisition_rejects_dataset_and_capture_reference_mismatches(
+    tmp_path: Path,
+) -> None:
+    dataset = canonical_dataset()
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_raw(dataset.raw_responses)
+    persistence.persist_dataset(dataset)
+
+    wrong_dataset_version = dataset.acquisition.model_copy(
+        update={"dataset_version": "sha256:" + "0" * 64}
+    )
+    with pytest.raises(ValueError, match="dataset_version"):
+        persistence.persist_acquisition(
+            replace(dataset, acquisition=wrong_dataset_version)
+        )
+
+    wrong_capture_ids = dataset.acquisition.model_copy(
+        update={"capture_ids": ("sha256:" + "0" * 64,)}
+    )
+    with pytest.raises(ValueError, match="capture_ids"):
+        persistence.persist_acquisition(replace(dataset, acquisition=wrong_capture_ids))
+
+    assert not (tmp_path / "acquisitions").exists()

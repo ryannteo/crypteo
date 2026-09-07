@@ -450,28 +450,33 @@ def test_non_empty_manifest_requires_non_empty_coverage() -> None:
 
 def test_empty_manifest_may_have_empty_coverage() -> None:
     manifest = DatasetManifest.model_validate(
-        manifest_data(end_time=OPEN_TIME, row_count=0)
+        manifest_data(start_time=None, end_time=None, row_count=0)
     )
     assert manifest.start_time == manifest.end_time
 
 
-def test_empty_manifest_may_have_wider_unaligned_coverage_without_gaps() -> None:
-    manifest = DatasetManifest.model_validate(
-        manifest_data(
-            end_time=OPEN_TIME + timedelta(hours=2, minutes=30),
-            row_count=0,
+@pytest.mark.parametrize(
+    "start,end", [(OPEN_TIME, OPEN_TIME), (None, OPEN_TIME), (OPEN_TIME, None)]
+)
+def test_empty_manifest_rejects_fake_coverage(start: object, end: object) -> None:
+    with pytest.raises(ValidationError, match="None coverage"):
+        DatasetManifest.model_validate(
+            manifest_data(start_time=start, end_time=end, row_count=0)
         )
-    )
 
-    assert manifest.end_time > manifest.start_time
-    assert manifest.missing_open_times == ()
+
+@pytest.mark.parametrize("field", ["start_time", "end_time"])
+def test_nonempty_manifest_requires_both_boundaries(field: str) -> None:
+    with pytest.raises(ValidationError, match="requires coverage"):
+        DatasetManifest.model_validate(manifest_data(**{field: None}))
 
 
 def test_empty_manifest_rejects_non_empty_gap_metadata() -> None:
     with pytest.raises(ValidationError, match="must not contain"):
         DatasetManifest.model_validate(
             manifest_data(
-                end_time=OPEN_TIME + timedelta(hours=3),
+                start_time=None,
+                end_time=None,
                 row_count=0,
                 missing_open_times=[OPEN_TIME + timedelta(hours=1)],
             )

@@ -10,7 +10,9 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from crypteo.coinbase import CoinbaseRawCandleResponse
+from crypteo.coinbase import CoinbaseRawCandleResponse, build_candle_requests
+from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
+from crypteo.coinbase_capture import coinbase_capture_id
 from crypteo.coinbase_normalization import (
     coinbase_row_open_time,
     normalize_coinbase_candles,
@@ -34,6 +36,7 @@ class CoinbaseHistoricalDataset:
     candles: tuple[Candle, ...]
     manifest: DatasetManifest
     raw_responses: tuple[CoinbaseRawCandleResponse, ...]
+    acquisition: CoinbaseAcquisitionRecord
 
 
 def compose_coinbase_dataset(
@@ -41,11 +44,19 @@ def compose_coinbase_dataset(
     pair: TradingPair,
     raw_responses: Iterable[CoinbaseRawCandleResponse],
     created_at: datetime,
+    requested_start: datetime,
+    requested_end: datetime,
 ) -> CoinbaseHistoricalDataset:
     """Decode and normalize raw Coinbase chunks into one canonical dataset."""
     created_at = TypeAdapter(UtcDatetime).validate_python(created_at)
     preserved_responses = tuple(raw_responses)
     acquisition_range = _validate_acquisition_range(preserved_responses, pair)
+    build_candle_requests(pair=pair, start=requested_start, end=requested_end)
+    if acquisition_range is None:
+        if requested_start != requested_end:
+            raise ValueError("non-empty requested interval requires raw captures")
+    elif acquisition_range != (requested_start, requested_end):
+        raise ValueError("capture request ranges must match requested interval")
     normalized_chunks: list[tuple[Candle, ...]] = []
     for response in preserved_responses:
         boundary = TypeAdapter(UtcDatetime).validate_python(
@@ -76,12 +87,9 @@ def compose_coinbase_dataset(
         start_time = candles[0].open_time
         end_time = candles[-1].close_time
         missing_open_times = _find_missing_open_times(candles)
-    elif acquisition_range is not None:
-        start_time, end_time = acquisition_range
-        missing_open_times = ()
     else:
-        start_time = created_at
-        end_time = created_at
+        start_time = None
+        end_time = None
         missing_open_times = ()
 
     dataset_version = _build_dataset_version(
@@ -108,14 +116,27 @@ def compose_coinbase_dataset(
         candles=candles,
         manifest=manifest,
         raw_responses=preserved_responses,
+        acquisition=CoinbaseAcquisitionRecord(
+            schema_version="1",
+            dataset_version=dataset_version,
+            created_at=created_at,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            capture_ids=tuple(
+                sorted({coinbase_capture_id(r) for r in preserved_responses})
+            ),
+            missing_open_times=_requested_missing(
+                candles, requested_start, requested_end
+            ),
+        ),
     )
 
 
 def _build_dataset_version(
     *,
     pair: TradingPair,
-    start_time: datetime,
-    end_time: datetime,
+    start_time: datetime | None,
+    end_time: datetime | None,
     missing_open_times: tuple[datetime, ...],
     candles: tuple[Candle, ...],
 ) -> str:
@@ -125,8 +146,10 @@ def _build_dataset_version(
         "venue": Venue.COINBASE.value,
         "pair": pair.value,
         "timeframe": Timeframe.ONE_HOUR.value,
-        "start_time": _canonical_timestamp(start_time),
-        "end_time": _canonical_timestamp(end_time),
+        "start_time": _canonical_timestamp(start_time)
+        if start_time is not None
+        else None,
+        "end_time": _canonical_timestamp(end_time) if end_time is not None else None,
         "row_count": len(candles),
         "missing_open_times": [
             _canonical_timestamp(value) for value in missing_open_times
@@ -237,6 +260,19 @@ def _find_missing_open_times(candles: tuple[Candle, ...]) -> tuple[datetime, ...
     final_open_time = candles[-1].open_time
     while candidate < final_open_time:
         if candidate not in actual_open_times:
+            missing.append(candidate)
+        candidate += Timeframe.ONE_HOUR.duration
+    return tuple(missing)
+
+
+def _requested_missing(
+    candles: tuple[Candle, ...], start: datetime, end: datetime
+) -> tuple[datetime, ...]:
+    actual = {candle.open_time for candle in candles}
+    missing = []
+    candidate = start
+    while candidate < end:
+        if candidate not in actual:
             missing.append(candidate)
         candidate += Timeframe.ONE_HOUR.duration
     return tuple(missing)

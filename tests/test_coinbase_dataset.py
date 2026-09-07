@@ -67,6 +67,8 @@ def compose(
     return compose_coinbase_dataset(
         pair=pair,
         raw_responses=responses,
+        requested_start=min((r.request.start for r in responses), default=START),
+        requested_end=max((r.request.end for r in responses), default=START),
         created_at=created_at,
     )
 
@@ -312,11 +314,12 @@ def test_pair_changes_version() -> None:
     assert bitcoin.manifest.dataset_version != ether.manifest.dataset_version
 
 
-def test_empty_coverage_changes_version() -> None:
+def test_empty_requested_coverage_does_not_change_dataset_version() -> None:
     one_hour = compose([raw_response([])])
     two_hours = compose([raw_response([], request_end=START + timedelta(hours=2))])
 
-    assert one_hour.manifest.dataset_version != two_hours.manifest.dataset_version
+    assert one_hour.manifest.dataset_version == two_hours.manifest.dataset_version
+    assert one_hour.acquisition != two_hours.acquisition
 
 
 def test_gap_structure_changes_version() -> None:
@@ -399,8 +402,8 @@ def test_empty_raw_response_builds_valid_zero_row_manifest() -> None:
 
     assert result.candles == ()
     assert result.manifest.row_count == 0
-    assert result.manifest.start_time == START
-    assert result.manifest.end_time == request_end
+    assert result.manifest.start_time is None
+    assert result.manifest.end_time is None
     assert result.manifest.missing_open_times == ()
 
 
@@ -419,8 +422,8 @@ def test_contiguous_acquisition_ranges_are_valid_in_any_order(reverse: bool) -> 
 
     result = compose(responses)
 
-    assert result.manifest.start_time == START
-    assert result.manifest.end_time == START + timedelta(hours=3)
+    assert result.manifest.start_time is None
+    assert result.manifest.end_time is None
 
 
 @pytest.mark.parametrize(
@@ -445,8 +448,8 @@ def test_overlapping_and_repeated_acquisition_ranges_are_valid(
 
     result = compose(responses)
 
-    assert result.manifest.start_time == START
-    assert result.manifest.end_time == START + timedelta(hours=expected_end_hour)
+    assert result.manifest.start_time is None
+    assert result.manifest.end_time is None
 
 
 def test_disjoint_acquisition_ranges_are_rejected() -> None:
@@ -469,8 +472,8 @@ def test_no_raw_responses_builds_empty_manifest_at_supplied_created_time() -> No
     assert result.candles == ()
     assert result.raw_responses == ()
     assert result.manifest.row_count == 0
-    assert result.manifest.start_time == CREATED_AT
-    assert result.manifest.end_time == CREATED_AT
+    assert result.manifest.start_time is None
+    assert result.manifest.end_time is None
     assert result.manifest.missing_open_times == ()
 
 
@@ -568,3 +571,78 @@ def test_composition_revalidates_capture_utc_provenance() -> None:
     object.__setattr__(response, "acquisition_started_at", datetime(2026, 2, 1))
     with pytest.raises(ValueError, match="UTC"):
         compose([response])
+
+
+def test_acquisition_gaps_include_leading_internal_and_trailing_slots() -> None:
+    result = compose(
+        [raw_response([row(1), row(3)], request_end=START + timedelta(hours=5))]
+    )
+    assert result.acquisition.missing_open_times == tuple(
+        START + timedelta(hours=h) for h in (0, 2, 4)
+    )
+    assert result.manifest.missing_open_times == (START + timedelta(hours=2),)
+    assert result.manifest.start_time == START + timedelta(hours=1)
+    assert result.manifest.end_time == START + timedelta(hours=4)
+
+
+def test_all_empty_acquisition_has_all_requested_gaps() -> None:
+    result = compose([raw_response([], request_end=START + timedelta(hours=3))])
+    assert result.manifest.start_time is result.manifest.end_time is None
+    assert result.manifest.missing_open_times == ()
+    assert result.acquisition.missing_open_times == tuple(
+        START + timedelta(hours=h) for h in range(3)
+    )
+
+
+def test_zero_length_acquisition_preserves_requested_instant() -> None:
+    result = compose_coinbase_dataset(
+        pair=TradingPair.BTC_USD,
+        raw_responses=[],
+        created_at=CREATED_AT,
+        requested_start=START,
+        requested_end=START,
+    )
+    assert (
+        result.acquisition.requested_start == result.acquisition.requested_end == START
+    )
+    assert result.acquisition.capture_ids == result.acquisition.missing_open_times == ()
+    assert result.manifest.start_time is result.manifest.end_time is None
+
+
+def test_same_canonical_data_different_requests_have_distinct_acquisitions() -> None:
+    first = compose([raw_response([row(1)], request_end=START + timedelta(hours=2))])
+    second = compose([raw_response([row(1)], request_end=START + timedelta(hours=3))])
+    assert first.manifest == second.manifest
+    assert first.acquisition.acquisition_id != second.acquisition.acquisition_id
+
+
+def test_capture_ids_are_exact_unique_and_order_independent() -> None:
+    from crypteo.coinbase_capture import coinbase_capture_id
+
+    first = raw_response([row()])
+    second = raw_response(
+        [row(1)],
+        request_start=START + timedelta(hours=1),
+        request_end=START + timedelta(hours=2),
+    )
+    forward = compose([first, second, first])
+    reverse = compose([second, first])
+    assert forward.acquisition == reverse.acquisition
+    assert forward.acquisition.capture_ids == tuple(
+        sorted([coinbase_capture_id(first), coinbase_capture_id(second)])
+    )
+    assert forward.acquisition.dataset_version == forward.manifest.dataset_version
+
+
+@pytest.mark.parametrize("responses", [[], [raw_response([])]])
+def test_composition_rejects_unaccounted_request_ranges(
+    responses: list[CoinbaseRawCandleResponse],
+) -> None:
+    with pytest.raises(ValueError, match="requested interval"):
+        compose_coinbase_dataset(
+            pair=TradingPair.BTC_USD,
+            raw_responses=responses,
+            created_at=CREATED_AT,
+            requested_start=START,
+            requested_end=START + timedelta(hours=2),
+        )

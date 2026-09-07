@@ -4,12 +4,18 @@ import json
 import re
 from collections.abc import Iterable
 from datetime import datetime
-from hashlib import sha256
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
 from crypteo.coinbase import CoinbaseCandleRetriever, CoinbaseRawCandleResponse
+from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
+from crypteo.coinbase_capture import (
+    _capture_envelope,
+)
+from crypteo.coinbase_capture import (
+    coinbase_capture_id as coinbase_capture_id,
+)
 from crypteo.coinbase_dataset import (
     CoinbaseHistoricalDataset,
     compose_coinbase_dataset,
@@ -45,6 +51,49 @@ class CoinbaseLocalPersistence:
         _write_immutable(
             artifact_dir / "manifest.json",
             dataset.manifest.model_dump_json().encode(),
+        )
+
+    def persist_acquisition(self, dataset: CoinbaseHistoricalDataset) -> None:
+        """Publish acquisition provenance after verifying all referenced artifacts."""
+        record = dataset.acquisition
+        if record.dataset_version != dataset.manifest.dataset_version:
+            raise ValueError(
+                "acquisition dataset_version must match dataset manifest version"
+            )
+        expected_capture_ids = tuple(
+            sorted(
+                {coinbase_capture_id(response) for response in dataset.raw_responses}
+            )
+        )
+        if record.capture_ids != expected_capture_ids:
+            raise ValueError("acquisition capture_ids must match dataset raw responses")
+
+        canonical_dir = self.dataset_artifact_dir(record.dataset_version)
+        for name in ("candles.json", "manifest.json"):
+            if not (canonical_dir / name).is_file():
+                raise FileNotFoundError(
+                    f"canonical dataset artifact does not exist: {canonical_dir / name}"
+                )
+        for response in dataset.raw_responses:
+            raw_dir = self.raw_artifact_dir(response)
+            for name in ("body.json", "request.json"):
+                if not (raw_dir / name).is_file():
+                    raise FileNotFoundError(
+                        f"raw capture artifact does not exist: {raw_dir / name}"
+                    )
+
+        _write_immutable(
+            self.acquisition_artifact_dir(record) / "acquisition.json",
+            record.canonical_bytes(),
+        )
+
+    def acquisition_artifact_dir(self, record: CoinbaseAcquisitionRecord) -> Path:
+        return (
+            self._root
+            / "acquisitions"
+            / "coinbase"
+            / "sha256"
+            / record.acquisition_id.removeprefix("sha256:")
         )
 
     def raw_artifact_dir(self, response: CoinbaseRawCandleResponse) -> Path:
@@ -99,8 +148,11 @@ def ingest_coinbase_candles(
         pair=pair,
         raw_responses=raw_responses,
         created_at=created_at,
+        requested_start=start,
+        requested_end=end,
     )
     persistence.persist_dataset(dataset)
+    persistence.persist_acquisition(dataset)
     return dataset
 
 
@@ -114,33 +166,3 @@ def _write_immutable(path: Path, content: bytes) -> None:
             raise FileExistsError(
                 f"refusing to overwrite artifact with different content: {path}"
             ) from None
-
-
-def _utc_text(value: datetime) -> str:
-    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def _capture_envelope(response: CoinbaseRawCandleResponse) -> dict[str, object]:
-    request = response.request
-    return {
-        "capture_format_version": "1",
-        "request": {
-            "pair": request.pair.value,
-            "timeframe": request.timeframe.value,
-            "granularity": request.granularity,
-            "start": _utc_text(request.start),
-            "end": _utc_text(request.end),
-            "url": request.url,
-            "params": dict(request.params),
-        },
-        "acquisition_started_at": _utc_text(response.acquisition_started_at),
-        "body_sha256": sha256(response.body).hexdigest(),
-    }
-
-
-def coinbase_capture_id(response: CoinbaseRawCandleResponse) -> str:
-    """Hash canonical capture provenance and the digest of the unchanged body."""
-    envelope = json.dumps(
-        _capture_envelope(response), sort_keys=True, separators=(",", ":")
-    ).encode()
-    return f"sha256:{sha256(envelope).hexdigest()}"
