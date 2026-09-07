@@ -245,10 +245,13 @@ def test_retriever_preserves_raw_responses_and_request_metadata() -> None:
     transport = FakeTransport(raw_responses)
     retriever = CoinbaseCandleRetriever(transport)
 
-    results = retriever.retrieve(
-        pair=TradingPair.SOL_USD,
-        start=START,
-        end=START + timedelta(hours=301),
+    results = tuple(
+        retriever.retrieve(
+            pair=TradingPair.SOL_USD,
+            start=START,
+            end=START + timedelta(hours=301),
+            acquisition_started_at=START + timedelta(hours=301),
+        )
     )
 
     assert [item.body for item in results] == raw_responses
@@ -264,25 +267,90 @@ def test_retriever_preserves_raw_responses_and_request_metadata() -> None:
 def test_replaceable_transport_makes_no_live_network_request() -> None:
     transport = FakeTransport([b"[]"])
 
-    result = CoinbaseCandleRetriever(transport).retrieve(
-        pair=TradingPair.BTC_USD,
-        start=START,
-        end=START + timedelta(hours=1),
+    result = tuple(
+        CoinbaseCandleRetriever(transport).retrieve(
+            pair=TradingPair.BTC_USD,
+            start=START,
+            end=START + timedelta(hours=1),
+            acquisition_started_at=START + timedelta(hours=1),
+        )
     )
 
     assert result[0].body == b"[]"
     assert len(transport.calls) == 1
 
 
-def test_later_chunk_transport_failure_propagates_without_partial_result() -> None:
+def test_later_chunk_transport_failure_preserves_incremental_result() -> None:
     transport = FailingSecondTransport()
-    retriever = CoinbaseCandleRetriever(transport)
-
+    results = CoinbaseCandleRetriever(transport).retrieve(
+        pair=TradingPair.BTC_USD,
+        start=START,
+        end=START + timedelta(hours=301),
+        acquisition_started_at=START + timedelta(hours=301),
+    )
+    assert transport.calls == 0
+    assert next(results).body == b"[]"
+    assert transport.calls == 1
     with pytest.raises(RuntimeError, match="transport failed"):
-        retriever.retrieve(
+        next(results)
+    assert transport.calls == 2
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        START + timedelta(hours=300),
+        datetime(2026, 2, 1),
+        datetime(2026, 2, 1, tzinfo=timezone(timedelta(hours=8))),
+        "2026-02-01T00:00:00Z",
+        1769904000,
+    ],
+)
+def test_invalid_acquisition_boundary_fails_before_any_transport(
+    boundary: Any,
+) -> None:
+    transport = FakeTransport([b"[]", b"[]"])
+    with pytest.raises(ValueError):
+        tuple(
+            CoinbaseCandleRetriever(transport).retrieve(
+                pair=TradingPair.BTC_USD,
+                start=START,
+                end=START + timedelta(hours=301),
+                acquisition_started_at=boundary,
+            )
+        )
+    assert transport.calls == []
+
+
+def test_all_chunks_share_exact_acquisition_boundary() -> None:
+    boundary = START + timedelta(hours=301)
+    results = tuple(
+        CoinbaseCandleRetriever(FakeTransport([b"[]", b"[]"])).retrieve(
             pair=TradingPair.BTC_USD,
             start=START,
-            end=START + timedelta(hours=301),
+            end=boundary,
+            acquisition_started_at=boundary,
         )
+    )
+    assert len(results) == 2
+    assert all(item.acquisition_started_at == boundary for item in results)
 
-    assert transport.calls == 2
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        datetime(2026, 2, 1),
+        datetime(2026, 2, 1, tzinfo=timezone(timedelta(hours=8))),
+        "2026-02-01T00:00:00Z",
+        1769904000,
+    ],
+)
+def test_raw_capture_requires_strict_utc_acquisition_provenance(boundary: Any) -> None:
+    from crypteo.coinbase import CoinbaseRawCandleResponse
+
+    with pytest.raises(ValidationError):
+        CoinbaseRawCandleResponse(
+            request=request(),
+            body=b"[]",
+            acquisition_started_at=boundary,
+        )

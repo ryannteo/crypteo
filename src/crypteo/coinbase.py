@@ -1,6 +1,6 @@
 """Minimal Coinbase Exchange historical candle retrieval boundary."""
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, cast
@@ -85,6 +85,14 @@ class CoinbaseRawCandleResponse:
 
     request: CoinbaseCandleRequest
     body: bytes
+    acquisition_started_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "acquisition_started_at",
+            _UTC_DATETIME_ADAPTER.validate_python(self.acquisition_started_at),
+        )
 
 
 class CoinbaseCandleRetriever:
@@ -99,19 +107,22 @@ class CoinbaseCandleRetriever:
         pair: TradingPair,
         start: datetime,
         end: datetime,
-    ) -> tuple[CoinbaseRawCandleResponse, ...]:
+        acquisition_started_at: datetime,
+    ) -> Iterator[CoinbaseRawCandleResponse]:
         requests = build_candle_requests(
             pair=pair,
             start=start,
             end=end,
         )
-        return tuple(
-            CoinbaseRawCandleResponse(
+        boundary = _UTC_DATETIME_ADAPTER.validate_python(acquisition_started_at)
+        if any(request.end > boundary for request in requests):
+            raise ValueError("request end must be at or before acquisition_started_at")
+        for request in requests:
+            yield CoinbaseRawCandleResponse(
                 request=request,
                 body=self._transport.get(request.url, request.params),
+                acquisition_started_at=boundary,
             )
-            for request in requests
-        )
 
 
 def build_candle_requests(

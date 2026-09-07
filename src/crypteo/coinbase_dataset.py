@@ -8,8 +8,13 @@ from decimal import Decimal
 from hashlib import sha256
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from crypteo.coinbase import CoinbaseRawCandleResponse
-from crypteo.coinbase_normalization import normalize_coinbase_candles
+from crypteo.coinbase_normalization import (
+    coinbase_row_open_time,
+    normalize_coinbase_candles,
+)
 from crypteo.domain.market import (
     Candle,
     DatasetManifest,
@@ -17,6 +22,7 @@ from crypteo.domain.market import (
     TradingPair,
     Venue,
 )
+from crypteo.domain.time import UtcDatetime
 
 COINBASE_DATASET_SOURCE = "coinbase_exchange_candles"
 
@@ -37,19 +43,32 @@ def compose_coinbase_dataset(
     created_at: datetime,
 ) -> CoinbaseHistoricalDataset:
     """Decode and normalize raw Coinbase chunks into one canonical dataset."""
+    created_at = TypeAdapter(UtcDatetime).validate_python(created_at)
     preserved_responses = tuple(raw_responses)
     acquisition_range = _validate_acquisition_range(preserved_responses, pair)
     normalized_chunks: list[tuple[Candle, ...]] = []
     for response in preserved_responses:
+        boundary = TypeAdapter(UtcDatetime).validate_python(
+            response.acquisition_started_at
+        )
+        if response.request.end > boundary:
+            raise ValueError("request end exceeds acquisition_started_at")
+        if created_at < boundary:
+            raise ValueError("created_at precedes acquisition_started_at")
         candles = normalize_coinbase_candles(
             pair=pair,
-            rows=_decode_candle_rows(response.body),
+            rows=[
+                row
+                for row in _decode_candle_rows(response.body)
+                if response.request.start
+                <= coinbase_row_open_time(row)
+                < response.request.end
+            ],
         )
-        if any(
-            not response.request.start <= candle.open_time < response.request.end
-            for candle in candles
-        ):
-            raise ValueError("Coinbase candle falls outside its request range")
+        if any(candle.close_time > boundary for candle in candles):
+            raise ValueError(
+                "retained candle close_time exceeds acquisition_started_at"
+            )
         normalized_chunks.append(candles)
 
     candles = _merge_candles(normalized_chunks)

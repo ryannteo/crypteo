@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Iterable
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -28,16 +29,7 @@ class CoinbaseLocalPersistence:
     def persist_raw(self, responses: Iterable[CoinbaseRawCandleResponse]) -> None:
         for response in responses:
             artifact_dir = self.raw_artifact_dir(response)
-            request = response.request
-            metadata = {
-                "pair": request.pair.value,
-                "timeframe": request.timeframe.value,
-                "granularity": request.granularity,
-                "start": _utc_text(request.start),
-                "end": _utc_text(request.end),
-                "url": request.url,
-                "params": dict(request.params),
-            }
+            metadata = _capture_envelope(response)
             _write_immutable(artifact_dir / "body.json", response.body)
             _write_immutable(
                 artifact_dir / "request.json",
@@ -57,14 +49,15 @@ class CoinbaseLocalPersistence:
 
     def raw_artifact_dir(self, response: CoinbaseRawCandleResponse) -> Path:
         request = response.request
-        request_identity = f"{_path_time(request.start)}_{_path_time(request.end)}"
+
         return (
             self._root
             / "raw"
             / "coinbase"
             / request.pair.value
             / request.timeframe.value
-            / request_identity
+            / "sha256"
+            / coinbase_capture_id(response).removeprefix("sha256:")
         )
 
     def dataset_artifact_dir(self, dataset_version: str) -> Path:
@@ -89,11 +82,19 @@ def ingest_coinbase_candles(
     start: datetime,
     end: datetime,
     created_at: datetime,
+    acquisition_started_at: datetime,
 ) -> CoinbaseHistoricalDataset:
     """Retrieve, persist, compose, and persist one Coinbase candle dataset."""
     persistence = CoinbaseLocalPersistence(artifact_root)
-    raw_responses = retriever.retrieve(pair=pair, start=start, end=end)
-    persistence.persist_raw(raw_responses)
+    raw_responses = []
+    for response in retriever.retrieve(
+        pair=pair,
+        start=start,
+        end=end,
+        acquisition_started_at=acquisition_started_at,
+    ):
+        persistence.persist_raw((response,))
+        raw_responses.append(response)
     dataset = compose_coinbase_dataset(
         pair=pair,
         raw_responses=raw_responses,
@@ -119,5 +120,27 @@ def _utc_text(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _path_time(value: datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S.%fZ")
+def _capture_envelope(response: CoinbaseRawCandleResponse) -> dict[str, object]:
+    request = response.request
+    return {
+        "capture_format_version": "1",
+        "request": {
+            "pair": request.pair.value,
+            "timeframe": request.timeframe.value,
+            "granularity": request.granularity,
+            "start": _utc_text(request.start),
+            "end": _utc_text(request.end),
+            "url": request.url,
+            "params": dict(request.params),
+        },
+        "acquisition_started_at": _utc_text(response.acquisition_started_at),
+        "body_sha256": sha256(response.body).hexdigest(),
+    }
+
+
+def coinbase_capture_id(response: CoinbaseRawCandleResponse) -> str:
+    """Hash canonical capture provenance and the digest of the unchanged body."""
+    envelope = json.dumps(
+        _capture_envelope(response), sort_keys=True, separators=(",", ":")
+    ).encode()
+    return f"sha256:{sha256(envelope).hexdigest()}"

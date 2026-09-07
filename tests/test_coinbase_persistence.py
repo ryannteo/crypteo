@@ -60,6 +60,7 @@ def response(
     end: datetime = START + timedelta(hours=1),
 ) -> CoinbaseRawCandleResponse:
     return CoinbaseRawCandleResponse(
+        acquisition_started_at=CREATED_AT,
         request=CoinbaseCandleRequest(
             pair=TradingPair.BTC_USD,
             start=start,
@@ -87,7 +88,7 @@ def test_persists_exact_raw_body_and_request_metadata(tmp_path: Path) -> None:
 
     artifact_dir = persistence.raw_artifact_dir(raw)
     assert (artifact_dir / "body.json").read_bytes() == raw.body
-    assert json.loads((artifact_dir / "request.json").read_bytes()) == {
+    assert json.loads((artifact_dir / "request.json").read_bytes())["request"] == {
         "pair": "BTC-USD",
         "timeframe": "1h",
         "granularity": 3600,
@@ -130,6 +131,7 @@ def test_raw_artifacts_survive_later_normalization_failure(tmp_path: Path) -> No
             pair=TradingPair.BTC_USD,
             start=START,
             end=START + timedelta(hours=1),
+            acquisition_started_at=CREATED_AT,
             created_at=CREATED_AT,
         )
 
@@ -149,15 +151,20 @@ def test_repeated_identical_raw_persistence_is_safe(tmp_path: Path) -> None:
     assert (persistence.raw_artifact_dir(raw) / "body.json").read_bytes() == raw.body
 
 
-def test_conflicting_raw_overwrite_is_rejected(tmp_path: Path) -> None:
+def test_revised_raw_bodies_coexist(tmp_path: Path) -> None:
     persistence = CoinbaseLocalPersistence(tmp_path)
     original = response(b"[]")
     conflicting = response(body([0]))
 
     persistence.persist_raw([original])
 
-    with pytest.raises(FileExistsError, match="different content"):
-        persistence.persist_raw([conflicting])
+    persistence.persist_raw([conflicting])
+    assert persistence.raw_artifact_dir(original) != persistence.raw_artifact_dir(
+        conflicting
+    )
+    assert (
+        persistence.raw_artifact_dir(conflicting) / "body.json"
+    ).read_bytes() == conflicting.body
 
     assert (persistence.raw_artifact_dir(original) / "body.json").read_bytes() == b"[]"
 
@@ -176,6 +183,7 @@ def test_success_persists_versioned_candles_and_manifest_that_round_trip(
         pair=TradingPair.BTC_USD,
         start=START,
         end=START + timedelta(hours=1),
+        acquisition_started_at=CREATED_AT,
         created_at=CREATED_AT,
     )
     persistence = CoinbaseLocalPersistence(tmp_path)
@@ -205,6 +213,7 @@ def test_repeated_identical_canonical_persistence_is_safe(tmp_path: Path) -> Non
         pair=TradingPair.BTC_USD,
         start=START,
         end=START + timedelta(hours=1),
+        acquisition_started_at=CREATED_AT,
         created_at=CREATED_AT,
     )
     persistence = CoinbaseLocalPersistence(tmp_path)
@@ -224,6 +233,7 @@ def test_conflicting_canonical_overwrite_is_rejected(tmp_path: Path) -> None:
         pair=TradingPair.BTC_USD,
         start=START,
         end=START + timedelta(hours=1),
+        acquisition_started_at=CREATED_AT,
         created_at=CREATED_AT,
     )
     persistence = CoinbaseLocalPersistence(tmp_path)
@@ -310,6 +320,7 @@ def test_fixture_end_to_end_persists_gap_dataset(tmp_path: Path) -> None:
         pair=TradingPair.BTC_USD,
         start=START,
         end=START + timedelta(hours=3),
+        acquisition_started_at=CREATED_AT,
         created_at=CREATED_AT,
     )
     persistence = CoinbaseLocalPersistence(tmp_path)
@@ -326,3 +337,76 @@ def test_fixture_end_to_end_persists_gap_dataset(tmp_path: Path) -> None:
     assert dataset.manifest.dataset_version.startswith("sha256:")
     assert (canonical_dir / "candles.json").is_file()
     assert (canonical_dir / "manifest.json").is_file()
+
+
+def test_successful_capture_is_persisted_before_later_transport_failure(
+    tmp_path: Path,
+) -> None:
+    first = response(body([0]), end=START + timedelta(hours=300))
+    persistence = CoinbaseLocalPersistence(tmp_path)
+
+    class FailingTransport:
+        calls = 0
+
+        def get(self, url: str, params: Mapping[str, str | int]) -> bytes:
+            self.calls += 1
+            if self.calls == 1:
+                return first.body
+            artifact_dir = persistence.raw_artifact_dir(first)
+            assert (artifact_dir / "body.json").read_bytes() == first.body
+            assert (artifact_dir / "request.json").is_file()
+            raise RuntimeError("later transport failure")
+
+    transport = FailingTransport()
+    with pytest.raises(RuntimeError, match="later transport"):
+        ingest_coinbase_candles(
+            retriever=CoinbaseCandleRetriever(transport),
+            artifact_root=tmp_path,
+            pair=TradingPair.BTC_USD,
+            start=START,
+            end=START + timedelta(hours=301),
+            acquisition_started_at=CREATED_AT,
+            created_at=CREATED_AT,
+        )
+    assert transport.calls == 2
+    assert (
+        persistence.raw_artifact_dir(first) / "body.json"
+    ).read_bytes() == first.body
+    assert not (tmp_path / "canonical").exists()
+
+
+def test_capture_id_matches_persisted_canonical_envelope(tmp_path: Path) -> None:
+    from hashlib import sha256
+
+    from crypteo.coinbase_persistence import coinbase_capture_id
+
+    raw = response(body([0]))
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_raw([raw])
+    artifact_dir = persistence.raw_artifact_dir(raw)
+    envelope_bytes = (artifact_dir / "request.json").read_bytes()
+    envelope = json.loads(envelope_bytes)
+    assert envelope["capture_format_version"] == "1"
+    assert envelope["acquisition_started_at"] == "2026-02-01T00:00:00.000000Z"
+    assert envelope["body_sha256"] == sha256(raw.body).hexdigest()
+    digest = sha256(envelope_bytes).hexdigest()
+    assert coinbase_capture_id(raw) == f"sha256:{digest}"
+    assert (
+        artifact_dir
+        == tmp_path / "raw" / "coinbase" / "BTC-USD" / "1h" / "sha256" / digest
+    )
+    before = {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in artifact_dir.iterdir()
+    }
+    persistence.persist_raw([raw])
+    assert before == {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in artifact_dir.iterdir()
+    }
+
+
+def test_acquisition_provenance_changes_capture_identity(tmp_path: Path) -> None:
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    first = response(b"[]")
+    later = replace(first, acquisition_started_at=CREATED_AT + timedelta(seconds=1))
+    persistence.persist_raw([first, later])
+    assert persistence.raw_artifact_dir(first) != persistence.raw_artifact_dir(later)

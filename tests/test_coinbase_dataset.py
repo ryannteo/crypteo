@@ -48,6 +48,7 @@ def raw_response(
     request_end: datetime = START + timedelta(hours=1),
 ) -> CoinbaseRawCandleResponse:
     return CoinbaseRawCandleResponse(
+        acquisition_started_at=CREATED_AT,
         request=CoinbaseCandleRequest(
             pair=pair,
             start=request_start,
@@ -77,7 +78,13 @@ def test_decodes_fractional_json_numbers_without_precision_loss() -> None:
     ).encode()
     response = raw_response([])
 
-    result = compose([CoinbaseRawCandleResponse(request=response.request, body=body)])
+    result = compose(
+        [
+            CoinbaseRawCandleResponse(
+                acquisition_started_at=CREATED_AT, request=response.request, body=body
+            )
+        ]
+    )
 
     assert result.candles[0].close == Decimal(precise)
 
@@ -93,7 +100,9 @@ def test_decodes_ordinary_json_integer_exactly() -> None:
 @pytest.mark.parametrize("body", [b"not json", b"[", b'"unterminated'])
 def test_rejects_malformed_json(body: bytes) -> None:
     response = raw_response([])
-    malformed = CoinbaseRawCandleResponse(request=response.request, body=body)
+    malformed = CoinbaseRawCandleResponse(
+        acquisition_started_at=CREATED_AT, request=response.request, body=body
+    )
 
     with pytest.raises(ValueError, match="valid JSON"):
         compose([malformed])
@@ -105,7 +114,15 @@ def test_rejects_nonstandard_non_finite_json_numbers(constant: str) -> None:
     body = f"[[{int(START.timestamp())},99,105,100,103,{constant}]]".encode()
 
     with pytest.raises(ValueError, match="invalid JSON numeric constant"):
-        compose([CoinbaseRawCandleResponse(request=response.request, body=body)])
+        compose(
+            [
+                CoinbaseRawCandleResponse(
+                    acquisition_started_at=CREATED_AT,
+                    request=response.request,
+                    body=body,
+                )
+            ]
+        )
 
 
 @pytest.mark.parametrize("payload", [{}, "rows", 1, None, True])
@@ -171,14 +188,12 @@ def test_final_candle_strictly_inside_request_range_is_valid() -> None:
     assert result.candles[0].open_time == START + timedelta(hours=2)
 
 
-def test_rejects_candle_before_its_request_start() -> None:
-    with pytest.raises(ValueError, match="outside its request range"):
-        compose([raw_response([row(-1)])])
-
-
-def test_rejects_candle_at_exact_request_end() -> None:
-    with pytest.raises(ValueError, match="outside its request range"):
-        compose([raw_response([row(1)])])
+@pytest.mark.parametrize("hour", [-1, 1, 2])
+def test_provider_extras_are_ignored(hour: int) -> None:
+    response = raw_response([row(hour), row(0)])
+    result = compose([response])
+    assert [candle.open_time for candle in result.candles] == [START]
+    assert result.raw_responses == (response,)
 
 
 def test_cross_chunk_exact_duplicates_collapse() -> None:
@@ -266,10 +281,18 @@ def test_numerically_equal_decimal_spellings_have_same_version() -> None:
     decimal_body = f"[[{timestamp},99.0,105.00,100.0,100.00,12.000]]".encode()
 
     integer_result = compose(
-        [CoinbaseRawCandleResponse(request=request, body=integer_body)]
+        [
+            CoinbaseRawCandleResponse(
+                acquisition_started_at=CREATED_AT, request=request, body=integer_body
+            )
+        ]
     )
     decimal_result = compose(
-        [CoinbaseRawCandleResponse(request=request, body=decimal_body)]
+        [
+            CoinbaseRawCandleResponse(
+                acquisition_started_at=CREATED_AT, request=request, body=decimal_body
+            )
+        ]
     )
 
     assert integer_result.candles == decimal_result.candles
@@ -449,3 +472,99 @@ def test_no_raw_responses_builds_empty_manifest_at_supplied_created_time() -> No
     assert result.manifest.start_time == CREATED_AT
     assert result.manifest.end_time == CREATED_AT
     assert result.manifest.missing_open_times == ()
+
+
+def test_extras_cannot_fill_another_requests_missing_owned_slot() -> None:
+    first = raw_response([row(0), row(1)])
+    second = raw_response(
+        [row(2)],
+        request_start=START + timedelta(hours=1),
+        request_end=START + timedelta(hours=3),
+    )
+    result = compose([first, second])
+    assert [candle.open_time for candle in result.candles] == [
+        START,
+        START + timedelta(hours=2),
+    ]
+    assert result.manifest.missing_open_times == (START + timedelta(hours=1),)
+
+
+@pytest.mark.parametrize("hour", [-1, 1, 2])
+def test_excluded_rows_do_not_undergo_ohlcv_validation(hour: int) -> None:
+    extra: list[object] = [
+        int((START + timedelta(hours=hour)).timestamp()),
+        None,
+        {},
+        -1,
+        False,
+        "bad",
+    ]
+    assert len(compose([raw_response([extra, row()])]).candles) == 1
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        [0, 1],
+        "bad",
+        {},
+        [None, 1, 2, 1, 1, 1],
+        [True, 1, 2, 1, 1, 1],
+        [10**100, 1, 2, 1, 1, 1],
+        ["1767225600", 1, 2, 1, 1, 1],
+    ],
+)
+def test_unusable_extra_structure_or_timestamp_fails(bad_row: object) -> None:
+    with pytest.raises(ValueError):
+        compose([raw_response([row(), bad_row])])
+
+
+def test_retained_rows_still_require_valid_ohlcv() -> None:
+    with pytest.raises(ValueError):
+        compose([raw_response([[int(START.timestamp()), 1, 2, -1, 1, 1]])])
+
+
+def test_composition_accepts_exact_completion_and_creation_boundary() -> None:
+    from dataclasses import replace
+
+    boundary = START + timedelta(hours=1)
+    response = replace(raw_response([row()]), acquisition_started_at=boundary)
+    result = compose([response], created_at=boundary)
+    assert result.candles[0].close_time == boundary
+    assert result.candles[0].available_at == boundary
+
+
+def test_composition_rejects_request_after_supplied_acquisition_boundary() -> None:
+    from dataclasses import replace
+
+    response = replace(raw_response([]), acquisition_started_at=START)
+    with pytest.raises(ValueError, match="request end"):
+        compose([response])
+
+
+def test_composition_rejects_creation_before_any_capture() -> None:
+    with pytest.raises(ValueError, match="created_at"):
+        compose([raw_response([row()])], created_at=CREATED_AT - timedelta(seconds=1))
+
+
+def test_composition_independently_checks_retained_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candle = normalize_coinbase_candles(pair=TradingPair.BTC_USD, rows=[row()])[0]
+    future = candle.model_copy(update={"close_time": CREATED_AT + timedelta(hours=1)})
+
+    def invalid_normalizer(*, pair: TradingPair, rows: object) -> tuple[Candle, ...]:
+        return (future,)
+
+    monkeypatch.setattr(
+        dataset_module, "normalize_coinbase_candles", invalid_normalizer
+    )
+    with pytest.raises(ValueError, match="close_time"):
+        compose([raw_response([row()])])
+
+
+def test_composition_revalidates_capture_utc_provenance() -> None:
+    response = raw_response([])
+    object.__setattr__(response, "acquisition_started_at", datetime(2026, 2, 1))
+    with pytest.raises(ValueError, match="UTC"):
+        compose([response])

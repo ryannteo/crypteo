@@ -35,14 +35,19 @@ def normalize_coinbase_candles(
     )
 
 
-def _normalize_row(pair: TradingPair, row: object) -> Candle:
+def coinbase_row_open_time(row: object) -> datetime:
+    """Validate row structure and timestamp without inspecting OHLCV values."""
     if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
         raise ValueError("Coinbase candle row must be a sequence")
     if len(row) != 6:
         raise ValueError("Coinbase candle row must contain exactly six values")
+    return _parse_timestamp(row[0])
 
-    timestamp, low, high, open_price, close, volume = row
-    open_time = _parse_timestamp(timestamp)
+
+def _normalize_row(pair: TradingPair, row: object) -> Candle:
+    open_time = coinbase_row_open_time(row)
+    assert isinstance(row, Sequence)
+    _, low, high, open_price, close, volume = row
     close_time = open_time + Timeframe.ONE_HOUR.duration
     return Candle(
         venue=Venue.COINBASE,
