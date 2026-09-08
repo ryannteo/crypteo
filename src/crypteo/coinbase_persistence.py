@@ -3,6 +3,7 @@
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -18,9 +19,10 @@ from crypteo.coinbase_capture import (
 )
 from crypteo.coinbase_dataset import (
     CoinbaseHistoricalDataset,
+    canonical_dataset_artifacts,
     compose_coinbase_dataset,
 )
-from crypteo.domain.market import Candle, TradingPair
+from crypteo.domain.market import Candle, DatasetManifest, TradingPair
 
 _CANDLES_ADAPTER = TypeAdapter(tuple[Candle, ...])
 _DATASET_VERSION_PATTERN = re.compile(r"sha256:([0-9a-f]{64})")
@@ -42,16 +44,39 @@ class CoinbaseLocalPersistence:
                 json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode(),
             )
 
-    def persist_dataset(self, dataset: CoinbaseHistoricalDataset) -> None:
+    def persist_dataset(self, dataset: CoinbaseHistoricalDataset) -> DatasetManifest:
+        """Validate and persist canonical content, returning the first manifest."""
         artifact_dir = self.dataset_artifact_dir(dataset.manifest.dataset_version)
+        manifest, candle_bytes = canonical_dataset_artifacts(
+            dataset.candles, dataset.manifest
+        )
+        if artifact_dir.exists():
+            stored_manifest = DatasetManifest.model_validate_json(
+                (artifact_dir / "manifest.json").read_bytes()
+            )
+            stored_candles = _CANDLES_ADAPTER.validate_json(
+                (artifact_dir / "candles.json").read_bytes()
+            )
+            effective_manifest, stored_bytes = canonical_dataset_artifacts(
+                stored_candles, stored_manifest
+            )
+            if (
+                effective_manifest.dataset_version != manifest.dataset_version
+                or stored_bytes != candle_bytes
+            ):
+                raise ValueError(
+                    "stored canonical content differs from incoming dataset"
+                )
+            return effective_manifest
         _write_immutable(
             artifact_dir / "candles.json",
-            _CANDLES_ADAPTER.dump_json(dataset.candles),
+            candle_bytes,
         )
         _write_immutable(
             artifact_dir / "manifest.json",
-            dataset.manifest.model_dump_json().encode(),
+            manifest.model_dump_json().encode(),
         )
+        return manifest
 
     def persist_acquisition(self, dataset: CoinbaseHistoricalDataset) -> None:
         """Publish acquisition provenance after verifying all referenced artifacts."""
@@ -151,7 +176,7 @@ def ingest_coinbase_candles(
         requested_start=start,
         requested_end=end,
     )
-    persistence.persist_dataset(dataset)
+    dataset = replace(dataset, manifest=persistence.persist_dataset(dataset))
     persistence.persist_acquisition(dataset)
     return dataset
 

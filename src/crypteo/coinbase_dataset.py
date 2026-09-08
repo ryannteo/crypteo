@@ -154,22 +154,7 @@ def _build_dataset_version(
         "missing_open_times": [
             _canonical_timestamp(value) for value in missing_open_times
         ],
-        "candles": [
-            {
-                "venue": candle.venue.value,
-                "pair": candle.pair.value,
-                "timeframe": candle.timeframe.value,
-                "open_time": _canonical_timestamp(candle.open_time),
-                "close_time": _canonical_timestamp(candle.close_time),
-                "available_at": _canonical_timestamp(candle.available_at),
-                "open": _canonical_decimal(candle.open),
-                "high": _canonical_decimal(candle.high),
-                "low": _canonical_decimal(candle.low),
-                "close": _canonical_decimal(candle.close),
-                "volume": _canonical_decimal(candle.volume),
-            }
-            for candle in candles
-        ],
+        "candles": _canonical_candle_rows(candles),
     }
     canonical_json = json.dumps(
         hash_input,
@@ -177,6 +162,73 @@ def _build_dataset_version(
         separators=(",", ":"),
     ).encode()
     return f"sha256:{sha256(canonical_json).hexdigest()}"
+
+
+def _canonical_candle_rows(candles: tuple[Candle, ...]) -> list[dict[str, str]]:
+    """The candle representation shared by dataset hashing and persistence."""
+    return [
+        {
+            "venue": candle.venue.value,
+            "pair": candle.pair.value,
+            "timeframe": candle.timeframe.value,
+            "open_time": _canonical_timestamp(candle.open_time),
+            "close_time": _canonical_timestamp(candle.close_time),
+            "available_at": _canonical_timestamp(candle.available_at),
+            "open": _canonical_decimal(candle.open),
+            "high": _canonical_decimal(candle.high),
+            "low": _canonical_decimal(candle.low),
+            "close": _canonical_decimal(candle.close),
+            "volume": _canonical_decimal(candle.volume),
+        }
+        for candle in sorted(candles, key=lambda candle: candle.open_time)
+    ]
+
+
+def canonical_dataset_artifacts(
+    candles: tuple[Candle, ...], manifest: DatasetManifest
+) -> tuple[DatasetManifest, bytes]:
+    """Validate canonical identity and return the manifest and canonical candles.
+
+    Revalidate model fields as well, since model_copy/model_construct can bypass
+    domain validation. Acquisition provenance is deliberately outside this check.
+    """
+    manifest = DatasetManifest.model_validate(manifest.model_dump())
+    candles = tuple(
+        sorted(
+            (Candle.model_validate(candle.model_dump()) for candle in candles),
+            key=lambda candle: candle.open_time,
+        )
+    )
+    if len({candle.open_time for candle in candles}) != len(candles):
+        raise ValueError("canonical candles must have unique open times")
+    if manifest.source != COINBASE_DATASET_SOURCE or any(
+        (candle.venue, candle.pair, candle.timeframe)
+        != (manifest.venue, manifest.pair, manifest.timeframe)
+        for candle in candles
+    ):
+        raise ValueError("canonical manifest/candle identity mismatch")
+    start_time = candles[0].open_time if candles else None
+    end_time = candles[-1].close_time if candles else None
+    gaps = _find_missing_open_times(candles) if candles else ()
+    if (
+        manifest.start_time != start_time
+        or manifest.end_time != end_time
+        or manifest.row_count != len(candles)
+        or manifest.missing_open_times != gaps
+    ):
+        raise ValueError("canonical manifest/candle coverage mismatch")
+    version = _build_dataset_version(
+        pair=manifest.pair,
+        start_time=start_time,
+        end_time=end_time,
+        missing_open_times=gaps,
+        candles=candles,
+    )
+    if manifest.dataset_version != version:
+        raise ValueError("canonical content does not match dataset_version")
+    return manifest, json.dumps(
+        _canonical_candle_rows(candles), sort_keys=True, separators=(",", ":")
+    ).encode()
 
 
 def _canonical_timestamp(value: datetime) -> str:

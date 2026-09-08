@@ -61,7 +61,7 @@ The capture ID is `sha256:` followed by the SHA-256 of that envelope encoded as
 UTF-8 JSON with sorted keys and compact separators. Provenance timestamps use UTC
 `Z` and six fractional digits. Identical captures are idempotent; revised bodies
 or acquisition boundaries coexist. Existing request-only raw directories are not
-migrated. Dataset schema version remains "1"; canonical persistence is unchanged.
+migrated. Dataset schema version remains "1".
 
 Composition now requires explicit `requested_start` and `requested_end`.
 Capture request ranges must account for that interval; no captures represent only
@@ -89,7 +89,19 @@ Raw and canonical paths remain as documented above and
 `persist_acquisition(dataset)` verifies that the record matches the dataset's
 manifest and exact raw-response capture IDs, and that both canonical files and
 both files for every referenced raw capture already exist before publishing.
-Existing canonical creation-time conflicts and serialization behavior are
-unchanged; a canonical conflict prevents acquisition publication. Artifact writes
-are not a crash-atomic transaction, so a failure may leave raw or canonical
-artifacts without a completed acquisition record.
+`persist_dataset(dataset) -> DatasetManifest` returns the effective stored
+manifest. New candle artifacts use the same representation as dataset hashing:
+chronological rows, UTC timestamps with six fractional digits, and exact Decimal
+strings with insignificant trailing zeros removed without Decimal-context rounding.
+Creation time and acquisition provenance remain outside canonical dataset identity.
+
+Existing canonical artifacts are loaded and schema-validated, their coverage and
+market identity are checked against their candles, and their dataset version is
+recomputed before semantic comparison with incoming content. Equivalent spellings,
+formatting, and later creation times reuse existing artifacts without rewriting
+them. Ingestion returns the first persisted canonical manifest while preserving
+the current acquisition's own creation time and identity. Corrupt, mismatched, or
+incomplete canonical artifacts fail closed and prevent acquisition publication.
+No artifacts are migrated or repaired automatically. Writes are not a crash-atomic
+transaction, so a failure may leave raw or canonical artifacts without a completed
+acquisition record; concurrent writers are not coordinated.
