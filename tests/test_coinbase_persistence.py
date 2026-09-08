@@ -743,6 +743,10 @@ def test_existing_semantically_equivalent_encoding_is_validated_without_rewrite(
         )
         == dataset.manifest
     )
+    persistence.persist_raw(dataset.raw_responses)
+    persistence.persist_acquisition(
+        replace(dataset, candles=tuple(reversed(dataset.candles)))
+    )
     assert path.read_bytes() == alternate
 
 
@@ -770,6 +774,7 @@ def test_corrupted_canonical_artifacts_fail_closed_without_overwrite(
     dataset = canonical_dataset()
     persistence = CoinbaseLocalPersistence(tmp_path)
     persistence.persist_dataset(dataset)
+    persistence.persist_raw(dataset.raw_responses)
     artifact_dir = persistence.dataset_artifact_dir(dataset.manifest.dataset_version)
     path = artifact_dir / artifact
     payload = json.loads(path.read_bytes())
@@ -802,6 +807,8 @@ def test_corrupted_canonical_artifacts_fail_closed_without_overwrite(
     }
     with pytest.raises(ValueError):
         persistence.persist_dataset(dataset)
+    with pytest.raises(ValueError):
+        persistence.persist_acquisition(dataset)
     assert before == {name: (artifact_dir / name).read_bytes() for name in before}
     assert not (tmp_path / "acquisitions").exists()
 
@@ -826,10 +833,13 @@ def test_incomplete_existing_canonical_artifacts_are_not_repaired(
     dataset = canonical_dataset()
     persistence = CoinbaseLocalPersistence(tmp_path)
     persistence.persist_dataset(dataset)
+    persistence.persist_raw(dataset.raw_responses)
     path = persistence.dataset_artifact_dir(dataset.manifest.dataset_version) / name
     path.rename(path.with_suffix(".missing"))
     with pytest.raises(FileNotFoundError):
         persistence.persist_dataset(dataset)
+    with pytest.raises(FileNotFoundError):
+        persistence.persist_acquisition(dataset)
     assert not path.exists()
 
 
@@ -855,6 +865,8 @@ def test_changed_canonical_content_gets_distinct_version_and_storage(
         (first_dir / name).write_bytes((changed_dir / name).read_bytes())
     with pytest.raises(ValueError, match="differs from incoming"):
         persistence.persist_dataset(first)
+    with pytest.raises(ValueError):
+        persistence.persist_acquisition(first)
     assert (first_dir / "candles.json").read_bytes() == (
         changed_dir / "candles.json"
     ).read_bytes()
@@ -906,3 +918,93 @@ def test_invalid_incoming_models_are_revalidated_before_persistence(
     with pytest.raises(ValueError):
         CoinbaseLocalPersistence(tmp_path).persist_dataset(dataset)
     assert not (tmp_path / "canonical").exists()
+
+
+@pytest.mark.parametrize(
+    "change", ["body", "body_whitespace", "invalid_request", "boundary", "request"]
+)
+def test_acquisition_rejects_corrupted_raw_artifacts(
+    tmp_path: Path, change: str
+) -> None:
+    dataset = canonical_dataset()
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_dataset(dataset)
+    persistence.persist_raw(dataset.raw_responses)
+    raw_dir = persistence.raw_artifact_dir(dataset.raw_responses[0])
+    if change in ("body", "body_whitespace"):
+        path = raw_dir / "body.json"
+        path.write_bytes(b"[]" if change == "body" else path.read_bytes() + b" ")
+    else:
+        path = raw_dir / "request.json"
+        metadata = json.loads(path.read_bytes())
+        if change == "boundary":
+            metadata["acquisition_started_at"] = "2026-02-02T00:00:00.000000Z"
+        elif change == "request":
+            metadata["request"]["pair"] = "ETH-USD"
+        path.write_bytes(
+            b"invalid JSON"
+            if change == "invalid_request"
+            else json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+        )
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="stored raw"):
+        persistence.persist_acquisition(dataset)
+    assert path.read_bytes() == before
+    assert not (tmp_path / "acquisitions").exists()
+
+
+@pytest.mark.parametrize("change", ["gaps", "bounds", "created_at", "unrelated"])
+def test_acquisition_revalidates_capture_association(
+    tmp_path: Path, change: str
+) -> None:
+    dataset = canonical_dataset()
+    record = dataset.acquisition
+    if change == "gaps":
+        record = record.model_copy(update={"missing_open_times": (START,)})
+        expected_error = "recomposed capture provenance"
+    elif change == "bounds":
+        record = record.model_copy(update={"requested_end": START + timedelta(hours=2)})
+        expected_error = "request ranges must match"
+    elif change == "created_at":
+        record = record.model_copy(
+            update={"created_at": CREATED_AT - timedelta(seconds=1)}
+        )
+        expected_error = "created_at precedes"
+    else:
+        unrelated = response(body([0]).replace(b"103.5", b"104.0"))
+        from crypteo.coinbase_capture import coinbase_capture_id
+
+        record = record.model_copy(
+            update={"capture_ids": (coinbase_capture_id(unrelated),)}
+        )
+        dataset = replace(dataset, raw_responses=(unrelated,))
+        expected_error = "do not compose"
+    dataset = replace(dataset, acquisition=record)
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_dataset(dataset)
+    persistence.persist_raw(dataset.raw_responses)
+    with pytest.raises(ValueError, match=expected_error):
+        persistence.persist_acquisition(dataset)
+    assert not (tmp_path / "acquisitions").exists()
+
+
+def test_direct_publication_reuses_first_manifest_read_only(tmp_path: Path) -> None:
+    first = canonical_dataset()
+    later = canonical_dataset(created_at=CREATED_AT + timedelta(days=1))
+    persistence = CoinbaseLocalPersistence(tmp_path)
+    persistence.persist_dataset(first)
+    persistence.persist_raw(later.raw_responses)
+    later = replace(later, manifest=first.manifest)
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*.json")
+    }
+    persistence.persist_acquisition(later)
+    assert all(
+        (path.read_bytes(), path.stat().st_mtime_ns) == content
+        for path, content in before.items()
+    )
+    assert (
+        persistence.acquisition_artifact_dir(later.acquisition) / "acquisition.json"
+    ).read_bytes() == later.acquisition.canonical_bytes()
+    assert later.manifest.created_at < later.acquisition.created_at

@@ -37,11 +37,10 @@ class CoinbaseLocalPersistence:
     def persist_raw(self, responses: Iterable[CoinbaseRawCandleResponse]) -> None:
         for response in responses:
             artifact_dir = self.raw_artifact_dir(response)
-            metadata = _capture_envelope(response)
             _write_immutable(artifact_dir / "body.json", response.body)
             _write_immutable(
                 artifact_dir / "request.json",
-                json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode(),
+                _capture_metadata_bytes(response),
             )
 
     def persist_dataset(self, dataset: CoinbaseHistoricalDataset) -> DatasetManifest:
@@ -51,15 +50,7 @@ class CoinbaseLocalPersistence:
             dataset.candles, dataset.manifest
         )
         if artifact_dir.exists():
-            stored_manifest = DatasetManifest.model_validate_json(
-                (artifact_dir / "manifest.json").read_bytes()
-            )
-            stored_candles = _CANDLES_ADAPTER.validate_json(
-                (artifact_dir / "candles.json").read_bytes()
-            )
-            effective_manifest, stored_bytes = canonical_dataset_artifacts(
-                stored_candles, stored_manifest
-            )
+            effective_manifest, stored_bytes = _read_canonical_artifacts(artifact_dir)
             if (
                 effective_manifest.dataset_version != manifest.dataset_version
                 or stored_bytes != candle_bytes
@@ -80,7 +71,9 @@ class CoinbaseLocalPersistence:
 
     def persist_acquisition(self, dataset: CoinbaseHistoricalDataset) -> None:
         """Publish acquisition provenance after verifying all referenced artifacts."""
-        record = dataset.acquisition
+        record = CoinbaseAcquisitionRecord.model_validate(
+            dataset.acquisition.model_dump()
+        )
         if record.dataset_version != dataset.manifest.dataset_version:
             raise ValueError(
                 "acquisition dataset_version must match dataset manifest version"
@@ -99,6 +92,16 @@ class CoinbaseLocalPersistence:
                 raise FileNotFoundError(
                     f"canonical dataset artifact does not exist: {canonical_dir / name}"
                 )
+        manifest, candle_bytes = canonical_dataset_artifacts(
+            dataset.candles, dataset.manifest
+        )
+        stored_manifest, stored_bytes = _read_canonical_artifacts(canonical_dir)
+        if (
+            stored_manifest.dataset_version != manifest.dataset_version
+            or stored_bytes != candle_bytes
+        ):
+            raise ValueError("stored canonical content differs from incoming dataset")
+
         for response in dataset.raw_responses:
             raw_dir = self.raw_artifact_dir(response)
             for name in ("body.json", "request.json"):
@@ -106,6 +109,31 @@ class CoinbaseLocalPersistence:
                     raise FileNotFoundError(
                         f"raw capture artifact does not exist: {raw_dir / name}"
                     )
+            if (raw_dir / "body.json").read_bytes() != response.body:
+                raise ValueError("stored raw body differs from response bytes")
+            if (raw_dir / "request.json").read_bytes() != _capture_metadata_bytes(
+                response
+            ):
+                raise ValueError("stored raw request metadata differs from capture")
+
+        recomposed = compose_coinbase_dataset(
+            pair=manifest.pair,
+            raw_responses=dataset.raw_responses,
+            requested_start=record.requested_start,
+            requested_end=record.requested_end,
+            created_at=record.created_at,
+        )
+        recomposed_manifest, recomposed_bytes = canonical_dataset_artifacts(
+            recomposed.candles, recomposed.manifest
+        )
+        # Canonical created_at belongs to the first ingestion, not this acquisition.
+        if (
+            recomposed_manifest.dataset_version != manifest.dataset_version
+            or recomposed_bytes != candle_bytes
+        ):
+            raise ValueError("raw captures do not compose to the supplied dataset")
+        if recomposed.acquisition.canonical_bytes() != record.canonical_bytes():
+            raise ValueError("acquisition does not match recomposed capture provenance")
 
         _write_immutable(
             self.acquisition_artifact_dir(record) / "acquisition.json",
@@ -179,6 +207,23 @@ def ingest_coinbase_candles(
     dataset = replace(dataset, manifest=persistence.persist_dataset(dataset))
     persistence.persist_acquisition(dataset)
     return dataset
+
+
+def _read_canonical_artifacts(artifact_dir: Path) -> tuple[DatasetManifest, bytes]:
+    """Read and validate existing canonical artifacts without creating or repairing."""
+    manifest = DatasetManifest.model_validate_json(
+        (artifact_dir / "manifest.json").read_bytes()
+    )
+    candles = _CANDLES_ADAPTER.validate_json(
+        (artifact_dir / "candles.json").read_bytes()
+    )
+    return canonical_dataset_artifacts(candles, manifest)
+
+
+def _capture_metadata_bytes(response: CoinbaseRawCandleResponse) -> bytes:
+    return json.dumps(
+        _capture_envelope(response), sort_keys=True, separators=(",", ":")
+    ).encode()
 
 
 def _write_immutable(path: Path, content: bytes) -> None:
