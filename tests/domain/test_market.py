@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, create_model
 
 from crypteo.domain.market import (
     Candle,
@@ -179,8 +179,17 @@ def test_candle_rejects_availability_before_close() -> None:
 def test_candle_rejects_non_positive_prices_and_negative_volume(
     field: str, value: str
 ) -> None:
-    with pytest.raises(ValidationError):
-        Candle.model_validate(candle_data(**{field: value}))
+    field_info = Candle.model_fields[field]
+    field_definitions: dict[str, Any] = {field: (field_info.annotation, field_info)}
+    field_contract = create_model(
+        "CandleFieldContract",
+        **field_definitions,
+    )
+
+    with pytest.raises(ValidationError) as error:
+        field_contract.model_validate({field: value})
+
+    assert {detail["loc"] for detail in error.value.errors()} == {(field,)}
 
 
 @pytest.mark.parametrize(
@@ -291,6 +300,7 @@ def test_manifest_missing_open_times_require_strict_utc(invalid: object) -> None
         DatasetManifest.model_validate(
             manifest_data(
                 end_time=OPEN_TIME + timedelta(hours=3),
+                row_count=2,
                 missing_open_times=[invalid],
             )
         )

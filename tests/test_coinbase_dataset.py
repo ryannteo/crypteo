@@ -10,6 +10,7 @@ import crypteo.coinbase_dataset as dataset_module
 from crypteo.coinbase import CoinbaseCandleRequest, CoinbaseRawCandleResponse
 from crypteo.coinbase_dataset import (
     COINBASE_DATASET_SOURCE,
+    canonical_dataset_artifacts,
     compose_coinbase_dataset,
 )
 from crypteo.coinbase_normalization import normalize_coinbase_candles
@@ -146,22 +147,10 @@ def test_preserves_raw_response_objects_and_body_independently() -> None:
     assert result.raw_responses[0].body == original_body
 
 
-def test_reuses_existing_normalizer(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[TradingPair, list[object]]] = []
-
-    def recording_normalizer(
-        *, pair: TradingPair, rows: list[object]
-    ) -> tuple[Candle, ...]:
-        calls.append((pair, rows))
-        return normalize_coinbase_candles(pair=pair, rows=rows)
-
-    monkeypatch.setattr(
-        "crypteo.coinbase_dataset.normalize_coinbase_candles", recording_normalizer
-    )
-
+def test_composition_preserves_established_normalization_semantics() -> None:
     first_rows = [row(1), row(0)]
     second_rows = [row(2)]
-    compose(
+    result = compose(
         [
             raw_response(first_rows, request_end=START + timedelta(hours=2)),
             raw_response(
@@ -172,10 +161,10 @@ def test_reuses_existing_normalizer(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
     )
 
-    assert calls == [
-        (TradingPair.BTC_USD, first_rows),
-        (TradingPair.BTC_USD, second_rows),
-    ]
+    expected = normalize_coinbase_candles(
+        pair=TradingPair.BTC_USD, rows=[row(0), row(1), row(2)]
+    )
+    assert result.candles == expected
 
 
 def test_exact_request_start_is_in_range() -> None:
@@ -239,6 +228,25 @@ def test_dataset_version_has_sha256_format() -> None:
     version = compose([raw_response([row()])]).manifest.dataset_version
 
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", version)
+
+
+def test_schema_v1_canonical_identity_matches_reviewed_golden_fixture() -> None:
+    expected_candle_bytes = (
+        b'[{"available_at":"2026-01-01T01:00:00.000000Z",'
+        b'"close":"103.5","close_time":"2026-01-01T01:00:00.000000Z",'
+        b'"high":"105.875","low":"99.125","open":"100.25",'
+        b'"open_time":"2026-01-01T00:00:00.000000Z","pair":"BTC-USD",'
+        b'"timeframe":"1h","venue":"COINBASE","volume":"12.125"}]'
+    )
+    expected_dataset_version = (
+        "sha256:3a6d37d3f110dab316d05979920a686c7be976a13998c28bee7c1b098f10b044"
+    )
+
+    dataset = compose([raw_response([row()])])
+    _, candle_bytes = canonical_dataset_artifacts(dataset.candles, dataset.manifest)
+
+    assert candle_bytes == expected_candle_bytes
+    assert dataset.manifest.dataset_version == expected_dataset_version
 
 
 def test_equivalent_reversed_and_rechunked_responses_have_same_version() -> None:
@@ -448,6 +456,10 @@ def test_overlapping_and_repeated_acquisition_ranges_are_valid(
 
     result = compose(responses)
 
+    assert result.acquisition.requested_start == START
+    assert result.acquisition.requested_end == START + timedelta(
+        hours=expected_end_hour
+    )
     assert result.manifest.start_time is None
     assert result.manifest.end_time is None
 
@@ -474,6 +486,7 @@ def test_no_raw_responses_builds_empty_manifest_at_supplied_created_time() -> No
     assert result.manifest.row_count == 0
     assert result.manifest.start_time is None
     assert result.manifest.end_time is None
+    assert result.manifest.created_at == CREATED_AT
     assert result.manifest.missing_open_times == ()
 
 

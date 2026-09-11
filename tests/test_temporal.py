@@ -211,4 +211,9 @@ def test_gateway_membership_is_isolated_from_source_list_mutation() -> None:
 def test_gateway_read_api_has_no_caller_supplied_cutoff() -> None:
     parameters = inspect.signature(PointInTimeDataGateway.read_candles).parameters
 
-    assert tuple(parameters) == ("self", "venue", "pair", "timeframe")
+    assert set(parameters) == {"self", "venue", "pair", "timeframe"}
+    assert all(
+        parameter.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for parameter in parameters.values()
+    )

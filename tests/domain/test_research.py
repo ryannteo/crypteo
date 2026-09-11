@@ -171,6 +171,23 @@ def test_opportunity_rejects_undeclared_fields() -> None:
         Opportunity.model_validate(opportunity_data(run_id="run-001"))
 
 
+def test_opportunity_rejects_recommendation_fields() -> None:
+    with pytest.raises(ValidationError, match="recommendation"):
+        Opportunity.model_validate(opportunity_data(recommendation="BUY"))
+
+
+def test_opportunity_id_is_required() -> None:
+    data = opportunity_data()
+    del data["opportunity_id"]
+
+    with pytest.raises(ValidationError) as error:
+        Opportunity.model_validate(data)
+
+    assert ("opportunity_id",) in {
+        detail["loc"] for detail in error.value.errors(include_url=False)
+    }
+
+
 def evidence_data(**overrides: Any) -> dict[str, Any]:
     data: dict[str, Any] = {
         "evidence_id": "ev-001",
