@@ -1,0 +1,216 @@
+# Engineering build log
+
+This log records development objectives and consequential decisions; implementation
+detail remains in git. Durable architectural constraints live in
+[ADRs](decisions/README.md), and planned scope lives in the
+[V1 specification](v1-specification.md).
+
+## Reconstruction basis
+
+History through completed Slice 7 is reconstructed from commits through `758d2de`,
+the specification, production modules, and tests. Entries follow commit order;
+slice labels follow the specification. Rationale summarizes the documented
+invariants and the purpose evident in code and tests, not recovered conversations
+or claims about alternatives debated at the time.
+
+Historical test-run totals and review transcripts are not recorded in the inspected
+repository history. Verification below identifies committed coverage, not proof
+of a historical passing run. Repairs are evidenced by diffs; their attribution to
+particular reviewers is unavailable. AI configuration is recorded separately below.
+
+## Development phases
+
+### Slices 1–3: repository and domain foundations
+
+- **Objective:** establish a small, typed research platform with enforceable domain
+  boundaries before orchestration or simulation.
+- **Decisions and rationale:** use a Python modular monolith, Pydantic contracts,
+  and Ruff/strict mypy/pytest CI. Frozen market records use exact Decimal financial
+  values and strict UTC timestamps. Research contracts separate deterministic
+  opportunities and normalized evidence from qualitative thesis, critique, and
+  assessment; this supports future research domains without giving the model
+  financial or runtime authority ([ADR-001](decisions/ADR-001-deterministic-vs-llm-boundary.md)).
+- **Repairs/clarifications:** reject coercive Python timestamps and row counts;
+  lock the manifest schema version. Clarify the live research mission, shared
+  research workflow, and bounded long-term orchestration without implementing it.
+- **Verification evidence:** package import/version checks; market validation,
+  serialization, immutable evidence, grounding, and outcome-specific assessment
+  tests in [domain tests](../tests/domain).
+- **Commits:** `77fa2f1`, `8a34252`, `1f5b4fe`, `195b0ee` (architecture/product);
+  `8874524` (tooling); `1b9ae62`, `a629e8c` (market);
+  `2e0d092` (research); `ef80810` (architecture clarification);
+  `61cd5ab` (local artifact/secret ignores).
+
+### Slice 4: authoritative simulation time and visibility
+
+- **Objective:** establish historical visibility before introducing real ingestion.
+- **Decisions and rationale:** `SimulationClock` advances explicitly and never
+  backward; `PointInTimeDataGateway` filters an in-memory candle collection by
+  completion and availability. Reads expose no caller cutoff. This makes temporal
+  integrity a code boundary rather than a prompt convention
+  ([ADR-002](decisions/ADR-002-point-in-time-temporal-boundary.md)).
+- **Verification evidence:** [temporal tests](../tests/test_temporal.py) plant
+  future and delayed candles, check exact boundaries, reject duplicate identities,
+  and check isolation from source-list mutation.
+- **Commit:** `6bab7c5`.
+
+### Slice 5: Coinbase ingestion and canonical dataset foundation
+
+- **Objective:** acquire auditable hourly inputs and compose deterministic local
+  datasets for later analytics and replay.
+- **Decisions and rationale:** bounded requests of at most 300 hourly slots use an
+  injectable byte transport; preserve raw responses before normalization. Validate,
+  deduplicate, sort, and report gaps without forward-filling. Introduce semantic
+  identity for canonical candle content; for non-empty datasets, identity was
+  intended to be independent of request chunking and creation provenance. At this
+  stage, datasets with no captures derived coverage from `created_at`, while
+  captured-but-empty datasets derived coverage from the captured request interval.
+  Persist immutable local artifacts to support reproducible inputs without new
+  services. The later `9c1df9c` stabilization gave all empty canonical datasets
+  `None` coverage bounds and kept requested completeness at the acquisition-record
+  level.
+- **Verification evidence:** fixture tests cover request chunking, exact numeric
+  decoding, duplicate conflicts, gap accounting, version stability, artifact
+  round-trips, and raw preservation after normalization failure in the
+  `tests/test_coinbase*.py` suites.
+- **Commits:** `aefcb15` (retrieval), `6e1a2eb` (normalization),
+  `ccbb237` (gap contract), `313dd20` (composition), `a739b78` (identity),
+  `4d40da5` (persistence).
+
+### Pre-Slice-6 stabilization: provider extras and acquisition boundary
+
+- **Objective:** preserve exact observations while limiting canonical data to
+  explicitly acquired, completed intervals.
+- **Decisions/repairs:** replace rejection of provider extras with per-request
+  `[start, end)` ownership; excluded rows still require usable structure/time but
+  cannot fill another request's missing slots. Require a strict UTC
+  `acquisition_started_at`, validate all request ends before HTTP, and independently
+  check retained closes and creation time during composition. Yield and persist
+  each capture before requesting the next chunk; hash the request, boundary, and
+  body digest so revised observations coexist.
+- **Rationale:** provider extras must not distort completeness; later failures must
+  not erase earlier observations or publish a partial canonical acquisition.
+- **Verification evidence:** retrieval, composition, and persistence tests cover
+  invalid boundaries, extra-row ownership, capture identity, and second-request
+  failure with the first raw artifact already on disk.
+- **Commit:** `f3eda18`.
+
+### Pre-Slice-6 stabilization: acquisition completeness and provenance
+
+- **Objective:** distinguish what was requested from what canonical data exists.
+- **Decisions/repairs:** introduce an immutable acquisition record with explicit
+  requested bounds, exact capture IDs, requested missing slots, and dataset version.
+  Empty canonical datasets have `None` coverage and no canonical gaps; acquisition
+  records retain leading, internal, trailing, and all-empty missing slots. Publish
+  acquisition records after canonical persistence, without mutable backlinks.
+- **Rationale:** identical canonical candles can result from different requests;
+  canonical identity must not erase those acquisition histories
+  ([ADR-003](decisions/ADR-003-canonical-data-and-acquisition-provenance.md)).
+- **Verification evidence:** acquisition schema, dataset, and persistence tests
+  cover exact linkage, zero-length/all-empty requests, distinct acquisitions sharing
+  data, and missing-reference publication failures.
+- **Commit:** `9c1df9c`.
+
+### Pre-Slice-6 stabilization: canonical persistence reproducibility
+
+- **Objective:** make persistence obey semantic dataset identity on re-ingestion.
+- **Decisions/repairs:** share canonical candle encoding between hashing and writes;
+  revalidate incoming and stored models, coverage, and recomputed identity. Reuse
+  semantically equivalent artifacts without rewriting them, return the first stored
+  manifest, and preserve the current acquisition's own creation time.
+- **Rationale:** equivalent Decimal spellings, JSON formatting, and later capture
+  times must not conflict with an existing semantic dataset. Corruption must fail
+  closed rather than be mistaken for harmless formatting variation.
+- **Verification evidence:** persistence tests exercise numeric/context equivalence,
+  first-manifest reuse, forged identities, corruption, and incomplete artifacts;
+  no automatic repair or migration is performed.
+- **Commit:** `fee0cae`.
+
+### Pre-Slice-6 stabilization: final publication integrity
+
+- **Objective:** make acquisition publication validate the complete association.
+- **Decisions/repairs:** strengthen existence/reference checks with canonical
+  validation, exact stored raw body/envelope comparison, and raw recomposition.
+  Recomputed candles and acquisition provenance must match the supplied dataset
+  and record before publication.
+- **Rationale:** individually valid artifacts and matching IDs are insufficient
+  evidence that the referenced captures actually produced that dataset.
+- **Verification evidence:** [persistence tests](../tests/test_coinbase_persistence.py)
+  reject tampered raw bytes/metadata, false gaps/bounds/times, unrelated captures,
+  and corrupt canonical data; successful publication leaves existing artifacts
+  unchanged. Multi-file writes remain non-transactional and concurrent writers
+  remain uncoordinated.
+- **Commit:** `e5f50c4`.
+
+### Foundational test-quality audit and cleanup
+
+- **Objective:** strengthen contract evidence before analytics without changing
+  production behavior.
+- **Repairs and rationale:** isolate financial field constraints so unrelated OHLC
+  validation cannot mask failures; correct gap-fixture row accounting; explicitly
+  require opportunity IDs and reject recommendation fields. Replace normalizer
+  call-shape coupling with output semantics, add fixed canonical bytes/hash, assert
+  acquisition bounds/creation time, and check the gateway API without depending on
+  parameter order. These make tests target the intended invariant.
+- **Verification evidence:** the commit changes only four test files: market,
+  research, dataset, and temporal contracts.
+- **Commit:** `ccf689f`.
+
+### Slice 6: deterministic Bollinger analytics
+
+- **Objective:** implement only the calculations required by the locked scanner.
+- **Decisions and rationale:** pure rolling statistics use 20 contiguous closes,
+  population standard deviation, and `SMA - 2 * standard deviation`, including the
+  current candle. A private 50-digit half-even Decimal context isolates numerical
+  results from callers. Gaps reset warm-up to `None`; invalid ordering and mixed
+  markets fail. Results carry window observation/availability provenance, while
+  callers obtain visible candles through the gateway.
+- **Verification evidence:** [analytics tests](../tests/test_analytics.py) include
+  independent exact and irrational golden examples, rounding, warm-up/gap recovery,
+  caller/generator context isolation, and delayed/future gateway integration.
+  Separate review findings are not recorded.
+- **Commit:** `00b40d7`.
+
+### Slice 7: deterministic OpportunityScanner
+
+- **Objective:** produce the same locked research candidates for future agent and
+  baseline evaluation.
+- **Decisions and rationale:** scan only gateway-visible history and return every
+  qualifying opportunity in that snapshot, with no retained delivery state. Compare
+  adjacent closes against their own bands; the first valid band initializes only,
+  `None`/gaps reset comparison, and equality or above-band observations re-arm.
+  Deterministic IDs and compact trigger facts make repeated snapshots reproducible;
+  runtime delivery/deduplication remains deferred
+  ([ADR-004](decisions/ADR-004-scanner-snapshot-semantics.md)).
+- **Verification evidence:** [scanner tests](../tests/test_scanner.py) cover the
+  earliest crossover at candle 21, moving bands, suppression/re-arming, gaps,
+  repeated/fresh scanner equivalence, exact IDs, per-pair isolation, and availability
+  dependencies in both comparison windows. Separate review findings are not recorded.
+- **Commit:** `758d2de`.
+
+## Backfill verification
+
+On 2026-09-12, the documentation backfill was checked against production and tests
+unchanged from `758d2de`, using local Python 3.12.2: Ruff formatting check and lint
+passed; strict mypy passed (26 source files); full pytest passed (615 tests);
+`git diff --check` passed. These are current verification results, not reconstructed
+historical run totals. No production behavior, test, or experiment configuration
+changed.
+
+## AI development workflow
+
+The following configurations were explicitly supplied by the user for this
+backfill. They describe engineering-process traceability, not Crypteo's
+runtime model configuration. No model API identifiers or unrecorded reasoning
+levels are inferred.
+
+| Slice | Activity | Model | Reasoning | Why |
+| --- | --- | --- | --- | --- |
+| 6 | Planning | Astra | High | Consequential architecture, numerical, and state-machine decisions with downstream effects. |
+| 6 | Implementation | Astra | High | High one-pass correctness for consequential deterministic infrastructure. |
+| 6 | Independent review | Astra | Medium | Bounded independent verification after behavior was locked. |
+| 7 | Planning | Astra | High | Consequential architecture, numerical, and state-machine decisions with downstream effects. |
+| 7 | Implementation | Astra | High | High one-pass correctness for consequential deterministic infrastructure. |
+| 7 | Independent review | Astra | Medium | Bounded independent verification after behavior was locked. |
+
+Earlier slices, stabilization phases, and the foundational test audit: Not recorded.

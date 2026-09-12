@@ -52,6 +52,8 @@ Every behavior change needs tests. Prioritize unit tests for deterministic finan
 
 Financial state transitions, evidence records, research traces, and journal records must be append-only and auditable where appropriate.
 
+After an approved slice or architectural stabilization is complete, update `docs/build-log.md` with its objective, consequential decisions, material review findings, verification, commit reference, and AI model/reasoning configuration when known. Add an ADR only for a decision that materially constrains future architecture. Do not fabricate rationale or historical AI configuration.
+
 ## Reproducibility, Secrets, and Reviews
 
 Record code, data, scanner, risk, simulation, prompt, model, and tool versions for every experiment, including tool requests/responses and graph traces.
