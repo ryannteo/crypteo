@@ -46,6 +46,11 @@ class PointInTimeDataGateway:
             sorted(materialized_candles, key=lambda candle: candle.open_time)
         )
 
+    @property
+    def now(self) -> datetime:
+        """Read authoritative time without exposing clock mutation to consumers."""
+        return self._clock.now
+
     def read_candles(
         self,
         *,

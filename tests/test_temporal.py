@@ -217,3 +217,13 @@ def test_gateway_read_api_has_no_caller_supplied_cutoff() -> None:
         not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         for parameter in parameters.values()
     )
+
+
+def test_gateway_time_is_read_only_and_tracks_authoritative_clock() -> None:
+    clock = SimulationClock(BASE_TIME)
+    gateway = PointInTimeDataGateway(clock, [])
+    assert gateway.now == BASE_TIME
+    clock.advance_to(BASE_TIME + timedelta(hours=1))
+    assert gateway.now == clock.now
+    with pytest.raises(AttributeError):
+        gateway.now = BASE_TIME  # type: ignore[misc]
