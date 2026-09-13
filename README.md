@@ -3,10 +3,11 @@
 Crypteo is an agentic crypto research copilot that gathers and evaluates evidence
 to support informed trading decisions. Trading decisions remain with the user.
 
-Through Slice 7, this repository contains validated market and research schemas,
+Through Slice 8, this repository contains validated market and research schemas,
 authoritative simulation time and point-in-time candle access, Coinbase historical
-ingestion and persistence, deterministic Bollinger analytics, and an opportunity
-scanner. Agent orchestration, risk, simulated execution, and replay remain later work.
+ingestion and persistence, deterministic Bollinger analytics, an opportunity
+scanner, and deterministic simulated execution and portfolio accounting.
+Risk authorization and sizing, replay orchestration, and agents remain later work.
 
 ## Documentation
 

@@ -13,10 +13,13 @@ slice labels follow the specification. Rationale summarizes the documented
 invariants and the purpose evident in code and tests, not recovered conversations
 or claims about alternatives debated at the time.
 
-Historical test-run totals and review transcripts are not recorded in the inspected
-repository history. Verification below identifies committed coverage, not proof
+For history through Slice 7, test-run totals and review transcripts are not recorded
+in the inspected repository history. Verification for those entries identifies
+committed coverage, not proof
 of a historical passing run. Repairs are evidenced by diffs; their attribution to
 particular reviewers is unavailable. AI configuration is recorded separately below.
+The Slice 8 entry uses the completed implementation and tests, with review findings
+and AI workflow supplied explicitly by the user.
 
 ## Development phases
 
@@ -188,6 +191,40 @@ particular reviewers is unavailable. AI configuration is recorded separately bel
   dependencies in both comparison windows. Separate review findings are not recorded.
 - **Commit:** `758d2de`.
 
+### Slice 8: deterministic simulated execution and portfolio accounting
+
+- **Objective:** execute already-authorized LONG terms and maintain deterministic
+  simulated portfolio accounting, without an `Opportunity` or `TradeDecision`
+  dependency. Risk authorization and sizing remain later work.
+- **Decisions and rationale:** reconcile next-open execution only through completed,
+  gateway-visible candles; distinguish market phase/time from evidence availability
+  and recording time, without inventing intrabar timestamps or a second clock
+  ([ADR-005](decisions/ADR-005-completed-bar-execution-reconciliation.md)).
+  Observed opening gaps take priority over later intrabar touches; otherwise a
+  simultaneous stop/target touch resolves stop-first. Stop/target takes priority
+  over the final-bar time exit; the entry candle counts as holding bar one.
+- **Accounting:** explicit fees and adverse slippage; reject misaligned quantities
+  and stop/target levels, round BUY prices up and SELL prices down to the configured
+  increment. Exact Decimal arithmetic reconciles cash, fees, cost basis, and realized
+  PnL independently of the caller's Decimal context. Immutable snapshots preserve
+  append-only orders, fills, and outcomes; failed processing leaves prior state intact.
+- **Missing data and scope:** reject a missing entry candle without rolling entry
+  forward or reviving the order on delayed data. Missing holding data leaves an
+  unresolved halt, preserving financial state instead of inferring unseen paths.
+  Availability after the expected close counts as missing even when processing
+  happens later. One pending or open trade at a time is a Slice 8 scope limitation.
+- **Review findings and repairs:** strengthen public execution, lifecycle, and
+  accounting contract validation; validate internal transitions instead of unchecked
+  copies; reject zero-price SELL rounding atomically.
+- **Verification:** 854 tests passed, plus Ruff format/check, strict mypy, and
+  diff/whitespace checks. Coverage includes
+  [execution contracts](../tests/domain/test_execution.py),
+  [broker scenarios](../tests/test_simulated_broker.py),
+  [portfolio accounting](../tests/test_portfolio.py), and
+  [temporal access](../tests/test_temporal.py).
+- **Implementation commit:** `22087f12c533d90f14ac48640fc7477b0dd274b3`
+  (`Add deterministic simulated execution kernel`).
+
 ## Backfill verification
 
 On 2026-09-12, the documentation backfill was checked against production and tests
@@ -200,9 +237,9 @@ changed.
 ## AI development workflow
 
 The following configurations were explicitly supplied by the user for this
-backfill. They describe engineering-process traceability, not Crypteo's
-runtime model configuration. No model API identifiers or unrecorded reasoning
-levels are inferred.
+documentation, including the Slice 8 completion record. They describe
+engineering-process traceability, not Crypteo's runtime model configuration.
+No model API identifiers or unrecorded reasoning levels are inferred.
 
 | Slice | Activity | Model | Reasoning | Why |
 | --- | --- | --- | --- | --- |
@@ -212,5 +249,10 @@ levels are inferred.
 | 7 | Planning | Astra | High | Consequential architecture, numerical, and state-machine decisions with downstream effects. |
 | 7 | Implementation | Astra | High | High one-pass correctness for consequential deterministic infrastructure. |
 | 7 | Independent review | Astra | Medium | Bounded independent verification after behavior was locked. |
+| 8 | Planning | Astra | High | Consequential temporal, execution, accounting, and simulation-policy decisions. |
+| 8 | Implementation | Astra | High | High one-pass correctness for consequential deterministic execution infrastructure. |
+| 8 | Independent review | Astra | High | Adversarial review of temporal safety, accounting, lifecycle contracts, and rounding semantics. |
+| 8 | Repair | Astra | Medium | Bounded repair of three concrete review findings. |
+| 8 | Repair verification | Astra | Medium | Focused verification of the repaired findings. |
 
 Earlier slices, stabilization phases, and the foundational test audit: Not recorded.

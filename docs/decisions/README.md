@@ -40,6 +40,7 @@ reconstructed rationale from unavailable historical discussion.
 ADRs 001–004 retrospectively record established constraints through Slice 7.
 Their Accepted status records those existing decisions, not completion of later
 components described by the specification.
+ADR-005 records the completed Slice 8 execution semantics.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -47,3 +48,4 @@ components described by the specification.
 | [002](ADR-002-point-in-time-temporal-boundary.md) | Point-in-time temporal boundary | Accepted |
 | [003](ADR-003-canonical-data-and-acquisition-provenance.md) | Canonical data and acquisition provenance | Accepted |
 | [004](ADR-004-scanner-snapshot-semantics.md) | Scanner snapshot semantics | Accepted |
+| [005](ADR-005-completed-bar-execution-reconciliation.md) | Completed-bar simulated execution reconciliation | Accepted |
