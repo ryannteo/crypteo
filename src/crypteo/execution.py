@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
+from crypteo._execution_costs import _aligned, _execution_price
 from crypteo.domain._execution_arithmetic import _add, _multiply, _subtract
 from crypteo.domain.execution import (
     DataGap,
@@ -17,37 +18,6 @@ from crypteo.domain.execution import (
 from crypteo.domain.market import Candle
 from crypteo.portfolio import _enter, _exit
 from crypteo.temporal import PointInTimeDataGateway
-
-
-def _increment_ratio(value: Decimal, increment: Decimal) -> tuple[int, int]:
-    numerator, denominator = value.as_integer_ratio()
-    step_numerator, step_denominator = increment.as_integer_ratio()
-    return numerator * step_denominator, denominator * step_numerator
-
-
-def _aligned(value: Decimal, increment: Decimal) -> bool:
-    numerator, denominator = _increment_ratio(value, increment)
-    return numerator % denominator == 0
-
-
-def _execution_price(
-    reference: Decimal, side: Literal["BUY", "SELL"], config: ExecutionConfig
-) -> Decimal:
-    factor = (
-        _add(Decimal(1), config.adverse_slippage)
-        if side == "BUY"
-        else _subtract(Decimal(1), config.adverse_slippage)
-    )
-    slipped = _multiply(reference, factor)
-    numerator, denominator = _increment_ratio(slipped, config.price_increment)
-    steps = (
-        (numerator + denominator - 1) // denominator
-        if side == "BUY"
-        else numerator // denominator
-    )
-    if steps <= 0:
-        raise ValueError("execution price rounds to zero at configured increment")
-    return _multiply(Decimal(steps), config.price_increment)
 
 
 def _fill(
