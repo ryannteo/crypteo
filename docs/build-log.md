@@ -18,7 +18,7 @@ in the inspected repository history. Verification for those entries identifies
 committed coverage, not proof
 of a historical passing run. Repairs are evidenced by diffs; their attribution to
 particular reviewers is unavailable. AI configuration is recorded separately below.
-The Slice 8 entry uses the completed implementation and tests, with review findings
+The Slice 8 and 9 entries use the completed implementations and tests, with review findings
 and AI workflow supplied explicitly by the user.
 
 ## Development phases
@@ -225,6 +225,36 @@ and AI workflow supplied explicitly by the user.
 - **Implementation commit:** `22087f12c533d90f14ac48640fc7477b0dd274b3`
   (`Add deterministic simulated execution kernel`).
 
+### Slice 9: deterministic risk authorization and position sizing
+
+- **Objective:** authorize and size LONG proposals deterministically through a
+  `TradeProposal` boundary independent of `TradeDecision`.
+- **Decisions and rationale:** use current flat cash as capital and the exact
+  visible completed candle close ending at `decision_at` as the sizing reference;
+  the unknown next-open price cannot inform authorization. Include fees, adverse
+  slippage, tick rounding, and stop execution costs through shared Slice 8 pricing.
+  Select the largest quantity increment multiple satisfying both risk budget and
+  available cash, using exact arithmetic
+  ([ADR-006](decisions/ADR-006-decision-time-risk-authorization.md)).
+- **Scope:** authorization is a nonmutating estimated nongapped risk bound, not a
+  guaranteed maximum loss; it reserves no cash and consumes no IDs. Next-open/gap
+  affordability and realized-loss behavior remain Slice 8 responsibilities, without
+  resizing. Stop/target levels are validated but not generated; deterministic
+  generation remains unresolved before full replay integration.
+- **Review findings and repairs:** authorization initially accepted fabricated
+  execution estimates; alignment/maximality invariants were incomplete; future
+  holding history could be treated as an ordinary rejection. All three were
+  repaired and verified: recompute shared execution estimates,
+  enforce aligned maximal sizing in public contracts, and reject future holding
+  history as an input error before ordinary risk outcomes.
+- **Verification:** 1,008 tests passed, plus Ruff format/check, strict mypy, and
+  git diff checks. [Risk contract tests](../tests/domain/test_risk_contracts.py)
+  and [risk tests](../tests/test_risk.py) cover boundary sizing, an independent
+  rational oracle, forged estimates, temporal isolation, nonmutation, and broker
+  reconciliation including gaps and affordability rejection.
+- **Implementation commit:** `715f36457e52c80e45cfb68e8443076b2af25395`
+  (`Add deterministic risk authorization and sizing`).
+
 ## Backfill verification
 
 On 2026-09-12, the documentation backfill was checked against production and tests
@@ -237,7 +267,7 @@ changed.
 ## AI development workflow
 
 The following configurations were explicitly supplied by the user for this
-documentation, including the Slice 8 completion record. They describe
+documentation, including the Slice 8 and 9 completion records. They describe
 engineering-process traceability, not Crypteo's runtime model configuration.
 No model API identifiers or unrecorded reasoning levels are inferred.
 
@@ -254,5 +284,10 @@ No model API identifiers or unrecorded reasoning levels are inferred.
 | 8 | Independent review | Astra | High | Adversarial review of temporal safety, accounting, lifecycle contracts, and rounding semantics. |
 | 8 | Repair | Astra | Medium | Bounded repair of three concrete review findings. |
 | 8 | Repair verification | Astra | Medium | Focused verification of the repaired findings. |
+| 9 | Planning | Astra | High | Consequential decision-time risk, cost, and sizing boundaries. |
+| 9 | Implementation | Astra | High | Exact sizing and enforceable authorization contracts. |
+| 9 | Independent review | Astra | High | Adversarial review of estimates, sizing invariants, and temporal safety. |
+| 9 | Repair | Astra | Medium | Bounded repair of three concrete review findings. |
+| 9 | Repair verification | Astra | Medium | Focused verification of the repaired findings. |
 
 Earlier slices, stabilization phases, and the foundational test audit: Not recorded.

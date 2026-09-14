@@ -41,6 +41,7 @@ ADRs 001–004 retrospectively record established constraints through Slice 7.
 Their Accepted status records those existing decisions, not completion of later
 components described by the specification.
 ADR-005 records the completed Slice 8 execution semantics.
+ADR-006 records the completed Slice 9 decision-time risk semantics.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -49,3 +50,4 @@ ADR-005 records the completed Slice 8 execution semantics.
 | [003](ADR-003-canonical-data-and-acquisition-provenance.md) | Canonical data and acquisition provenance | Accepted |
 | [004](ADR-004-scanner-snapshot-semantics.md) | Scanner snapshot semantics | Accepted |
 | [005](ADR-005-completed-bar-execution-reconciliation.md) | Completed-bar simulated execution reconciliation | Accepted |
+| [006](ADR-006-decision-time-risk-authorization.md) | Decision-time risk authorization under unknown next-open execution | Accepted |
