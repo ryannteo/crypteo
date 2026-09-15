@@ -125,6 +125,9 @@ This rule is transparent, intentionally untuned, volatility-scaled across assets
 
 ## Canonical Historical Data
 
+For the implemented acquisition boundaries, artifact formats, identities, and
+publication checks, see the [data pipeline guide](data-pipeline.md).
+
 Use the public Coinbase Exchange REST candles endpoint for the Coinbase spot pairs `BTC-USD`, `ETH-USD`, and `SOL-USD`, with granularity 3600 seconds. Persist immutable raw responses, then normalize them into a versioned local dataset. Coinbase is a recognizable USD spot venue, supplies the exact products and hourly aggregation, and requires no multi-venue reconciliation.
 
 Limitations are material: requests are capped at 300 candles, candles can be incomplete, and intervals without ticks may be absent. Ingestion must request bounded nonoverlapping windows, deduplicate, sort, validate OHLC invariants, and produce a gap manifest. Never silently forward-fill OHLCV. A missing hour makes indicators depending on that window invalid; scanner/replay skip affected opportunities until the required contiguous warm-up is restored. Dataset integrity checks may inspect timestamps, schema, and gaps across all splits, but final-period prices, signals, and outcomes remain off limits during development.
