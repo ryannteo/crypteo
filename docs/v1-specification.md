@@ -45,13 +45,15 @@ The eventual product supports two research entry modes without making either ent
 
 Both converge on `research context -> normalized evidence -> integrated thesis -> critic -> final research assessment`. V1 historical evaluation implements opportunity-led research first because identical scanner-generated opportunities provide a controlled basis for agent-versus-baseline comparison. The scanner and `Opportunity` contract are evaluation-path inputs, not prerequisites for all future live research.
 
-The minimal extension seams are:
+The minimal extension seams are conceptual:
 
-- `OpportunityScanner.scan(context) -> opportunities`
-- `ResearchTool.invoke(request, runtime_context) -> evidence`
-- `Broker.submit(order_intent, market_event) -> execution_events`
-- `Clock.now -> UTC datetime`
-- market-data provider behind a `PointInTimeDataGateway`
+- scanner invocation to produce opportunities;
+- research-tool invocation to produce normalized evidence;
+- broker submission and processing of authorized simulated orders;
+- authoritative clock access for UTC time;
+- point-in-time market-data access through `PointInTimeDataGateway`.
+
+Concrete method signatures may remain narrower; these seams do not prescribe exact APIs.
 
 No plugin framework, dependency-injection framework, or speculative capability hierarchy is required. Future research capabilities register tools that emit the same evidence representation. They may join historical replay only if classified `POINT_IN_TIME_REPLAY_SAFE`; sources without defensible historical availability are `LIVE_ONLY`.
 
@@ -141,7 +143,7 @@ Limitations are material: requests are capped at 300 candles, candles can be inc
 - `ABSTAIN`: Crypteo cannot form a sufficiently reliable research conclusion because evidence is insufficient, conflicting, stale, unavailable, or unreliable, or because of research/tool failure, budget exhaustion, or validation failure.
 - `RISK_REJECTED`: after `TradeDecision.TRADE`, deterministic authorization refused the candidate. It is a downstream risk outcome that the LLM cannot emit.
 
-`TRADE`, `NO_TRADE`, and `ABSTAIN` remain distinct in research storage and evaluation. A `TRADE` flows to the deterministic risk gate, which either allows further simulated processing or produces `RISK_REJECTED`.
+`TRADE`, `NO_TRADE`, and `ABSTAIN` remain distinct in research storage and evaluation. In the intended V1 flow, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using approved deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
 
 ## Simulation and Risk
 
@@ -153,11 +155,11 @@ Slice 8 consumes already-authorized LONG terms without an `Opportunity` or `Trad
 
 Entries use configurable adverse slippage and fees, validated quantity/price increments, and exact Decimal accounting. Stops and targets activate after entry. Observed opening gaps fill using the opening price and take precedence over later intrabar touches; otherwise simultaneous stop/target touches resolve stop-first for a long position. A versioned maximum holding duration counts the entry candle as holding bar one; stop/target takes priority over a time exit at the final holding bar's close. An entry candle missing or unavailable at its expected close causes terminal rejection, never rollover or revival on delayed data. Missing holding data halts financial processing with the position unresolved. Slice 8 preserves immutable snapshots and append-only order, fill, and outcome histories within execution state; durable append-only journaling of the complete lifecycle remains a later V1 responsibility. Every baseline uses exactly the same risk and execution configuration.
 
-Only `SimulatedBroker` is implemented. No credentials, private keys, trading permissions, exchange adapter package, or real order path may exist.
+The execution path remains simulation-only. No credentials, private keys, trading permissions, exchange adapter package, or real order path may exist.
 
 ## Journal and Reproducibility
 
-Persist from day one: opportunities, evidence, tool calls and responses, theses, critiques, decisions, risk results, orders, fills, exits, outcomes, post-trade reviews, graph traces, and experiment metadata. V1 journal access is for audit, evaluation, debugging, and post-trade analysis only; there is no decision memory, embedding, or vector retrieval.
+The V1 journal must ultimately persist opportunities, evidence, tool calls and responses, theses, critiques, decisions, risk results, orders, fills, exits, outcomes, post-trade reviews, graph traces, and experiment metadata. V1 journal access is for audit, evaluation, debugging, and post-trade analysis only; there is no decision memory, embedding, or vector retrieval.
 
 `ResearchThesis`, `Critique`, and `TradeDecision` contain model-facing research content, not `run_id`, `decision_id`, authoritative cutoffs, or runtime, graph, journal, decision, and experiment timestamps. The runtime/journal layer associates them with run and opportunity/request identity, authoritative timestamps, graph traces, experiment metadata, and applicable model/prompt/tool configuration. `EvidenceItem` retains `evidence_id` because theses and decisions reference evidence; `Opportunity` retains its deterministic `opportunity_id` because downstream processing must reference its input. The LLM never invents or maintains runtime linkage.
 
@@ -181,13 +183,13 @@ The common start follows SOL-USD's June 2021 Coinbase launch and leaves a short 
 
 ## Testing Policy
 
-Normal CI mocks model responses. Unit, property, golden, contract, graph-routing, integration, and replay tests cover indicators, scanner, sizing, accounting, costs, stops/targets, limits, timing, schemas, abstention, critic paths, deterministic replay, leakage, baseline fairness, and opportunity-to-close behavior. Model-backed evaluations are separate and versioned.
+Normal CI mocks model responses. The completed V1 test suite will include unit, property, golden, contract, graph-routing, integration, and replay tests covering indicators, scanner, sizing, accounting, costs, stops/targets, limits, timing, schemas, abstention, critic paths, deterministic replay, leakage, baseline fairness, and opportunity-to-close behavior. Model-backed evaluations are separate and versioned.
 
 ## Implementation Slices
 
 Each slice ends with passing automated tests and a usable repository state.
 
-1. Project quality shell:mpackage metadata, formatter/linter/type-checker/pytest configuration, CI, and architecture-invariant tests; acceptance: documented local checks pass on an empty package.
+1. Project quality shell: package metadata, formatter/linter/type-checker/pytest configuration, CI, and architecture-invariant tests; acceptance: documented local checks pass on an empty package.
 2. Market domain schemas: UTC timestamps, pair/venue/timeframe enums, candle and dataset-manifest models; acceptance: serialization and invalid-value tests pass.
 3. Research-domain contracts: `Opportunity`, evidence, thesis, critique, abstention, and final research-decision contracts; acceptance: internal timestamp consistency, evidence grounding, outcome-dependent decision rules, and rejection of forbidden calculated or runtime-owned LLM fields pass.
 4. Clock and temporal gateway: simulation clock plus in-memory provider; acceptance: completed-bar and planted-future-data tests pass before real ingestion exists.
@@ -195,8 +197,8 @@ Each slice ends with passing automated tests and a usable repository state.
 6. Deterministic analytics: only calculations required by scanner and initial tools; acceptance: independent golden examples and gap/warm-up behavior pass.
 7. Locked scanner: Bollinger breach through `OpportunityScanner`; acceptance: crossover, reset, duplicate suppression, and cutoff tests pass.
 8. Execution kernel: orders, fills, portfolio ledger, fees/slippage, gaps, intrabar priority, and time exits; acceptance: accounting invariants and scenario tables pass.
-9. Risk gate: versioned sizing and portfolio constraints; acceptance: known boundary cases approve/reject deterministically with reason codes.
-10. Scanner-only replay: event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results.
+9. Risk gate: deterministic position sizing and risk authorization with explicit risk and execution configuration; acceptance: known boundary cases approve/reject deterministically with reason codes.
+10. Scanner-only replay: event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results. Prerequisite: deterministic stop/target generation is required for full scanner-only replay and remains to be resolved before Slice 10 implementation.
 11. Market tool contracts: typed bounded tools returning normalized evidence; acceptance: provenance, cutoff, artifact, stale-data, and failure contracts pass.
 12. Minimal LangGraph: investigate, draft, critic, finalize with mocked model adapter and budgets; acceptance: all routes, retries, fail-closed abstention, and schema repair limits pass.
 13. Append-only journal: durable local persistence for the complete lifecycle; acceptance: linkage/audit tests pass and decision-time reads cannot access memory.
