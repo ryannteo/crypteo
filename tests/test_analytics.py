@@ -14,13 +14,90 @@ from decimal import (
 
 import pytest
 
-from crypteo.analytics import BollingerStatistics, rolling_bollinger_statistics
+from crypteo.analytics import (
+    BollingerStatistics,
+    mean_true_range,
+    rolling_bollinger_statistics,
+)
 from crypteo.domain.market import Candle, Timeframe, TradingPair, Venue
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
 BASE_TIME = datetime(2022, 1, 1, tzinfo=UTC)
 SQRT_TWO = Decimal("1.4142135623730950488016887242096980785696718753769")
 SQRT_TWO_LOWER_BAND = Decimal("97.171572875253809902396622551580603842860656249246")
+
+
+def range_candle(hour: int, price: str, high: str, low: str) -> Candle:
+    return Candle.model_validate(
+        candle(hour).model_dump()
+        | {
+            "open": price,
+            "close": price,
+            "high": high,
+            "low": low,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "previous,expected", [("101", "2"), ("90", "2.5"), ("110", "2.4")]
+)
+def test_mean_true_range_all_three_formula_branches(
+    previous: str, expected: str
+) -> None:
+    candles = [range_candle(0, previous, previous, previous)] + [
+        range_candle(i, "101", "102", "100") for i in range(1, 21)
+    ]
+    assert mean_true_range(candles) == Decimal(expected)
+
+
+@pytest.mark.parametrize("count", [0, 1, 19, 20, 22, 40])
+def test_mean_true_range_requires_exactly_twenty_one_candles(count: int) -> None:
+    with pytest.raises(ValueError, match="exactly 21"):
+        mean_true_range(candle(i) for i in range(count))
+
+
+@pytest.mark.parametrize("case", ["gap", "reverse", "duplicate", "mixed", "corrupt"])
+def test_mean_true_range_rejects_invalid_windows(case: str) -> None:
+    candles = [candle(i) for i in range(21)]
+    if case == "gap":
+        candles[-1] = candle(21)
+    elif case == "reverse":
+        candles.reverse()
+    elif case == "duplicate":
+        candles[-1] = candles[-2]
+    elif case == "mixed":
+        candles[-1] = candle(20, pair=TradingPair.ETH_USD)
+    else:
+        candles[-1] = candles[-1].model_copy(update={"high": Decimal(1)})
+    with pytest.raises(ValueError):
+        mean_true_range(candles)
+
+
+def test_mean_true_range_is_exact_beyond_fifty_digits_under_hostile_context() -> None:
+    from fractions import Fraction
+
+    high = "1" + "0" * 70 + ".0000000000000000000000000000001"
+    low = "0.000000000000000000000000000000000000000001"
+    candles = [range_candle(i, "100", high, low) for i in range(21)]
+    oracle = Fraction(high) - Fraction(low)
+    with localcontext() as hostile:
+        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
+        for signal in hostile.traps:
+            hostile.traps[signal] = True
+        before = repr(hostile)
+        assert Fraction(mean_true_range(candles)) == oracle
+        assert repr(hostile) == before
+
+
+def test_mean_true_range_is_an_unweighted_mean_of_only_the_last_twenty_ranges() -> None:
+    candles = (
+        [range_candle(0, "100", "9999", "1")]
+        + [range_candle(i, "100", "101", "99") for i in range(1, 20)]
+        + [range_candle(20, "100", "120", "80")]
+    )
+    # (19 * 2 + 40) / 20 = 3.9; neither first-bar range nor recursive smoothing.
+    assert mean_true_range(candles) == Decimal("3.9")
 
 
 def candle(

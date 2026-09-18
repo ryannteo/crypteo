@@ -1,12 +1,11 @@
 """Immutable deterministic LONG proposals, risk settings and sizing results."""
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from crypteo._execution_costs import _aligned, _execution_price
+from crypteo._execution_costs import _aligned, _execution_estimate
 from crypteo.domain._execution_arithmetic import _add, _multiply, _subtract
 from crypteo.domain.execution import ExecutionConfig, OrderIntent
 from crypteo.domain.market import (
@@ -80,6 +79,8 @@ class RiskAuthorization(BaseModel):
     risk_budget: PositiveDecimal
     estimated_entry_price: PositiveDecimal
     estimated_stop_execution_price: PositiveDecimal
+    estimated_target_execution_price: PositiveDecimal
+    estimated_net_target_reward_per_unit: PositiveDecimal
     estimated_loss_per_unit: PositiveDecimal
     authorized_quantity: PositiveDecimal
     estimated_entry_cash: PositiveDecimal
@@ -111,30 +112,31 @@ class RiskAuthorization(BaseModel):
             < self.order.target_price
         ):
             raise ValueError("reference must lie between LONG levels")
-        entry = _execution_price(self.reference_price, "BUY", config)
-        stop = _execution_price(self.proposal.stop_price, "SELL", config)
-        if self.estimated_entry_price != entry:
+        entry = _execution_estimate(self.reference_price, "BUY", config)
+        stop = _execution_estimate(self.proposal.stop_price, "SELL", config)
+        target = _execution_estimate(self.proposal.target_price, "SELL", config)
+        if self.estimated_entry_price != entry.price:
             raise ValueError("estimated entry price must match adverse BUY execution")
-        if self.estimated_stop_execution_price != stop:
+        if self.estimated_stop_execution_price != stop.price:
             raise ValueError("estimated stop price must match adverse SELL execution")
+        if self.estimated_target_execution_price != target.price:
+            raise ValueError("estimated target price must match adverse SELL execution")
+        if self.estimated_net_target_reward_per_unit != _subtract(
+            target.cash_per_unit, entry.cash_per_unit
+        ):
+            raise ValueError("estimated net target reward per unit does not reconcile")
         if self.risk_budget != _multiply(
             self.capital_basis, self.risk_config.risk_fraction
         ):
             raise ValueError("risk budget does not reconcile")
-        cash_per_unit = _multiply(
-            self.estimated_entry_price,
-            _add(Decimal(1), self.execution_config.entry_fee_rate),
-        )
+        cash_per_unit = entry.cash_per_unit
         if self.estimated_entry_cash != _multiply(
             self.authorized_quantity, cash_per_unit
         ):
             raise ValueError("estimated entry cash does not reconcile")
         if self.estimated_loss_per_unit != _subtract(
             cash_per_unit,
-            _multiply(
-                self.estimated_stop_execution_price,
-                _subtract(Decimal(1), self.execution_config.exit_fee_rate),
-            ),
+            stop.cash_per_unit,
         ):
             raise ValueError("estimated loss per unit does not reconcile")
         if self.estimated_total_loss != _multiply(
@@ -172,6 +174,7 @@ class RiskRejection(BaseModel):
         "REFERENCE_UNAVAILABLE",
         "INVALID_LONG_LEVELS",
         "UNEXECUTABLE_STOP",
+        "NON_POSITIVE_TARGET_REWARD",
         "NO_CAPITAL",
         "QUANTITY_BELOW_INCREMENT",
     ]

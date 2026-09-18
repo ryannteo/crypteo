@@ -5,11 +5,11 @@ from functools import partial
 
 from crypteo._execution_costs import (
     _aligned,
-    _execution_price,
+    _execution_estimate,
     _increment_ratio,
     _UnexecutablePrice,
 )
-from crypteo.domain._execution_arithmetic import _add, _multiply, _subtract
+from crypteo.domain._execution_arithmetic import _multiply, _subtract
 from crypteo.domain.execution import ExecutionConfig, OrderIntent, PortfolioSnapshot
 from crypteo.domain.risk import (
     RiskAuthorization,
@@ -47,7 +47,7 @@ class RiskService:
 
         Input checks precede ordinary rejections. Rejection precedence is halted,
         reused ID, busy, missing reference, invalid levels, unexecutable stop,
-        no capital, then quantity below one increment.
+        non-positive target reward, no capital, then quantity below one increment.
         """
         proposal = TradeProposal.model_validate(proposal.model_dump())
         portfolio = PortfolioSnapshot.model_validate(portfolio.model_dump())
@@ -102,15 +102,19 @@ class RiskService:
         if not 0 < proposal.stop_price < reference < proposal.target_price:
             return reject(reason="INVALID_LONG_LEVELS")
 
-        entry = _execution_price(reference, "BUY", config)
+        entry = _execution_estimate(reference, "BUY", config)
         try:
-            stop = _execution_price(proposal.stop_price, "SELL", config)
+            stop = _execution_estimate(proposal.stop_price, "SELL", config)
         except _UnexecutablePrice:
             return reject(reason="UNEXECUTABLE_STOP")
-        cash_per_unit = _multiply(entry, _add(Decimal(1), config.entry_fee_rate))
-        loss_per_unit = _subtract(
-            cash_per_unit, _multiply(stop, _subtract(Decimal(1), config.exit_fee_rate))
-        )
+        # SELL pricing is monotone: an executable lower stop guarantees that
+        # the strictly higher target also has a positive execution price.
+        target = _execution_estimate(proposal.target_price, "SELL", config)
+        cash_per_unit = entry.cash_per_unit
+        loss_per_unit = _subtract(cash_per_unit, stop.cash_per_unit)
+        reward_per_unit = _subtract(target.cash_per_unit, cash_per_unit)
+        if reward_per_unit <= 0:
+            return reject(reason="NON_POSITIVE_TARGET_REWARD")
         capital = portfolio.cash
         if capital == 0:
             return reject(reason="NO_CAPITAL")
@@ -140,8 +144,10 @@ class RiskService:
             reference_price=reference,
             capital_basis=capital,
             risk_budget=budget,
-            estimated_entry_price=entry,
-            estimated_stop_execution_price=stop,
+            estimated_entry_price=entry.price,
+            estimated_stop_execution_price=stop.price,
+            estimated_target_execution_price=target.price,
+            estimated_net_target_reward_per_unit=reward_per_unit,
             estimated_loss_per_unit=loss_per_unit,
             authorized_quantity=quantity,
             estimated_entry_cash=_multiply(quantity, cash_per_unit),

@@ -1,4 +1,4 @@
-"""Pure, fixed-window Decimal analytics for the locked V1 scanner."""
+"""Pure, fixed-window Decimal analytics for V1 market calculations."""
 
 from collections import deque
 from collections.abc import Iterable
@@ -14,6 +14,7 @@ from decimal import (
     localcontext,
 )
 
+from crypteo.domain._execution_arithmetic import _add, _multiply, _subtract
 from crypteo.domain.market import Candle
 
 _WINDOW_SIZE = 20
@@ -38,6 +39,44 @@ class BollingerStatistics:
     lower_band: Decimal
     observed_at: datetime
     available_at: datetime
+
+
+def _sma20(candles: Iterable[Candle]) -> Decimal:
+    """Reuse the scanner's ordered sum and private 50-digit SMA semantics."""
+    window = tuple(candles)
+    if len(window) != _WINDOW_SIZE:
+        raise ValueError("SMA20 requires exactly 20 candles")
+    with localcontext(_DECIMAL_CONTEXT):
+        return sum((item.close for item in window), Decimal(0)) / _WINDOW_SIZE
+
+
+def mean_true_range(candles: Iterable[Candle]) -> Decimal:
+    """Exact arithmetic mean of 20 true ranges from 21 contiguous hourly bars.
+
+    The first candle supplies only the previous close. This is not Wilder ATR.
+    Visibility belongs to the gateway; malformed or incomplete windows raise.
+    """
+    window = tuple(Candle.model_validate(item.model_dump()) for item in candles)
+    if len(window) != _WINDOW_SIZE + 1:
+        raise ValueError("mean true range requires exactly 21 candles")
+    total = Decimal(0)
+    for previous, current in zip(window[:-1], window[1:], strict=True):
+        if (previous.venue, previous.pair, previous.timeframe) != (
+            current.venue,
+            current.pair,
+            current.timeframe,
+        ):
+            raise ValueError("candles must share one market identity")
+        if current.open_time != previous.close_time:
+            raise ValueError("candles must be contiguous and strictly ordered")
+        true_range = max(
+            _subtract(current.high, current.low),
+            _subtract(current.high, previous.close).copy_abs(),
+            _subtract(current.low, previous.close).copy_abs(),
+        )
+        total = _add(total, true_range)
+    # Division by the fixed 20 is terminating: multiply exactly by 1/20.
+    return _multiply(total, Decimal("0.05"))
 
 
 def rolling_bollinger_statistics(
@@ -74,7 +113,7 @@ def rolling_bollinger_statistics(
             continue
 
         with localcontext(_DECIMAL_CONTEXT):
-            sma = sum((item.close for item in window), Decimal(0)) / _WINDOW_SIZE
+            sma = _sma20(window)
             variance = (
                 sum(((item.close - sma) ** 2 for item in window), Decimal(0))
                 / _WINDOW_SIZE

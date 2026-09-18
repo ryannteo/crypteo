@@ -137,6 +137,8 @@ def test_cost_free_sizing_and_exact_order_mapping() -> None:
     assert result.capital_basis == D(1000)
     assert result.risk_budget == result.estimated_total_loss == D(20)
     assert result.estimated_stop_execution_price == D(90)
+    assert result.estimated_target_execution_price == D(120)
+    assert result.estimated_net_target_reward_per_unit == D(20)
     assert result.estimated_loss_per_unit == D(10)
     assert result.authorized_quantity == D(2)
     assert result.estimated_entry_cash == D(200)
@@ -160,6 +162,8 @@ def test_independent_cost_inclusive_golden_sizing() -> None:
     # Six and a half units fit; seven would cost 102.844 of the 100 budget.
     assert result.estimated_entry_price == D(101)
     assert result.estimated_stop_execution_price == D("89.1")
+    assert result.estimated_target_execution_price == D("118.8")
+    assert result.estimated_net_target_reward_per_unit == D("14.414")
     assert result.estimated_loss_per_unit == D("14.692")
     assert result.risk_budget == D(100)
     assert result.authorized_quantity == D("6.5")
@@ -769,3 +773,174 @@ def test_entry_gap_affordability_remains_broker_owned_without_resizing(
         assert state.rejections[0].reason == "UNAFFORDABLE"
         assert state.cash == D(1010) and state.fills == ()
     assert state.orders == (auth.order,)
+
+
+@pytest.mark.parametrize(
+    "target,settings",
+    [
+        ("100.5", config(entry_fee_rate="0.01")),  # Negative after entry fee.
+        ("101", config(entry_fee_rate="0.01")),  # Exactly zero.
+        ("125", config(exit_fee_rate="0.2")),  # Exactly zero after exit fee.
+        ("102", config(adverse_slippage="0.01")),  # Negative after slippage.
+        ("100.25", config(price_increment="0.25")),  # BUY tick rounding eats reward.
+    ],
+)
+def test_direct_proposals_cannot_bypass_target_economics(
+    target: str, settings: ExecutionConfig
+) -> None:
+    # Only one reference candle exists: authorization has no TradeTerms dependency.
+    reference = "100.01" if target == "100.25" else "100"
+    assert_rejected(
+        service(settings=settings, candles=[bar(close=reference)]).authorize(
+            proposal(target_price=target), flat()
+        ),
+        "NON_POSITIVE_TARGET_REWARD",
+    )
+
+
+def test_tiny_positive_net_reward_is_authorized_without_epsilon_or_rr_threshold() -> (
+    None
+):
+    tiny = "0." + "0" * 59 + "1"
+    target = "101." + "0" * 59 + "1"
+    settings = config(entry_fee_rate="0.01", price_increment=tiny)
+    candidate = proposal(target_price=target)
+    expected = approved(service(settings=settings).authorize(candidate, flat()))
+    assert expected.estimated_target_execution_price == D(target)
+    assert expected.estimated_net_target_reward_per_unit == D(tiny)
+    assert expected.estimated_loss_per_unit == D(11)
+    assert expected.authorized_quantity == D("1.5")
+    with localcontext() as hostile:
+        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
+        hostile.rounding = ROUND_UP
+        for signal in hostile.traps:
+            hostile.traps[signal] = True
+        before = repr(hostile)
+        actual = approved(service(settings=settings).authorize(candidate, flat()))
+        assert actual.model_dump_json() == expected.model_dump_json()
+        assert RiskAuthorization.model_validate(actual) == expected
+        assert (
+            RiskAuthorization.model_validate_json(actual.model_dump_json()) == expected
+        )
+        assert repr(hostile) == before
+
+
+@pytest.mark.parametrize("cash", ["0", "1", "1000"])
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("reference", "REFERENCE_UNAVAILABLE"),
+        ("levels", "INVALID_LONG_LEVELS"),
+        ("stop", "UNEXECUTABLE_STOP"),
+        ("target", "NON_POSITIVE_TARGET_REWARD"),
+    ],
+)
+def test_target_reward_rejection_precedence(case: str, reason: str, cash: str) -> None:
+    # Target 102 has negative reward under 1% adverse slippage; later capital
+    # and quantity failures must not obscure it or any earlier rejection.
+    candidate = proposal(
+        stop_price="100" if case == "levels" else "1" if case == "stop" else "90",
+        target_price="102",
+    )
+    assert_rejected(
+        service(
+            candles=[] if case == "reference" else [bar()],
+            settings=config(price_increment="1", adverse_slippage="0.01"),
+        ).authorize(candidate, flat(cash)),
+        reason,
+    )
+
+
+def test_busy_and_reused_id_precede_target_reward_but_follow_input_errors() -> None:
+    settings = config(entry_fee_rate="0.01")
+    gate = service(settings=settings)
+    order = approved(gate.authorize(proposal(), flat())).order
+    state = PortfolioSnapshot(
+        initial_cash=D(1000), cash=D(1000), orders=(order,), pending=order
+    )
+    assert_rejected(
+        gate.authorize(proposal(target_price="101"), state), "REUSED_ORDER_ID"
+    )
+    result = gate.authorize(proposal(order_id="new", target_price="101"), state)
+    assert isinstance(result, RiskRejection) and result.reason == "PORTFOLIO_BUSY"
+    with pytest.raises(ValueError, match="target_price must align"):
+        gate.authorize(proposal(target_price="100.01"), state)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"estimated_target_execution_price": D(121)},
+        {"estimated_net_target_reward_per_unit": D(21)},
+        {
+            "estimated_target_execution_price": D(121),
+            "estimated_net_target_reward_per_unit": D(21),
+        },
+        {"estimated_target_execution_price": D(0)},
+        {"estimated_net_target_reward_per_unit": D(0)},
+        {"estimated_net_target_reward_per_unit": D(-1)},
+        {"estimated_net_target_reward_per_unit": D("NaN")},
+    ],
+)
+def test_target_diagnostics_recompute_on_direct_instance_and_json_validation(
+    change: dict[str, Any],
+) -> None:
+    valid = approved(service().authorize(proposal(), flat()))
+    with pytest.raises(ValidationError):
+        RiskAuthorization.model_validate(valid.model_dump() | change)
+    forged = valid.model_copy(update=change)
+    with pytest.raises(ValidationError):
+        RiskAuthorization.model_validate(forged)
+    with pytest.raises(ValidationError):
+        RiskAuthorization.model_validate_json(forged.model_dump_json())
+
+
+@pytest.mark.parametrize("target", ["100.5", "101"])
+def test_coherent_target_execution_cannot_conceal_nonpositive_reward(
+    target: str,
+) -> None:
+    data = approved(
+        service(settings=config(entry_fee_rate="0.01")).authorize(proposal(), flat())
+    ).model_dump(mode="json")
+    data["proposal"]["target_price"] = data["order"]["target_price"] = target
+    data["estimated_target_execution_price"] = target
+    data["estimated_net_target_reward_per_unit"] = "0.000000000000000000000000000001"
+    assert_invalid_authorization(data, "net target reward per unit does not reconcile")
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["estimated_target_execution_price", "estimated_net_target_reward_per_unit"],
+)
+def test_new_authoritative_diagnostics_are_required(field: str) -> None:
+    data = approved(service().authorize(proposal(), flat())).model_dump()
+    del data[field]
+    with pytest.raises(ValidationError):
+        RiskAuthorization.model_validate(data)
+
+
+def test_target_execution_estimate_reconciles_with_unchanged_nongapped_broker() -> None:
+    settings = config(
+        entry_fee_rate="0.01",
+        exit_fee_rate="0.02",
+        adverse_slippage="0.01",
+        price_increment="0.25",
+    )
+    clock = SimulationClock(T)
+    gateway = PointInTimeDataGateway(clock, [bar(), bar(0), bar(1, high="120")])
+    broker = SimulatedBroker(gateway, settings, initial_cash=D(1000))
+    auth = approved(
+        RiskService(gateway, risk_config("0.1"), settings).authorize(
+            proposal(), broker.snapshot
+        )
+    )
+    broker.submit(auth.order)
+    clock.advance_to(T + 2 * HOUR)
+    trade = broker.process().closed_trades[0]
+    assert trade.exit_fill.reason == "TARGET"
+    assert trade.entry_fill.execution_price == auth.estimated_entry_price
+    assert trade.exit_fill.execution_price == auth.estimated_target_execution_price
+    assert (
+        trade.net_pnl
+        == auth.authorized_quantity * auth.estimated_net_target_reward_per_unit
+    )
