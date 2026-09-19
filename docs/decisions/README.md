@@ -42,6 +42,7 @@ Their Accepted status records those existing decisions, not completion of later
 components described by the specification.
 ADR-005 records the completed Slice 8 execution semantics.
 ADR-006 records the completed Slice 9 decision-time risk semantics.
+ADR-007 records the completed pre-Slice-10 deterministic trade-terms prerequisite.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -51,3 +52,4 @@ ADR-006 records the completed Slice 9 decision-time risk semantics.
 | [004](ADR-004-scanner-snapshot-semantics.md) | Scanner snapshot semantics | Accepted |
 | [005](ADR-005-completed-bar-execution-reconciliation.md) | Completed-bar simulated execution reconciliation | Accepted |
 | [006](ADR-006-decision-time-risk-authorization.md) | Decision-time risk authorization under unknown next-open execution | Accepted |
+| [007](ADR-007-deterministic-trade-terms.md) | Deterministic market-derived trade terms | Accepted |

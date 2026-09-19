@@ -18,8 +18,9 @@ in the inspected repository history. Verification for those entries identifies
 committed coverage, not proof
 of a historical passing run. Repairs are evidenced by diffs; their attribution to
 particular reviewers is unavailable. AI configuration is recorded separately below.
-The Slice 8 and 9 entries use the completed implementations and tests, with review findings
-and AI workflow supplied explicitly by the user.
+The Slice 8 and 9 entries and the pre-Slice-10 prerequisite entry use the completed
+implementations and tests, with review results and AI workflow supplied explicitly
+by the user.
 
 ## Development phases
 
@@ -254,6 +255,48 @@ and AI workflow supplied explicitly by the user.
   reconciliation including gaps and affordability rejection.
 - **Implementation commit:** `715f36457e52c80e45cfb68e8443076b2af25395`
   (`Add deterministic risk authorization and sizing`).
+
+### Pre-Slice-10 prerequisite: deterministic trade terms and target economics
+
+- **Objective:** complete deterministic market-derived LONG stop/target generation
+  before scanner-only replay, and require positive estimated net target reward at
+  the risk boundary.
+- **Decisions and rationale:** generate only from 21 contiguous visible hourly
+  candles ending at authoritative gateway time. Use the arithmetic mean of 20 true
+  ranges, a stop two mean true ranges below the reference close, and the shared
+  SMA20 target. Floor both levels exactly to the configured price increment and
+  reject unavailable history or invalid/collapsed levels without adjustment.
+  Immutable terms remain independent of opportunity delivery, research judgment,
+  portfolio sizing, and execution
+  ([ADR-007](decisions/ADR-007-deterministic-trade-terms.md)).
+- **Authorization and contracts:** share execution-cost arithmetic; `RiskService`
+  rejects zero or negative estimated net target reward even for direct proposals.
+  Public contracts recompute levels and target diagnostics, including on instance
+  and JSON revalidation. Decision-time estimates remain separate from actual
+  next-open affordability and gap outcomes.
+- **Remaining scope:** Slice 10 owns opportunity freshness, deduplication,
+  stale-term admission, replay orchestration, proposal construction, metrics, and
+  experiment manifests. Generation does not automatically expose terms to the LLM.
+- **Independent review:** no findings, as reported by the user; no review repairs
+  were required.
+- **Notable regression/probe coverage:**
+  [analytics tests](../tests/test_analytics.py) exercise all true-range branches,
+  the unweighted 20-range mean, and exact arithmetic beyond 50 digits;
+  [terms tests](../tests/test_trade_terms.py) probe every missing/delayed window
+  position, future next-open isolation, no older-history fallback, arbitrary tick
+  sizes against an independent rational oracle, collapsed levels, and hostile
+  Decimal contexts. [Terms contracts](../tests/domain/test_trade_terms_contracts.py)
+  reject forged levels and unchecked nested configuration.
+  [Risk tests](../tests/test_risk.py) cover direct-proposal bypass attempts,
+  zero/negative and tiny positive reward, rejection precedence, forged diagnostics,
+  and nongapped target-exit reconciliation with the unchanged broker.
+- **Final verification:** 1,226 tests passed, plus Ruff format/check, strict mypy,
+  and `git diff --check`.
+- **Implementation commit:** `97e4ee032f95ec3adc6e43f432a961b77b36d02f`
+  (`Add deterministic trade terms and target validation`).
+- **AI workflow/configuration:** planning, implementation, and independent review
+  used Astra with High reasoning, as supplied by the user. These are engineering
+  workflow settings, not Crypteo runtime model configuration.
 
 ## Backfill verification
 

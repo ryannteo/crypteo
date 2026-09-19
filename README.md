@@ -18,9 +18,10 @@ The repository implements the deterministic foundations:
 - Deterministic Bollinger analytics and a lower-band crossover opportunity scanner.
 - Simulated LONG execution and portfolio accounting with fees, slippage,
   stop/target and time exits, and conservative missing-data handling.
-- Decision-time LONG risk authorization and position sizing using supplied levels.
+- Deterministic market-derived stop/target terms and decision-time LONG risk
+  authorization, positive estimated net target reward checks, and position sizing.
 
-Still unfinished: deterministic stop/target generation, replay orchestration,
+Still unfinished: replay orchestration,
 research tools and the bounded LangGraph/LLM workflow, durable lifecycle journaling,
 and the integrated evaluation and reporting harness. No agents are implemented yet.
 
