@@ -39,6 +39,19 @@ class CoinbaseHistoricalDataset:
     acquisition: CoinbaseAcquisitionRecord
 
 
+@dataclass(frozen=True, slots=True)
+class CoinbaseCanonicalDataset:
+    """Explicit canonical replay input, without requiring raw capture bodies.
+
+    Consumers must validate canonical content before use. Acquisition provenance
+    is optional because one canonical version can have several acquisitions.
+    """
+
+    candles: tuple[Candle, ...]
+    manifest: DatasetManifest
+    acquisition: CoinbaseAcquisitionRecord | None = None
+
+
 def compose_coinbase_dataset(
     *,
     pair: TradingPair,

@@ -18,6 +18,7 @@ from crypteo.coinbase_capture import (
     coinbase_capture_id as coinbase_capture_id,
 )
 from crypteo.coinbase_dataset import (
+    CoinbaseCanonicalDataset,
     CoinbaseHistoricalDataset,
     canonical_dataset_artifacts,
     compose_coinbase_dataset,
@@ -42,6 +43,50 @@ class CoinbaseLocalPersistence:
                 artifact_dir / "request.json",
                 _capture_metadata_bytes(response),
             )
+
+    def load_dataset(
+        self, dataset_version: str, *, acquisition_id: str | None = None
+    ) -> CoinbaseCanonicalDataset:
+        """Validate/read an explicit canonical version; never fetch or repair.
+
+        Provenance is read only when explicitly identified, since choosing among
+        multiple acquisitions of the same content would be ambiguous.
+        """
+        artifact_dir = self.dataset_artifact_dir(dataset_version)
+        for name in ("manifest.json", "candles.json"):
+            if not (artifact_dir / name).resolve().is_relative_to(self._root.resolve()):
+                raise ValueError("canonical file must remain beneath artifact root")
+        manifest, candle_bytes = _read_canonical_artifacts(artifact_dir)
+        if manifest.dataset_version != dataset_version:
+            raise ValueError("stored canonical version differs from requested version")
+        acquisition = None
+        if acquisition_id is not None:
+            match = _DATASET_VERSION_PATTERN.fullmatch(acquisition_id)
+            if match is None:
+                raise ValueError("invalid acquisition_id")
+            path = (
+                self._root
+                / "acquisitions"
+                / "coinbase"
+                / "sha256"
+                / match.group(1)
+                / "acquisition.json"
+            )
+            if not path.resolve().is_relative_to(self._root.resolve()):
+                raise ValueError("acquisition path must remain beneath artifact root")
+            acquisition = CoinbaseAcquisitionRecord.model_validate_json(
+                path.read_bytes()
+            )
+            if (
+                acquisition.acquisition_id != acquisition_id
+                or acquisition.dataset_version != dataset_version
+            ):
+                raise ValueError("stored acquisition identity/linkage mismatch")
+        return CoinbaseCanonicalDataset(
+            candles=_CANDLES_ADAPTER.validate_json(candle_bytes),
+            manifest=manifest,
+            acquisition=acquisition,
+        )
 
     def persist_dataset(self, dataset: CoinbaseHistoricalDataset) -> DatasetManifest:
         """Validate and persist canonical content, returning the first manifest."""

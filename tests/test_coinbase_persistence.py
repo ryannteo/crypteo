@@ -1008,3 +1008,115 @@ def test_direct_publication_reuses_first_manifest_read_only(tmp_path: Path) -> N
         persistence.acquisition_artifact_dir(later.acquisition) / "acquisition.json"
     ).read_bytes() == later.acquisition.canonical_bytes()
     assert later.manifest.created_at < later.acquisition.created_at
+
+
+def test_loader_validates_canonical_only_and_explicit_acquisition_read_only(
+    tmp_path: Path,
+) -> None:
+    dataset = canonical_dataset()
+    store = CoinbaseLocalPersistence(tmp_path)
+    store.persist_dataset(dataset)
+    store.persist_raw(dataset.raw_responses)
+    store.persist_acquisition(dataset)
+    before = {
+        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tmp_path.rglob("*.json")
+    }
+    canonical = store.load_dataset(dataset.manifest.dataset_version)
+    assert canonical.manifest == dataset.manifest
+    assert canonical.candles == dataset.candles
+    assert canonical.acquisition is None
+    linked = store.load_dataset(
+        dataset.manifest.dataset_version,
+        acquisition_id=dataset.acquisition.acquisition_id,
+    )
+    assert linked.acquisition == dataset.acquisition
+    assert before == {
+        p: (p.read_bytes(), p.stat().st_mtime_ns) for p in tmp_path.rglob("*.json")
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "corrupt",
+        "missing",
+        "wrong_version",
+        "wrong_acquisition",
+        "wrong_link",
+        "traversal",
+    ],
+)
+def test_loader_rejects_corruption_missing_artifacts_and_false_linkage(
+    tmp_path: Path, case: str
+) -> None:
+    dataset = canonical_dataset()
+    store = CoinbaseLocalPersistence(tmp_path)
+    store.persist_dataset(dataset)
+    store.persist_raw(dataset.raw_responses)
+    store.persist_acquisition(dataset)
+    version = dataset.manifest.dataset_version
+    acquisition_id = dataset.acquisition.acquisition_id
+    canonical = store.dataset_artifact_dir(version)
+    if case == "corrupt":
+        (canonical / "candles.json").write_bytes(b"[]")
+    elif case == "missing":
+        (canonical / "candles.json").rename(canonical / "missing.json")
+    elif case == "wrong_version":
+        version = "sha256:" + "f" * 64
+        canonical.rename(store.dataset_artifact_dir(version))
+    elif case == "wrong_acquisition":
+        path = store.acquisition_artifact_dir(dataset.acquisition)
+        acquisition_id = "sha256:" + "f" * 64
+        path.rename(path.parent / ("f" * 64))
+    elif case == "wrong_link":
+        from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
+
+        other = CoinbaseAcquisitionRecord.model_validate(
+            dataset.acquisition.model_dump() | {"dataset_version": "sha256:" + "f" * 64}
+        )
+        path = store.acquisition_artifact_dir(other)
+        path.mkdir(parents=True)
+        (path / "acquisition.json").write_bytes(other.canonical_bytes())
+        acquisition_id = other.acquisition_id
+    else:
+        acquisition_id = "../escape"
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
+    with pytest.raises((ValueError, FileNotFoundError)):
+        store.load_dataset(version, acquisition_id=acquisition_id)
+    assert before == {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
+
+
+@pytest.mark.parametrize("name", ["manifest.json", "candles.json"])
+@pytest.mark.parametrize("outside", [True, False])
+def test_load_dataset_checks_resolved_canonical_leaf_before_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, outside: bool
+) -> None:
+    root = tmp_path / "artifacts"
+    persistence = CoinbaseLocalPersistence(root)
+    dataset = canonical_dataset()
+    persistence.persist_dataset(dataset)
+    path = persistence.dataset_artifact_dir(dataset.manifest.dataset_version) / name
+    target = (tmp_path if outside else root) / f"linked-{name}"
+    path.rename(target)
+    try:
+        path.symlink_to(target)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlinks unsupported: {error}")
+    if outside:
+        original_read = Path.read_bytes
+
+        def guarded_read(candidate: Path) -> bytes:
+            assert candidate.resolve() != target, (
+                "escaped leaf was read before containment check"
+            )
+            return original_read(candidate)
+
+        monkeypatch.setattr(Path, "read_bytes", guarded_read)
+        with pytest.raises(
+            ValueError, match="canonical file must remain beneath artifact root"
+        ):
+            persistence.load_dataset(dataset.manifest.dataset_version)
+    else:
+        loaded = persistence.load_dataset(dataset.manifest.dataset_version)
+        assert loaded.manifest == dataset.manifest
+        assert loaded.candles == dataset.candles

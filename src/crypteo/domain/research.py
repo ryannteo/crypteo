@@ -1,6 +1,7 @@
 """Strict research evidence, interpretation, and decision contracts."""
 
 from collections.abc import Iterator, Mapping
+from datetime import datetime
 from enum import StrEnum
 from math import isfinite
 from types import MappingProxyType
@@ -155,6 +156,17 @@ class Opportunity(BaseModel):
     trigger_type: NonBlankText
     trigger_payload: ImmutableJsonObject
     summary: NonBlankText
+
+    @property
+    def identity_key(self) -> tuple[str, Venue, TradingPair, Timeframe, datetime]:
+        """ADR-004 identity; trigger_type includes the scanner trigger version."""
+        return (
+            self.trigger_type,
+            self.venue,
+            self.pair,
+            self.timeframe,
+            self.observed_at,
+        )
 
     @model_validator(mode="after")
     def validate_temporal_consistency(self) -> Self:
