@@ -43,6 +43,7 @@ components described by the specification.
 ADR-005 records the completed Slice 8 execution semantics.
 ADR-006 records the completed Slice 9 decision-time risk semantics.
 ADR-007 records the completed pre-Slice-10 deterministic trade-terms prerequisite.
+ADR-008 records the completed Slice 10 replay boundary, delivery, and ordering semantics.
 
 | ADR | Decision | Status |
 | --- | --- | --- |
@@ -53,3 +54,4 @@ ADR-007 records the completed pre-Slice-10 deterministic trade-terms prerequisit
 | [005](ADR-005-completed-bar-execution-reconciliation.md) | Completed-bar simulated execution reconciliation | Accepted |
 | [006](ADR-006-decision-time-risk-authorization.md) | Decision-time risk authorization under unknown next-open execution | Accepted |
 | [007](ADR-007-deterministic-trade-terms.md) | Deterministic market-derived trade terms | Accepted |
+| [008](ADR-008-scanner-only-replay-boundary-delivery-ordering.md) | Scanner-only replay boundary, delivery, and simultaneous-candidate ordering | Accepted |

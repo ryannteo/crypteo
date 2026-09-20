@@ -161,7 +161,117 @@ Generation fails closed with `REFERENCE_UNAVAILABLE`, `HISTORY_UNAVAILABLE`, `ZE
 
 Successful terms are immutable and retain decision time, market identity, configuration, reference, derived statistics, and aligned levels. Their contract recomputes the levels; the service establishes the statistics' market provenance and temporal visibility. In the intended evaluation flow, terms are frozen before selection, authorization, and execution so selection cannot change the trade being evaluated. Generation does not imply research approval, portfolio sizing, execution authority, or automatic LLM exposure. See [ADR-007](decisions/ADR-007-deterministic-trade-terms.md) for the durable boundaries; the multiplier, window, and target formula above are current V1 policy.
 
-Slice 10 still owns opportunity freshness, deduplication, stale-term admission, replay orchestration and clock advancement, proposal construction from frozen terms, metrics, and experiment manifests. The generator accepts a pair rather than an `Opportunity` and cannot establish whether a scanner candidate remains fresh. The complete runtime pipeline is not yet implemented.
+Slice 10 implements opportunity freshness, deduplication, stale-term admission, replay orchestration and clock advancement, proposal construction from frozen terms, core metrics, and experiment manifests. The generator accepts a pair rather than an `Opportunity`; replay establishes whether a scanner candidate remains fresh.
+
+## Scanner-Only Replay
+
+`run_scanner_only(ReplayConfig, datasets, *, code=None) -> ReplayResult` implements
+the scanner-only baseline. It validates exactly one explicitly supplied canonical
+dataset per configured asset and preserves the complete supplied dataset identity.
+It does not fetch, trim, repair, or enforce walk-forward splits. Existing artifacts
+can be supplied through the [read-only canonical loader](data-pipeline.md#read-only-canonical-loading),
+with optional explicit acquisition linkage. `ReplayConfig` requires UTC hourly
+`start`/`end`, nonnegative `initial_cash`, a nonempty unique asset list, and
+`trade_terms`, `risk`, and `execution` configurations. Terms and execution price
+increments must match. `start == end` is valid: reconcile and observe once, with
+no decision boundaries. An end before start is invalid.
+
+One authoritative `SimulationClock` drives one gateway shared by the unchanged
+scanner, terms service, risk service, and broker. At each hourly boundary in
+`[start, end)`, replay reconciles the broker and records new lifecycle outcomes,
+then scans every configured pair. Admission requires
+`observed_at == gateway.now` and `available_at <= gateway.now`. Replay owns
+delivery state; the scanner remains snapshot-based. First sightings receive
+`ADMITTED`, `NOT_CURRENT`, or `NOT_AVAILABLE`; each disposition is terminal for
+that run, so old/delayed candidates are never backdated or retried. Later sightings
+receive `DUPLICATE` only after checking the canonical ADR-004
+`Opportunity.identity_key`: trigger type (including version), venue, pair,
+timeframe, and observed time. Conflicting reuse of an ID is an invariant failure.
+Payload, summary, and availability changes alone do not change identity.
+
+Candidates are processed in BTC-USD → ETH-USD → SOL-USD order, then by
+`opportunity_id`, independent of input ordering. Pair priority is a temporary
+allocation policy under the single-active-trade limitation. The durable boundary,
+delivery, and allocation decisions are recorded in
+[ADR-008](decisions/ADR-008-scanner-only-replay-boundary-delivery-ordering.md).
+
+For each admitted candidate, replay freezes terms and verifies market identity,
+configuration, and `terms.decision_at == opportunity.observed_at == gateway.now`.
+Preparation still happens while busy or halted. Valid terms always produce a
+baseline selection and deterministic proposal; there is no baseline `NO_TRADE`.
+Risk checks the current portfolio, and each authorization is submitted immediately
+before processing the next candidate, so later candidates see pending/open/halted
+state. `TradeTermsRejection`, `RiskRejection`, `EntryRejection`, `DataGap`, `Fill`,
+and `ClosedTrade` remain distinct typed outcomes. The boundary ends with a
+portfolio/equity observation and an exact one-hour clock advance. At `end`, replay
+reconciles and observes once,
+without scanning, submitting, draining beyond the end, cancellation, or forced
+liquidation. Positions still open after ordinary broker reconciliation remain
+open and are marked when valid data exists. A normally completed result cannot
+retain a pending order.
+
+Runtime owns delivery state, order identities, and append-only in-memory record
+sequence; the broker owns financial state. Records retain scan snapshots,
+delivery dispositions, terms, baseline proposals, risk outcomes, submissions,
+fills, closed trades, entry rejections, gaps, and boundary observations, reusing
+domain payloads. A holding gap continues the schedule with unavailable valuation
+and halted finances; subsequent valid proposals can receive `PORTFOLIO_HALTED`.
+Malformed inputs, stale/mismatched terms, invariant violations, and unexpected
+errors raise, with no partial result or recovery/persistence path. This is not
+the durable Slice 13 journal. Slice 10 includes no LLM research or `TradeDecision`
+workflow, live mode, or real-money execution.
+
+`ReplayResult` validates manifest/run identity, contiguous record sequences,
+record/payload timing and linkage, the complete hourly observation schedule, and
+agreement between final observation and portfolio. Its
+[replay_validation.py](../src/crypteo/replay_validation.py) checks lifecycle
+stage ordering, scan-to-delivery coverage and identity collisions, admitted
+opportunity-to-terms/proposal/risk/submission linkage, and financial outcomes
+against prior submissions and each observation's ledger prefix. These are
+artifact consistency checks, not a second execution simulation or a reconstruction
+of market evidence. Validation, including JSON deserialization, also recomputes
+all metrics with the canonical calculator and requires exact equality with the
+supplied metrics. Immutable in-memory records and these checks make serialized
+artifacts auditable without providing durable storage or recovery.
+
+`ExperimentManifest` contains schema version, `SCANNER_ONLY` mode, git commit and
+deterministic source digest, Python/Pydantic versions, replay bounds/cash/ordered
+assets, per-pair dataset/acquisition identities, explicit scanner policy, stable
+terms policy and configuration, and risk/execution configurations. The default
+source digest hashes relative names and contents of all Crypteo Python sources
+and the checkout's `pyproject.toml`; docs, tests, absolute checkout paths, mtimes,
+and bytecode do not participate. Outside a checkout, callers supply explicit
+`CodeIdentity` with git commit and source digest. Canonical serialization uses
+sorted compact UTF-8 JSON, normalized exact Decimal strings,
+and UTC timestamps with microseconds. `run_id` hashes the manifest without itself;
+order IDs hash `{run_id, opportunity_id, purpose: "order"}` independently of prior
+success counts. Runtime owns both identities. Equivalent validated inputs and the
+same manifest reproduce byte-stable results; there is no separate proposal ID.
+
+Core metrics are starting/ending marked equity, realized net P&L and return,
+marked return, maximum drawdown, entry/closed-trade counts, wins/losses/breakevens,
+win rate, actual fees, coarse hourly exposure, STOP/TARGET/TIME counts,
+`missing_entry_candle_count`, and completeness/unresolved-state indicators.
+Open holdings use the gateway-visible completed close ending at the observation
+boundary, with no hypothetical exit
+costs. Drawdown is the maximum fractional decline from the running equity peak,
+including initial cash. Returns, win rate, and exposure are fractions; ratio
+outputs round half-even to 50 significant digits, independently of caller Decimal
+context. Financial amounts remain exact.
+
+Exposure counts each reconciled holding candle, including entry and exit candles,
+divided by scheduled hours; it does not estimate intrabar duration. A holding gap
+makes ending equity, marked return, full-period drawdown, and exposure unavailable.
+Valid observations, prefix maximum drawdown, known exposure bars, actual fees,
+and realized metrics remain available, with `valuation_valid_through` marking the
+last valid prefix observation. Later candles do not resume or revalue a halted
+position. `missing_entry_candle_count` counts terminal `MISSING_ENTRY_CANDLE`
+entry rejections as foundational replay accounting; these leave no position and
+do not themselves invalidate valuation.
+Zero starting capital gives undefined returns; no closed trades gives undefined
+win rate. Empty schedules reconcile/observe once and have undefined exposure;
+flat/no-trade drawdown is zero. Advanced performance and research metrics remain
+deferred.
 
 ## Simulation and Risk
 
@@ -183,7 +293,9 @@ The V1 journal must ultimately persist opportunities, evidence, tool calls and r
 
 `ResearchThesis`, `Critique`, and `TradeDecision` contain model-facing research content, not `run_id`, `decision_id`, authoritative cutoffs, or runtime, graph, journal, decision, and experiment timestamps. The runtime/journal layer associates them with run and opportunity/request identity, authoritative timestamps, graph traces, experiment metadata, and applicable model/prompt/tool configuration. `EvidenceItem` retains `evidence_id` because theses and decisions reference evidence; `Opportunity` retains its deterministic `opportunity_id` because downstream processing must reference its input. The LLM never invents or maintains runtime linkage.
 
-The first concrete experiment manifest is introduced with Slice 10's scanner-only replay and records only configuration that exists then: code and dataset versions, scanner configuration/version, trade-terms policy/configuration, applicable risk configuration/version, simulation/execution configuration, and experiment mode. Later agentic replay slices extend it with prompts, models, research tools, and agent configuration as those components exist; Slice 3 does not define a speculative `RunManifest`.
+Slice 10 implements the [scanner-only experiment manifest](#scanner-only-replay).
+Later agentic replay slices will extend it with prompts, models, research tools,
+and agent configuration as those components exist.
 
 Each experiment ultimately records the applicable versioned configuration, asset universe and period, requests/responses, decisions, and traces. `FROZEN_RESPONSE` reproduction reuses stored model/tool artifacts to replay deterministic components. `FRESH_INFERENCE` preserves information boundaries and configuration but invokes the model again. Reports label them separately.
 

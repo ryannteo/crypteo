@@ -4,7 +4,30 @@ This document describes the implemented Coinbase acquisition and local persisten
 path. The [V1 specification](v1-specification.md#canonical-historical-data) defines
 the historical-data scope; [ADR-003](decisions/ADR-003-canonical-data-and-acquisition-provenance.md)
 records why raw captures, canonical datasets, and acquisition records have separate
-identities. Replay orchestration remains unfinished.
+identities. Scanner-only replay consumes explicitly supplied canonical datasets;
+see the [replay specification](v1-specification.md#scanner-only-replay).
+
+## Read-only canonical loading
+
+`CoinbaseLocalPersistence(root).load_dataset(dataset_version, *, acquisition_id=None)`
+reads and validates existing candles and manifest, recomputes canonical identity,
+and verifies that the stored version matches the requested path. It returns a
+`CoinbaseCanonicalDataset` without raw response bodies. An explicitly supplied
+acquisition ID loads and validates that record and its dataset linkage; omitting
+it returns `acquisition=None` without silently choosing among acquisitions that
+share one canonical version.
+
+Before reading, the loader resolves the canonical directory and both leaf paths
+(`manifest.json` and `candles.json`) and requires containment beneath the resolved
+artifact root. A leaf symlink escaping that root is rejected; a symlink remaining
+inside it is allowed. An explicitly requested acquisition path is also checked
+for containment.
+
+This narrow reader does not fetch data or repeat raw recomposition, which belongs
+to acquisition publication validation. Missing or corrupt artifacts raise without
+rewriting, trimming, or repairing anything. See the
+[loader](../src/crypteo/coinbase_persistence.py) and its
+[contract tests](../tests/test_coinbase_persistence.py).
 
 ## Acquisition boundary
 

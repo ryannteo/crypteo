@@ -298,6 +298,54 @@ by the user.
   used Astra with High reasoning, as supplied by the user. These are engineering
   workflow settings, not Crypteo runtime model configuration.
 
+### Slice 10: deterministic scanner-only historical replay
+
+- **Objective:** connect canonical datasets, snapshot scanner, frozen terms,
+  risk authorization, and simulated broker into deterministic hourly replay,
+  establishing a reproducible scanner-only baseline for later research comparison.
+- **Implementation commit:** `70b8c8e` (`Add deterministic scanner-only replay`).
+- **Implemented behavior:** one authoritative clock/gateway; broker reconciliation
+  before decisions at hourly boundaries in `[start, end)`; current-boundary
+  admission and terminal run-local delivery disposition. Simultaneous candidates
+  follow BTC-USD → ETH-USD → SOL-USD, then opportunity ID. Every fresh candidate
+  with valid terms is baseline-selected; risk authorization and immediate
+  submission are sequential under the single-active-trade limitation
+  ([ADR-008](decisions/ADR-008-scanner-only-replay-boundary-delivery-ordering.md)).
+  At `end`, reconcile and observe without new decisions, cancellation, or forced
+  liquidation. `start == end` is a valid empty replay with one observation.
+- **Artifacts and metrics:** immutable in-memory records preserve distinct terms,
+  risk, and entry rejections, fills, closed trades, and holding gaps. Canonical
+  manifests, runtime-owned run/order IDs, and serialization support byte-stable
+  reproduction. Marked-equity/core metrics include `missing_entry_candle_count`.
+  Open positions remain open; holding gaps preserve unresolved state, realized
+  metrics, and valid prefixes while invalidating affected full-period marked
+  metrics and exposure. Read-only canonical loading accepts optional explicit
+  acquisition linkage. Durable journaling/recovery, LLM research, the
+  `TradeDecision` workflow, walk-forward enforcement, live mode, and real-money
+  execution were not added.
+- **Initial independent review:** 2 HIGH, 1 MEDIUM, and 1 LOW findings, as recorded
+  in the supplied review history. Conflicting opportunity identities could be
+  silently deduplicated; serialized `ReplayResult` lifecycle/linkage validation
+  was insufficient; serialized metrics could contradict authoritative replay
+  state; canonical leaf symlinks could escape the artifact root.
+- **Repair cycle:** added canonical ADR-004 `Opportunity.identity_key` collision
+  rejection; focused lifecycle/linkage/ledger-prefix validation in
+  `replay_validation.py`; metric recomputation with exact equality against the
+  canonical calculator during `ReplayResult` validation; and resolved canonical
+  leaf-path containment checks before reading. Regression tests exercise identity
+  collisions, deleted/reordered/mislinked lifecycle records, forged metrics,
+  observation history, and escaping versus contained symlinks.
+- **Final independent verification:** all four findings **RESOLVED**; no new
+  findings, no Slice 10 scope leakage, and implementation/tests safe to commit,
+  as reported in the supplied final review record.
+- **Final implementation verification:** 1,438 tests passed; Ruff format/check
+  passed; strict mypy passed (49 source files); `git diff --check` passed. These
+  are the supplied final implementation results, distinct from this documentation
+  reconciliation's checks.
+- **AI workflow/configuration:** model variants and reasoning settings for Slice
+  10 implementation, review, and repair are not established by the available
+  record; none are inferred.
+
 ## Backfill verification
 
 On 2026-09-12, the documentation backfill was checked against production and tests

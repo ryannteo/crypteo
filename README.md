@@ -20,10 +20,12 @@ The repository implements the deterministic foundations:
   stop/target and time exits, and conservative missing-data handling.
 - Deterministic market-derived stop/target terms and decision-time LONG risk
   authorization, positive estimated net target reward checks, and position sizing.
+- Deterministic scanner-only historical replay with reproducible in-memory
+  results, marked equity, and core metrics for later research comparisons.
 
-Still unfinished: replay orchestration,
-research tools and the bounded LangGraph/LLM workflow, durable lifecycle journaling,
-and the integrated evaluation and reporting harness. No agents are implemented yet.
+Still unfinished: research tools and the bounded LangGraph/LLM workflow, agentic
+replay, durable lifecycle journaling, and the integrated evaluation and reporting
+harness. No agents are implemented yet.
 
 ## V1 architecture
 
@@ -54,6 +56,19 @@ affordability and execution outcomes. Authorization does not cap realized loss.
   specialist agents, and a dashboard are deferred.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
+
+## Scanner-only replay API
+
+`crypteo.replay.run_scanner_only(config, datasets, *, code=None)` accepts a
+`ReplayConfig` from `crypteo.experiment` and one explicit canonical dataset per
+configured asset. Supply acquisition results directly or use the
+[read-only dataset loader](docs/data-pipeline.md#read-only-canonical-loading).
+
+The returned `ReplayResult` contains the experiment manifest, audit records,
+portfolio observations, final portfolio, and metrics; `result.canonical_bytes()`
+produces byte-stable JSON. This is an in-memory baseline for later agentic
+comparisons. See the [replay specification](docs/v1-specification.md#scanner-only-replay)
+for configuration, boundary behavior, and reproducibility.
 
 ## Documentation
 
