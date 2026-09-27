@@ -2,6 +2,12 @@
 
 Status: architecture locked for V1. Changes to a hard invariant require an architecture decision record.
 
+Implementation status: deterministic infrastructure through Slice 11 is complete,
+including scanner-only replay and the seven market-research tools below. Slice 12
+LangGraph/model-backed investigation, thesis generation, critic, final AI research
+assessment, agentic replay, durable lifecycle journal, and live mode/UI remain
+unimplemented. Workflow sections describe intended behavior unless marked implemented.
+
 ## Product and Research Question
 
 Crypteo is an agentic crypto research copilot for traders and researchers with existing market knowledge. Its long-term product is a live, up-to-date research assistant that investigates market opportunities, gathers and synthesizes evidence, challenges trade theses, surfaces uncertainty and counterevidence, and supports more informed trading decisions. AI researchers and portfolio reviewers are secondary users.
@@ -20,7 +26,7 @@ Long term, Crypteo is expected to evolve into a bounded multi-agent research sys
 - Completed 1-hour OHLCV candles on a timezone-aware UTC timeline.
 - Exactly one deterministic scanner shared by Crypteo and scanner-only baseline.
 - Long positions only; domain direction remains an enum to permit a later `SHORT` value.
-- Market-derived evidence only: price, returns, volume, trend, momentum, volatility, relative strength, support/resistance, and deterministic regime measures.
+- Market-derived evidence only: price, returns, volume, trend, momentum, volatility, Bollinger position, recent observed levels, and relative strength. Slice 11 does not assign predictive support/resistance or volatility percentile/regime labels.
 - Historical replay is the first complete evaluation mode.
 - Decisions are `TRADE`, `NO_TRADE`, or `ABSTAIN`; `RISK_REJECTED` is a separate deterministic outcome.
 
@@ -73,9 +79,159 @@ An `Opportunity` is not an LLM decision, directional vote, order, execution or r
 
 Every normalized `EvidenceItem` contains `evidence_id`, category/type, source, `observed_at`, `available_at`, provenance, tool/query parameters, dataset/source version, immutable structured payload or artifact reference, concise relevance, and optional quality metadata. Large dataframes and raw datasets stay outside graph state. Research capabilities emit this evidence rather than independent `BUY`, `SELL`, `BULLISH`, or `BEARISH` votes; the integrated research process owns interpretation.
 
-Tool runtime, not the model, injects asset, venue, timeframe, and authoritative cutoff. Tool outputs expose warnings and temporal provenance. The thesis and critic consume evidence contracts rather than market-provider objects.
+Tool runtime owns authoritative time, fixed venue/timeframe, and source bindings.
+Slice 11 tool arguments select a supported pair and, for relative strength, an
+explicit benchmark; callers cannot supply a cutoff or window override. Results
+expose temporal provenance and typed unavailability. The future thesis and critic
+consume evidence contracts rather than market-provider objects.
 
 `Opportunity` and `EvidenceItem` schemas enforce internal timestamp consistency, including `available_at >= observed_at`. They do not enforce `available_at <= SimulationClock.now`; Slice 4's `SimulationClock` and `PointInTimeDataGateway` own authoritative visibility at replay time.
+
+## Deterministic Market Research
+
+Completed Slice 11 implements `MarketResearchService` in
+[market_research.py](../src/crypteo/market_research.py), with immutable typed
+[contracts and payloads](../src/crypteo/domain/market_research.py) and private
+[research arithmetic](../src/crypteo/domain/_market_research_arithmetic.py).
+The fixed policy is `market_research_v1`.
+
+### Public API and assembly
+
+The service exposes `trend(pair)`, `momentum(pair)`, `volatility(pair)`,
+`bollinger_position(pair)`, `levels(pair)`, `volume_context(pair)`, and
+`relative_strength(pair, benchmark)`. Each returns
+`ResearchToolSuccess | ResearchToolUnavailable`. Supported markets are Coinbase
+`BTC-USD`, `ETH-USD`, and `SOL-USD`, using completed 1h candles. Tools require no
+`Opportunity` and expose no timestamp, arbitrary lookback, or window override,
+allowing reuse by future opportunity-led and trader-led orchestration.
+
+`build_market_research(clock, datasets)` validates canonical datasets and any
+supplied acquisition linkage, then constructs the gateway and source-provenance
+bindings from the same authoritative inputs. It accepts canonical or historical
+dataset objects, with one binding per supplied pair; duplicate bindings raise.
+The supplied clock remains runtime-owned. Direct service construction is a runtime
+integration seam whose source bindings must describe the gateway's datasets.
+Raw-capture verification remains at the acquisition/publication boundary.
+Slice 11 does not rewire scanner-only replay or implement an LLM workflow.
+
+### Fixed capabilities, windows, and formulas
+
+Let `T` be captured gateway time. `Ck`, `Hk`, `Lk`, and `Vk` denote close, high,
+low, and base-asset volume of the candle ending at `T - k hours`; `C0` is the
+current completed close. All windows below are exact contiguous hourly windows
+ending at `T`, including the current candle. Returns and distances are fractions.
+
+| Capability | Required bars | Fixed measurements |
+| --- | --- | --- |
+| Trend | 50 | `SMA20 = mean(C0..C19)`; `SMA50 = mean(C0..C49)`; `close_vs_sma20 = C0 / SMA20 - 1`; `close_vs_sma50 = C0 / SMA50 - 1`; `sma20_vs_sma50 = SMA20 / SMA50 - 1`. |
+| Momentum | 25 | Simple returns `return_1h = C0 / C1 - 1`, `return_6h = C0 / C6 - 1`, `return_24h = C0 / C24 - 1`; `previous_return_6h = C6 / C12 - 1`; `return_change_6h = return_6h - previous_return_6h`. |
+| Volatility | 41 | `TRk = max(Hk - Lk, abs(Hk - C(k+1)), abs(Lk - C(k+1)))`. Current mean is `mean(TR0..TR19)`; previous mean is `mean(TR20..TR39)`, seeded by `C40`. Normalize current mean by `C0` and previous mean by `C20`; `normalized_range_ratio = current_normalized_range / previous_normalized_range`. |
+| Bollinger position | 20 | Scanner-identical SMA20 and population standard deviation `σ` over `C0..C19`; `lower = SMA20 - 2σ`, `upper = SMA20 + 2σ`; `percent_b = (C0 - lower) / (upper - lower)`; `bandwidth_fraction = (upper - lower) / SMA20`. |
+| Recent levels | 25 | `recent_high = max(H1..H24)` and `recent_low = min(L1..L24)`, excluding the current candle. `close_vs_high = C0 / recent_high - 1`; `close_vs_low = C0 / recent_low - 1`. |
+| Volume context | 25 | Current base-asset volume `V0`, previous 24-bar mean `mean(V1..V24)`, and `volume_ratio = V0 / mean(V1..V24)`. |
+| Relative strength | 25 per market | Subject and benchmark simple returns `C0 / C6 - 1` and `C0 / C24 - 1`; each spread is subject return minus benchmark return at the same horizon. |
+
+Volatility reuses existing `mean_true_range` for two non-overlapping sets of 20
+true ranges; the shared candle ending at `T - 20h` supplies the current set's
+previous-close seed and the previous set's ending close. These are arithmetic
+means, not Wilder ATR, a volatility percentile, or a regime classification.
+Bollinger `percent_b` is unclipped and can lie below zero or above one.
+
+Recent levels select the most recent prior candle when extrema tie and retain
+its close time. The payload names for `close_vs_high` and `close_vs_low` are
+`recent_high_distance` and `recent_low_distance`, respectively. These are
+observational levels, not predictive support/resistance or proposed trade terms.
+
+Relative strength requires explicit ordered subject/benchmark roles and exactly
+aligned windows. All six ordered comparisons are supported: BTC/ETH, BTC/SOL,
+ETH/BTC, ETH/SOL, SOL/BTC, and SOL/ETH (each asset's USD pair). Self-comparison
+raises; no default benchmark is inferred.
+
+### Temporal boundary and unavailable outcomes
+
+One authoritative `PointInTimeDataGateway` supplies all research history. Each
+call captures `T = gateway.now`, which must be a timezone-aware hourly UTC
+boundary. Required coverage is `[T - N hours, T)`, with the final candle ending
+at `T`. Every contributing candle must be completed and visible:
+`close_time <= T` and `available_at <= T`. The service does not advance time,
+and checks gateway time after each market read; clock movement during cross-asset
+reads raises rather than combining observations from different boundaries.
+
+There are no shortened windows, older-history fallback, interpolation,
+forward-fill, or latest-common-timestamp alignment. Expected absence produces
+`ResearchToolUnavailable`, retaining query, policy, required window, affected
+subject/benchmark role, and one reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `SOURCE_UNAVAILABLE` | A required market has no bound source. |
+| `REFERENCE_UNAVAILABLE` | Visible history is empty or lacks the candle ending at `T`. |
+| `INSUFFICIENT_HISTORY` | The reference exists, but visible history begins after the required window start. |
+| `HISTORY_GAP` | History reaches the required start and reference, but a required hourly slot is missing or delayed beyond `T`. |
+
+Source bindings are checked first. For bound markets, all returned histories are
+revalidated before missing-history classification; per-market checks follow the
+table's reference, leading-history, then gap order, subject before benchmark.
+Malformed, corrupt, future/invisible, mismatched, duplicate, or unordered gateway
+data raises rather than becoming ordinary unavailability.
+
+Availability is derived as the maximum availability of **all** contributing
+candles across all inputs, including previous-close seeds. Since success requires
+the visible candle ending at `T`, successful V1 evidence naturally satisfies
+`observed_at == available_at == T`; this is not permission to ignore dependencies.
+
+### Evidence normalization, identity, and provenance
+
+The existing `EvidenceItem` remains the common envelope. `ResearchToolSuccess`
+contains typed context, a capability-specific payload, and its normalized evidence.
+Contracts validate fixed window geometry, source roles, payload relationships,
+envelope linkage, and evidence identity, including nested and JSON revalidation.
+The service establishes the actual visible candle dependencies; schema validation
+alone does not prove market provenance.
+
+Successful tools emit interpretation-neutral market evidence, with no
+bullish/bearish labels, recommendation, confidence, weighting, or
+`TRADE` / `NO_TRADE` / `ABSTAIN` assessment. Evidence quality is unset. Typed
+context is embedded in `provenance.query_params`, and the deterministic payload
+is normalized into the immutable envelope. Raw candle windows stay outside it.
+
+Semantic `evidence_id` is a SHA-256 digest of identity encoding version `1`,
+the `market_research_v1` policy and capability, ordered subject/benchmark roles
+and market identities (venue, pair, timeframe), observed time, required-window
+geometry, canonical digests of the actual contributing candle windows, and the
+normalized deterministic payload. Each window digest includes encoding version,
+market identity, window geometry, and complete contributing candle records,
+including OHLCV, open/close times, and availability timestamps. Encoding uses sorted,
+compact UTF-8 JSON, normalized exact Decimal strings, and UTC timestamps with
+microseconds.
+
+Semantic identity excludes full dataset version, acquisition ID, paths, invocation
+metadata, and prose. Changing only data after `T`, or older noncontributing data,
+does not change point-in-time evidence identity. Acquisition-only differences also
+leave it unchanged. Changing any contributing candle changes its window digest
+and evidence identity even when the numerical payload remains unchanged.
+
+Dataset and acquisition identities remain explicit provenance in each input's
+source reference, alongside role, venue, pair, timeframe, source, and source schema
+version; acquisition ID may be absent. Relative-strength provenance preserves
+both subject and benchmark roles. `provenance.source_version` is canonical source
+schema version `1`, not dataset content identity or research-policy version.
+`provenance.producer` identifies `market_research_v1.<capability>`.
+
+### Numerical policy
+
+New arithmetic uses deterministic Decimal operations in a private
+50-significant-digit, half-even context, independent of ambient Decimal settings
+and without binary floats. Scanner Bollinger/SMA20 arithmetic is reused;
+existing `mean_true_range` retains its exact arithmetic rather than being rounded
+to a new research mean. Calculations and relational validators share the numerical
+policy.
+
+Zero denominators produce a `ResearchRatio` with `value=None` and an explicit
+`ZERO_PREVIOUS_NORMALIZED_RANGE`, `ZERO_BAND_WIDTH`, or `ZERO_BASELINE_VOLUME`
+reason as appropriate. They do not make otherwise valid evidence unavailable.
+Zero numerators with positive denominators produce defined zero ratios; prices
+and price means used as denominators must remain positive.
 
 ## Initial LangGraph
 
@@ -295,7 +451,8 @@ The V1 journal must ultimately persist opportunities, evidence, tool calls and r
 
 Slice 10 implements the [scanner-only experiment manifest](#scanner-only-replay).
 Later agentic replay slices will extend it with prompts, models, research tools,
-and agent configuration as those components exist.
+and agent configuration when the research workflow is integrated. Slice 11's
+standalone tools do not change the scanner-only manifest.
 
 Each experiment ultimately records the applicable versioned configuration, asset universe and period, requests/responses, decisions, and traces. `FROZEN_RESPONSE` reproduction reuses stored model/tool artifacts to replay deterministic components. `FRESH_INFERENCE` preserves information boundaries and configuration but invokes the model again. Reports label them separately.
 
@@ -315,7 +472,7 @@ The common start follows SOL-USD's June 2021 Coinbase launch and leaves a short 
 
 ## Testing Policy
 
-Normal CI mocks model responses. The completed V1 test suite will include unit, property, golden, contract, graph-routing, integration, and replay tests covering indicators, scanner, sizing, accounting, costs, stops/targets, limits, timing, schemas, abstention, critic paths, deterministic replay, leakage, baseline fairness, and opportunity-to-close behavior. Model-backed evaluations are separate and versioned.
+Normal CI must mock model responses once model integration is added. The completed V1 test suite will include unit, property, golden, contract, graph-routing, integration, and replay tests covering indicators, scanner, sizing, accounting, costs, stops/targets, limits, timing, schemas, abstention, critic paths, deterministic replay, leakage, baseline fairness, and opportunity-to-close behavior. Model-backed evaluations remain separate and versioned.
 
 ## Implementation Slices
 
@@ -331,7 +488,7 @@ Each slice ends with passing automated tests and a usable repository state.
 8. Execution kernel: orders, fills, portfolio ledger, fees/slippage, gaps, intrabar priority, and time exits; acceptance: accounting invariants and scenario tables pass.
 9. Risk gate: deterministic position sizing and risk authorization with explicit risk and execution configuration; acceptance: known boundary cases approve/reject deterministically with reason codes.
 10. Scanner-only replay: opportunity freshness and deduplication, stale-term admission, proposal construction from frozen deterministic terms, event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results.
-11. Market tool contracts: typed bounded tools returning normalized evidence; acceptance: provenance, cutoff, artifact, stale-data, and failure contracts pass.
+11. Deterministic market research (complete): seven fixed-window typed tools returning normalized evidence; acceptance: formula goldens, temporal/gap handling, semantic identity/provenance, numerical isolation, and success/unavailable contracts pass. See the [fixed policy](#deterministic-market-research).
 12. Minimal LangGraph: investigate, draft, critic, finalize with mocked model adapter and budgets; acceptance: all routes, retries, fail-closed abstention, and schema repair limits pass.
 13. Append-only journal: durable local persistence for the complete lifecycle; acceptance: linkage/audit tests pass and decision-time reads cannot access memory.
 14. Integrated agent replay: same opportunities flow through agent, risk, broker, and journal; acceptance: frozen-response replay is deterministic and baseline inputs are identical.

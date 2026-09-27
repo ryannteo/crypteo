@@ -18,9 +18,9 @@ in the inspected repository history. Verification for those entries identifies
 committed coverage, not proof
 of a historical passing run. Repairs are evidenced by diffs; their attribution to
 particular reviewers is unavailable. AI configuration is recorded separately below.
-The Slice 8 and 9 entries and the pre-Slice-10 prerequisite entry use the completed
-implementations and tests, with review results and AI workflow supplied explicitly
-by the user.
+The Slice 8–11 entries and the pre-Slice-10 prerequisite entry use the completed
+implementations and tests, with review and verification results supplied explicitly
+by the user. AI workflow settings are recorded only where supplied.
 
 ## Development phases
 
@@ -345,6 +345,54 @@ by the user.
 - **AI workflow/configuration:** model variants and reasoning settings for Slice
   10 implementation, review, and repair are not established by the available
   record; none are inferred.
+
+### Slice 11: deterministic market-research tools
+
+- **Objective:** provide seven bounded deterministic research capabilities—trend,
+  momentum, volatility, Bollinger position, recent levels, volume context, and
+  relative strength—as normalized evidence for future AI research orchestration.
+- **Implementation commit:** `4f41934dde440f5d2df6b124fcd28b750a0c894f`
+  (`Add deterministic market research tools`).
+- **Implementation structure:** added the
+  [service and assembly](../src/crypteo/market_research.py),
+  [typed contracts/payloads](../src/crypteo/domain/market_research.py), and
+  [private Decimal arithmetic](../src/crypteo/domain/_market_research_arithmetic.py),
+  with [contract tests](../tests/domain/test_market_research_contracts.py) and
+  [service tests](../tests/test_market_research.py).
+- **Decisions and boundaries:** fixed `market_research_v1` windows end at captured
+  gateway time; every required completed candle must be visible and contiguous.
+  Typed unavailability is separate from malformed-data errors. The existing
+  `EvidenceItem` carries neutral measurements and role-specific provenance.
+  Semantic evidence identity hashes actual contributing windows and normalized
+  payload, while dataset/acquisition identities remain provenance. Assembly
+  validates canonical inputs and binds provenance to the same gateway data.
+  Tools require no `Opportunity` and offer no caller time/window override.
+- **Architecture review:** no new ADR was warranted after reviewing ADR-001–008.
+  Deterministic ownership, authoritative visibility, and identity/provenance
+  separation apply existing boundaries, especially ADR-001–003. The fixed
+  capability formulas, windows, and evidence encoding belong in the
+  [specification](v1-specification.md#deterministic-market-research); this slice
+  introduces no additional durable architectural boundary.
+- **Initial implementation verification:** 2,110 tests passed.
+- **Independent review:** one **HIGH** finding: LEVELS used the inverse distance
+  formula `level / close - 1`. All other capability, temporal, numerical,
+  identity/provenance, availability, contract, and scope areas passed review.
+- **Repair and verification:** changed the service calculation, relational
+  validator, and golden test to `close / level - 1`. The same independent reviewer
+  verified the finding as **RESOLVED**, with no new findings.
+- **Final implementation verification:** 2,110 pytest tests passed; Ruff
+  format/check passed; strict mypy passed; `git diff --check` passed; untracked-file
+  whitespace/final-newline checks passed. These are the supplied implementation
+  results, not a new test run for this documentation update. Committed coverage
+  includes formula goldens, every required missing/delayed slot, all six ordered
+  relative comparisons, clock movement, corrupt gateway output, hostile Decimal
+  contexts, canonical identity, provenance linkage, and immutable contracts.
+- **Remaining scope:** scanner-only replay is not rewired. Slice 12 LangGraph,
+  model-backed investigation, thesis generation, critic, final AI research
+  assessment, agentic replay, durable lifecycle journal, and live mode/UI remain
+  unimplemented.
+- **AI workflow/configuration:** implementation, review, and repair model variants
+  and reasoning settings were not supplied; none are inferred.
 
 ## Backfill verification
 

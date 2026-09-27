@@ -16,6 +16,10 @@ The repository implements the deterministic foundations:
 - Coinbase historical candle retrieval, normalization, gap reporting, and immutable
   local raw, canonical, and acquisition artifacts.
 - Deterministic Bollinger analytics and a lower-band crossover opportunity scanner.
+- Seven deterministic market-research tools producing point-in-time evidence:
+  trend, momentum, volatility, Bollinger position, recent levels, volume context,
+  and relative strength. These provide infrastructure for the future AI workflow;
+  see the [research tool specification](docs/v1-specification.md#deterministic-market-research).
 - Simulated LONG execution and portfolio accounting with fees, slippage,
   stop/target and time exits, and conservative missing-data handling.
 - Deterministic market-derived stop/target terms and decision-time LONG risk
@@ -23,9 +27,10 @@ The repository implements the deterministic foundations:
 - Deterministic scanner-only historical replay with reproducible in-memory
   results, marked equity, and core metrics for later research comparisons.
 
-Still unfinished: research tools and the bounded LangGraph/LLM workflow, agentic
-replay, durable lifecycle journaling, and the integrated evaluation and reporting
-harness. No agents are implemented yet.
+Still unfinished: the bounded LangGraph/LLM workflow (model-backed investigation,
+thesis generation, critic, and final AI research assessment), agentic replay,
+durable lifecycle journaling, and the integrated evaluation and reporting harness.
+No agents, live mode, or UI are implemented yet.
 
 ## V1 architecture
 
