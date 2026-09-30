@@ -19,6 +19,7 @@ from crypteo.coinbase_dataset import (
 from crypteo.domain.execution import ExecutionConfig, OrderIntent, PortfolioSnapshot
 from crypteo.domain.market import Candle, DatasetManifest, Timeframe, TradingPair, Venue
 from crypteo.domain.replay import (
+    BoundaryObservation,
     Delivery,
     ReplayMetrics,
     ReplayResult,
@@ -34,6 +35,7 @@ from crypteo.domain.trade_terms import TradeTerms, TradeTermsConfig, TradeTermsR
 from crypteo.execution import SimulatedBroker
 from crypteo.experiment import CodeIdentity, ReplayConfig
 from crypteo.replay import run_scanner_only
+from crypteo.replay_metrics import calculate_metrics
 from crypteo.risk import RiskService
 from crypteo.scanner import OpportunityScanner
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
@@ -1424,3 +1426,202 @@ def test_same_boundary_exit_fill_must_precede_closed_trade_record() -> None:
         records[closed_index - 1],
     )
     _reject_artifact(data, match="reconciliation order")
+
+
+def _balanced_fill_mutation(
+    result: ReplayResult, side: str, changes: dict[str, str]
+) -> dict[str, Any]:
+    """Coordinate every retained fill copy, ledger, valuation and metric.
+
+    Revalidate the accounting contracts separately so failures must come from
+    cross-record/config checks, not an unbalanced cash or P&L mutation.
+    """
+    data: dict[str, Any] = json.loads(result.canonical_bytes())
+
+    def rebalance(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                rebalance(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                rebalance(item)
+            if "execution_price" in value and value["side"] == side:
+                value.update(changes)
+                notional = D(value["quantity"]) * D(value["execution_price"])
+                fee = D(value["fee"])
+                value["cash_delta"] = str(
+                    -(notional + fee) if side == "BUY" else notional - fee
+                )
+            if "gross_pnl" in value:
+                entry, exit = value["entry_fill"], value["exit_fill"]
+                gross = D(entry["quantity"]) * (
+                    D(exit["execution_price"]) - D(entry["execution_price"])
+                )
+                value["gross_pnl"] = str(gross)
+                value["net_pnl"] = str(gross - D(entry["fee"]) - D(exit["fee"]))
+            if "initial_cash" in value and "fills" in value:
+                value["cash"] = str(
+                    D(value["initial_cash"])
+                    + sum((D(f["cash_delta"]) for f in value["fills"]), D(0))
+                )
+                value["cumulative_fees"] = str(
+                    sum((D(f["fee"]) for f in value["fills"]), D(0))
+                )
+                value["cumulative_net_realized_pnl"] = str(
+                    sum((D(t["net_pnl"]) for t in value["closed_trades"]), D(0))
+                )
+                PortfolioSnapshot.model_validate_json(json.dumps(value))
+            if "marked_equity" in value:
+                assert value["portfolio"]["position"] is None
+                value["marked_equity"] = value["portfolio"]["cash"]
+
+    rebalance(data)
+    portfolio = PortfolioSnapshot.model_validate_json(
+        json.dumps(data["final_portfolio"])
+    )
+    observations = tuple(
+        BoundaryObservation.model_validate_json(json.dumps(r["payload"]))
+        for r in data["records"]
+        if r["kind"] == "OBSERVATION"
+    )
+    data["metrics"] = calculate_metrics(
+        result.manifest.replay, portfolio, observations
+    ).model_dump(mode="json")
+    return data
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_artifact_rejects_independent_fill_reference_under_zero_slippage(
+    side: str,
+) -> None:
+    result = run(history() + (bar(0, "90", high="101"),), end=T + H)
+    data = _balanced_fill_mutation(result, side, {"reference_price": "91"})
+    assert (
+        ReplayMetrics.model_validate_json(json.dumps(data["metrics"])) == result.metrics
+    )
+    _reject_artifact(
+        data, match="execution price contradicts retained execution config"
+    )
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+@pytest.mark.parametrize("rate", ["0", "0.01"])
+def test_artifact_rejects_balanced_fee_inconsistent_with_config(
+    side: str, rate: str
+) -> None:
+    execution = config().execution.model_copy(
+        update={"entry_fee_rate": D(rate), "exit_fee_rate": D(rate)}
+    )
+    result = run(
+        history() + (bar(0, "90", high="101"),), end=T + H, execution=execution
+    )
+    fill = next(f for f in result.final_portfolio.fills if f.side == side)
+    data = _balanced_fill_mutation(result, side, {"fee": str(fill.fee + 1)})
+    assert D(data["metrics"]["actual_fees"]) == result.metrics.actual_fees + 1
+    assert D(data["final_portfolio"]["cash"]) == result.final_portfolio.cash - 1
+    _reject_artifact(data, match="fill fee contradicts retained execution config")
+
+
+@pytest.mark.parametrize("reason", ["STOP", "TARGET"])
+@pytest.mark.parametrize("phase", ["OPEN", "INTRABAR"])
+def test_artifact_rejects_balanced_exit_inconsistent_with_order_level(
+    reason: str, phase: str
+) -> None:
+    result = run(history() + (bar(0, "90", high="101"),), end=T + H)
+    order = result.final_portfolio.closed_trades[0].order
+    reference = order.stop_price + 1 if reason == "STOP" else order.target_price - 1
+    data = _balanced_fill_mutation(
+        result,
+        "SELL",
+        {
+            "reason": reason,
+            "phase": phase,
+            "reference_price": str(reference),
+            "execution_price": str(reference),
+        },
+    )
+    assert D(data["final_portfolio"]["cash"]) != result.final_portfolio.cash
+    _reject_artifact(data, match="exit reference contradicts retained order level")
+
+
+@pytest.mark.parametrize("phase", ["OPEN", "INTRABAR"])
+def test_artifact_checks_same_candle_exit_against_retained_entry_open(
+    phase: str,
+) -> None:
+    result = run(history() + (bar(0, "90", high="101"),), end=T + H)
+    target = result.final_portfolio.closed_trades[0].order.target_price
+    if phase == "OPEN":
+        data = _balanced_fill_mutation(
+            result,
+            "SELL",
+            {
+                "phase": "OPEN",
+                "reference_price": str(target),
+                "execution_price": str(target),
+            },
+        )
+    else:
+        data = _balanced_fill_mutation(
+            result,
+            "BUY",
+            {"reference_price": str(target), "execution_price": str(target)},
+        )
+    _reject_artifact(data, match="exit phase contradicts retained entry candle open")
+
+
+@pytest.mark.parametrize(
+    "reason", ["PORTFOLIO_BUSY", "PORTFOLIO_HALTED", "REUSED_ORDER_ID"]
+)
+@pytest.mark.parametrize("capital", ["0", "1000"])
+def test_artifact_rejects_state_rejection_for_empty_portfolio(
+    reason: str, capital: str
+) -> None:
+    execution = config().execution.model_copy(
+        update={"entry_fee_rate": D("0.2") if capital == "1000" else D(0)}
+    )
+    result = run(initial_cash=D(capital), execution=execution)
+    data = json.loads(result.canonical_bytes())
+    risk = next(r["payload"] for r in data["records"] if r["kind"] == "RISK_REJECTION")
+    assert risk["reason"] in ("NO_CAPITAL", "NON_POSITIVE_TARGET_REWARD")
+    risk["reason"] = reason
+    _reject_artifact(data, match="risk rejection contradicts retained portfolio state")
+
+
+def test_artifact_rejects_no_capital_reason_when_cash_is_retained() -> None:
+    result = run_scanner_only(
+        config(assets=(BTC, ETH)), [dataset(pair=p) for p in (BTC, ETH)], code=CODE
+    )
+    data = json.loads(result.canonical_bytes())
+    risk = next(r["payload"] for r in data["records"] if r["kind"] == "RISK_REJECTION")
+    assert risk["reason"] == "PORTFOLIO_BUSY"
+    risk["reason"] = "NO_CAPITAL"
+    _reject_artifact(data, match="risk rejection contradicts retained portfolio state")
+
+
+@pytest.mark.parametrize(
+    "entry,exit",
+    [
+        (bar(0, "90", high="101"), None),  # Intrabar target.
+        (bar(0, "90", low="80"), None),  # Intrabar stop.
+        (bar(0, "105"), None),  # Same-bar opening target gap.
+        (bar(0, "80"), None),  # Same-bar opening stop gap.
+        (bar(0, "90"), bar(1, "105")),  # Later open is not the entry reference.
+        (bar(0, "90"), bar(1, "80")),
+    ],
+)
+def test_artifact_accepts_legitimate_exit_levels_with_adverse_execution(
+    entry: Candle, exit: Candle | None
+) -> None:
+    execution = ExecutionConfig(
+        entry_fee_rate=D("0.001"),
+        exit_fee_rate=D("0.002"),
+        adverse_slippage=D("0.005"),
+        price_increment=D("0.1"),
+        quantity_increment=D("0.5"),
+    )
+    candles = (entry,) if exit is None else (entry, exit)
+    result = run(history() + candles, execution=execution, end=T + len(candles) * H)
+    trade = result.final_portfolio.closed_trades[0]
+    assert trade.exit_fill.execution_price < trade.exit_fill.reference_price
+    assert trade.entry_fill.fee > 0 and trade.exit_fill.fee > 0
+    assert ReplayResult.model_validate_json(result.canonical_bytes()) == result

@@ -227,3 +227,37 @@ def test_gateway_time_is_read_only_and_tracks_authoritative_clock() -> None:
     assert gateway.now == clock.now
     with pytest.raises(AttributeError):
         gateway.now = BASE_TIME  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"open_time": BASE_TIME + timedelta(minutes=1)},
+        {"close_time": BASE_TIME},
+        {"close_time": BASE_TIME + timedelta(hours=2)},
+        {"available_at": BASE_TIME},
+        {"open_time": BASE_TIME + timedelta(hours=2)},
+        {"open_time": BASE_TIME.replace(tzinfo=None)},
+        {"high": Decimal("101")},
+        {"low": Decimal("104")},
+        {"volume": Decimal("-1")},
+        {"open": Decimal("0")},
+    ],
+)
+@pytest.mark.parametrize("visible", [False, True])
+def test_gateway_reconstructs_forged_candles_before_visibility(
+    changes: dict[str, Any], visible: bool
+) -> None:
+    forged = candle(BASE_TIME).model_copy(update=changes)
+    now = BASE_TIME + timedelta(hours=10 if visible else -10)
+    with pytest.raises(ValidationError):
+        Candle.model_validate(forged.model_dump())
+    with pytest.raises(ValidationError):
+        PointInTimeDataGateway(SimulationClock(now), [forged])
+
+
+def test_gateway_validates_before_duplicate_handling() -> None:
+    valid = candle(BASE_TIME)
+    forged = valid.model_copy(update={"available_at": BASE_TIME})
+    with pytest.raises(ValidationError, match="available_at"):
+        PointInTimeDataGateway(SimulationClock(BASE_TIME), [valid, forged])

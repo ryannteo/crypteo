@@ -92,7 +92,9 @@ class _ImmutableJsonAnnotation:
     ) -> CoreSchema:
         return core_schema.no_info_after_validator_function(
             _freeze_json,
-            handler.generate_schema(JsonValue),
+            core_schema.no_info_before_validator_function(
+                _serialize_frozen_json, handler.generate_schema(JsonValue)
+            ),
             serialization=core_schema.plain_serializer_function_ser_schema(
                 _serialize_frozen_json,
                 return_schema=handler.generate_schema(JsonValue),
@@ -107,7 +109,10 @@ class _ImmutableJsonObjectAnnotation:
     ) -> CoreSchema:
         return core_schema.no_info_after_validator_function(
             _freeze_json,
-            handler.generate_schema(dict[str, JsonValue]),
+            core_schema.no_info_before_validator_function(
+                _serialize_frozen_json,
+                handler.generate_schema(dict[str, JsonValue]),
+            ),
             serialization=core_schema.plain_serializer_function_ser_schema(
                 _serialize_frozen_json,
                 return_schema=handler.generate_schema(JsonValue),
@@ -145,7 +150,9 @@ class Opportunity(BaseModel):
     trigger to be valid, and ``available_at`` is when it could first be known.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     opportunity_id: NonBlankText
     venue: Venue
@@ -192,7 +199,9 @@ class EvidenceQuality(StrEnum):
 class EvidenceProvenance(BaseModel):
     """Compact, auditable provenance for normalized evidence."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     producer: NonBlankText
     source_version: NonBlankText
@@ -208,7 +217,9 @@ class EvidenceItem(BaseModel):
     ``available_at`` is the earliest time Crypteo could legitimately know it.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     evidence_id: NonBlankText
     category: EvidenceCategory
@@ -234,7 +245,9 @@ class EvidenceItem(BaseModel):
 class ResearchThesis(BaseModel):
     """Structured interpretation produced by the draft-thesis stage."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     summary: NonBlankText
     bull_case: NonBlankText
@@ -249,7 +262,9 @@ class ResearchThesis(BaseModel):
 class Critique(BaseModel):
     """Concise structured output from the research critic."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     summary: NonBlankText
     challenged_claims: TextEntries = ()
@@ -298,7 +313,9 @@ class TradeDecision(BaseModel):
     expected return, calibrated forecast probability, or risk-adjusted return.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
 
     outcome: DecisionOutcome
     rationale: NonBlankText

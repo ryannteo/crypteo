@@ -38,6 +38,7 @@ class CoinbaseLocalPersistence:
     def persist_raw(self, responses: Iterable[CoinbaseRawCandleResponse]) -> None:
         for response in responses:
             artifact_dir = self.raw_artifact_dir(response)
+            self._validate_destinations(artifact_dir, "body.json", "request.json")
             _write_immutable(artifact_dir / "body.json", response.body)
             _write_immutable(
                 artifact_dir / "request.json",
@@ -91,6 +92,7 @@ class CoinbaseLocalPersistence:
     def persist_dataset(self, dataset: CoinbaseHistoricalDataset) -> DatasetManifest:
         """Validate and persist canonical content, returning the first manifest."""
         artifact_dir = self.dataset_artifact_dir(dataset.manifest.dataset_version)
+        self._validate_destinations(artifact_dir, "candles.json", "manifest.json")
         manifest, candle_bytes = canonical_dataset_artifacts(
             dataset.candles, dataset.manifest
         )
@@ -119,6 +121,8 @@ class CoinbaseLocalPersistence:
         record = CoinbaseAcquisitionRecord.model_validate(
             dataset.acquisition.model_dump()
         )
+        artifact_dir = self.acquisition_artifact_dir(record)
+        self._validate_destinations(artifact_dir, "acquisition.json")
         if record.dataset_version != dataset.manifest.dataset_version:
             raise ValueError(
                 "acquisition dataset_version must match dataset manifest version"
@@ -132,6 +136,7 @@ class CoinbaseLocalPersistence:
             raise ValueError("acquisition capture_ids must match dataset raw responses")
 
         canonical_dir = self.dataset_artifact_dir(record.dataset_version)
+        self._validate_destinations(canonical_dir, "candles.json", "manifest.json")
         for name in ("candles.json", "manifest.json"):
             if not (canonical_dir / name).is_file():
                 raise FileNotFoundError(
@@ -149,6 +154,7 @@ class CoinbaseLocalPersistence:
 
         for response in dataset.raw_responses:
             raw_dir = self.raw_artifact_dir(response)
+            self._validate_destinations(raw_dir, "body.json", "request.json")
             for name in ("body.json", "request.json"):
                 if not (raw_dir / name).is_file():
                     raise FileNotFoundError(
@@ -181,9 +187,15 @@ class CoinbaseLocalPersistence:
             raise ValueError("acquisition does not match recomposed capture provenance")
 
         _write_immutable(
-            self.acquisition_artifact_dir(record) / "acquisition.json",
+            artifact_dir / "acquisition.json",
             record.canonical_bytes(),
         )
+
+    def _validate_destinations(self, directory: Path, *names: str) -> None:
+        root = self._root.resolve()
+        for path in (directory, *(directory / name for name in names)):
+            if not path.resolve().is_relative_to(root):
+                raise ValueError("artifact path must remain beneath artifact root")
 
     def acquisition_artifact_dir(self, record: CoinbaseAcquisitionRecord) -> Path:
         return (

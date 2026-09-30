@@ -1120,3 +1120,111 @@ def test_load_dataset_checks_resolved_canonical_leaf_before_reading(
         loaded = persistence.load_dataset(dataset.manifest.dataset_version)
         assert loaded.manifest == dataset.manifest
         assert loaded.candles == dataset.candles
+
+
+@pytest.mark.parametrize("kind", ["raw", "canonical", "acquisitions"])
+@pytest.mark.parametrize("outside", [True, False])
+def test_persistence_contains_directory_symlinks(
+    tmp_path: Path, kind: str, outside: bool
+) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    store = CoinbaseLocalPersistence(root)
+    dataset = canonical_dataset()
+    if kind == "acquisitions":
+        store.persist_raw(dataset.raw_responses)
+        store.persist_dataset(dataset)
+    target = (tmp_path if outside else root) / "linked-directory"
+    target.mkdir()
+    (root / kind).symlink_to(target, target_is_directory=True)
+
+    def persist() -> None:
+        if kind == "raw":
+            store.persist_raw(dataset.raw_responses)
+        elif kind == "canonical":
+            store.persist_dataset(dataset)
+        else:
+            store.persist_acquisition(dataset)
+
+    if outside:
+        with pytest.raises(ValueError, match="beneath artifact root"):
+            persist()
+        assert list(target.iterdir()) == []
+    else:
+        persist()
+        assert list(target.rglob("*.json"))
+        persist()  # Contained symlinks retain immutable/idempotent publication.
+
+
+@pytest.mark.parametrize(
+    "kind,name",
+    [
+        ("raw", "body.json"),
+        ("raw", "request.json"),
+        ("canonical", "candles.json"),
+        ("canonical", "manifest.json"),
+        ("acquisitions", "acquisition.json"),
+    ],
+)
+@pytest.mark.parametrize("outside", [True, False])
+def test_persistence_contains_leaf_symlinks(
+    tmp_path: Path, kind: str, name: str, outside: bool
+) -> None:
+    root = tmp_path / "artifacts"
+    store = CoinbaseLocalPersistence(root)
+    dataset = canonical_dataset()
+    store.persist_raw(dataset.raw_responses)
+    store.persist_dataset(dataset)
+    store.persist_acquisition(dataset)
+    directory = {
+        "raw": store.raw_artifact_dir(dataset.raw_responses[0]),
+        "canonical": store.dataset_artifact_dir(dataset.manifest.dataset_version),
+        "acquisitions": store.acquisition_artifact_dir(dataset.acquisition),
+    }[kind]
+    leaf = directory / name
+    target = (tmp_path if outside else root) / f"linked-{name}"
+    leaf.rename(target)
+    leaf.symlink_to(target)
+    before = target.read_bytes()
+
+    def persist() -> None:
+        if kind == "raw":
+            store.persist_raw(dataset.raw_responses)
+        elif kind == "canonical":
+            store.persist_dataset(dataset)
+        else:
+            store.persist_acquisition(dataset)
+
+    if outside:
+        with pytest.raises(ValueError, match="beneath artifact root"):
+            persist()
+    else:
+        persist()
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["raw", "acquisitions"])
+def test_persistence_rejects_dangling_escaping_leaf_before_any_write(
+    tmp_path: Path, kind: str
+) -> None:
+    root = tmp_path / "artifacts"
+    store = CoinbaseLocalPersistence(root)
+    dataset = canonical_dataset()
+    if kind == "raw":
+        directory = store.raw_artifact_dir(dataset.raw_responses[0])
+        name = "request.json"
+    else:
+        store.persist_raw(dataset.raw_responses)
+        store.persist_dataset(dataset)
+        directory = store.acquisition_artifact_dir(dataset.acquisition)
+        name = "acquisition.json"
+    directory.mkdir(parents=True)
+    target = tmp_path / "must-not-be-created.json"
+    (directory / name).symlink_to(target)
+    with pytest.raises(ValueError, match="beneath artifact root"):
+        if kind == "raw":
+            store.persist_raw(dataset.raw_responses)
+        else:
+            store.persist_acquisition(dataset)
+    assert not target.exists()
+    assert sorted(p.name for p in directory.iterdir()) == [name]

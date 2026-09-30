@@ -4,7 +4,7 @@ from math import inf, nan
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, create_model
 
 from crypteo.domain.research import (
     AbstentionReason,
@@ -814,3 +814,110 @@ def test_decision_is_frozen_and_forbids_extra_fields() -> None:
         decision.rationale = "changed"
     with pytest.raises(ValidationError):
         TradeDecision.model_validate(decision_data(extra="forbidden"))
+
+
+@pytest.mark.parametrize(
+    "model,data,field,bad",
+    [
+        (EvidenceProvenance, provenance_data(), "producer", ""),
+        (EvidenceItem, evidence_data(), "evidence_id", ""),
+        (TradeDecision, decision_data(), "confidence", 101),
+        (Opportunity, opportunity_data(), "summary", ""),
+        (ResearchThesis, thesis_data(), "assumptions", [""]),
+        (Critique, critique_data(), "challenged_claims", [""]),
+    ],
+)
+@pytest.mark.parametrize("path", ["direct", "instance", "nested", "json"])
+def test_common_contracts_revalidate_forged_instances(
+    model: type[BaseModel], data: dict[str, Any], field: str, bad: Any, path: str
+) -> None:
+    valid = model.model_validate(data)
+    forged = valid.model_copy(update={field: bad})
+    parent: Any = create_model("ResearchEnvelope", value=(model, ...))
+    with pytest.raises(ValidationError):
+        if path == "direct":
+            model(**(data | {field: bad}))
+        elif path == "instance":
+            model.model_validate(forged)
+        elif path == "nested":
+            parent(value=forged)
+        else:
+            model.model_validate_json(forged.model_dump_json(warnings=False))
+
+
+@pytest.mark.parametrize("path", ["direct", "instance", "nested", "json"])
+def test_evidence_revalidates_forged_nested_provenance(path: str) -> None:
+    provenance = EvidenceProvenance(**provenance_data()).model_copy(
+        update={"producer": "", "query_params": {"mutable": []}}
+    )
+    evidence = EvidenceItem(**evidence_data()).model_copy(
+        update={"provenance": provenance}
+    )
+    parent = create_model("EvidenceEnvelope", value=(EvidenceItem, ...))
+    with pytest.raises(ValidationError, match="nonblank"):
+        if path == "direct":
+            EvidenceItem(**evidence_data(provenance=provenance))
+        elif path == "instance":
+            EvidenceItem.model_validate(evidence)
+        elif path == "nested":
+            parent(value=evidence)
+        else:
+            EvidenceItem.model_validate_json(evidence.model_dump_json())
+
+
+@pytest.mark.parametrize(
+    "model,data,field,mutable",
+    [
+        (EvidenceProvenance, provenance_data(), "query_params", {"items": [{"x": 1}]}),
+        (EvidenceItem, evidence_data(), "payload", {"items": [{"x": 1}]}),
+        (Opportunity, opportunity_data(), "trigger_payload", {"items": [{"x": 1}]}),
+        (TradeDecision, decision_data(), "key_uncertainties", ["uncertain"]),
+        (ResearchThesis, thesis_data(), "assumptions", ["assumption"]),
+        (Critique, critique_data(), "challenged_claims", ["claim"]),
+    ],
+)
+@pytest.mark.parametrize("path", ["direct", "instance", "nested", "json"])
+def test_common_contracts_copy_and_freeze_mutable_collections(
+    model: type[BaseModel],
+    data: dict[str, Any],
+    field: str,
+    mutable: Any,
+    path: str,
+) -> None:
+    mutable = copy.deepcopy(mutable)
+    original = model.model_validate(data)
+    forged = original.model_copy(update={field: mutable})
+    parent: Any = create_model("ResearchEnvelope", value=(model, ...))
+    if path == "direct":
+        restored = model(**(data | {field: mutable}))
+    elif path == "instance":
+        restored = model.model_validate(forged)
+    elif path == "nested":
+        restored = parent(value=forged).value
+    else:
+        restored = model.model_validate_json(forged.model_dump_json(warnings=False))
+    before = restored.model_dump_json()
+    if isinstance(mutable, dict):
+        mutable["items"][0]["x"] = 99
+        with pytest.raises(TypeError):
+            getattr(restored, field)["items"][0]["x"] = 2
+    else:
+        mutable.append("changed")
+        assert isinstance(getattr(restored, field), tuple)
+    assert restored.model_dump_json() == before
+    assert model.model_validate(restored) == restored
+    assert parent(value=restored).value == restored
+    assert model.model_validate_json(before) == restored
+
+
+def test_nested_provenance_copies_forged_query_dictionary() -> None:
+    query: dict[str, Any] = {"nested": {"values": [1]}}
+    provenance = EvidenceProvenance(**provenance_data()).model_copy(
+        update={"query_params": query}
+    )
+    evidence = EvidenceItem(**evidence_data(provenance=provenance))
+    query["nested"]["values"].append(2)
+    nested = evidence.provenance.query_params["nested"]
+    assert isinstance(nested, FrozenJsonObject)
+    assert nested["values"] == (1,)
+    assert EvidenceItem.model_validate(evidence) == evidence

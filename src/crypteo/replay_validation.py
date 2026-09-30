@@ -2,10 +2,13 @@
 
 from itertools import groupby
 
+from crypteo._execution_costs import _execution_price
+from crypteo.domain._execution_arithmetic import _multiply
 from crypteo.domain.execution import (
     ClosedTrade,
     DataGap,
     EntryRejection,
+    ExecutionConfig,
     Fill,
     OrderIntent,
     PortfolioSnapshot,
@@ -82,6 +85,22 @@ def _validate_preparation(
     ):
         raise ValueError("risk result must match proposal and replay configuration")
     if isinstance(risk, RiskRejection):
+        if (
+            (risk.reason == "PORTFOLIO_HALTED" and state.data_gap is None)
+            or (
+                risk.reason == "PORTFOLIO_BUSY"
+                and state.pending is None
+                and state.position is None
+            )
+            or (
+                risk.reason == "REUSED_ORDER_ID"
+                and not any(
+                    order.order_id == proposal.order_id for order in state.orders
+                )
+            )
+            or (risk.reason == "NO_CAPITAL" and state.cash != 0)
+        ):
+            raise ValueError("risk rejection contradicts retained portfolio state")
         return None
     if (
         state.pending is not None
@@ -96,6 +115,40 @@ def _validate_preparation(
     if order != risk.order:
         raise ValueError("submission must match authorized order")
     return order
+
+
+def _validate_fill_economics(fill: Fill, config: ExecutionConfig) -> None:
+    if fill.execution_price != _execution_price(
+        fill.reference_price, fill.side, config
+    ):
+        raise ValueError("fill execution price contradicts retained execution config")
+    rate = config.entry_fee_rate if fill.side == "BUY" else config.exit_fee_rate
+    if fill.fee != _multiply(_multiply(fill.quantity, fill.execution_price), rate):
+        raise ValueError("fill fee contradicts retained execution config")
+
+
+def _validate_exit_levels(trade: ClosedTrade) -> None:
+    order, entry, exit = trade.order, trade.entry_fill, trade.exit_fill
+    if exit.reason in ("STOP", "TARGET"):
+        level = order.stop_price if exit.reason == "STOP" else order.target_price
+        if (exit.phase == "INTRABAR" and exit.reference_price != level) or (
+            exit.phase == "OPEN"
+            and (
+                (exit.reason == "STOP" and exit.reference_price > level)
+                or (exit.reason == "TARGET" and exit.reference_price < level)
+            )
+        ):
+            raise ValueError("exit reference contradicts retained order level")
+    # The entry retains the candle open only for same-candle exits. Later
+    # candle opens and high/low paths are not retained and cannot be inferred.
+    if entry.candle_open_time == exit.candle_open_time and (
+        (exit.phase == "OPEN" and exit.reference_price != entry.reference_price)
+        or (
+            exit.phase != "OPEN"
+            and not order.stop_price < entry.reference_price < order.target_price
+        )
+    ):
+        raise ValueError("exit phase contradicts retained entry candle open")
 
 
 def _validate_observation_time(
@@ -169,8 +222,10 @@ def validate_lifecycle(result: ReplayResult) -> None:
             if isinstance(payload, Fill):
                 if payload.candle_close_time != at:
                     raise ValueError("fill must reconcile at its candle completion")
+                _validate_fill_economics(payload, config.execution)
                 fills.append(payload)
             elif isinstance(payload, ClosedTrade):
+                _validate_exit_levels(payload)
                 trades.append(payload)
             elif isinstance(payload, EntryRejection):
                 rejected_order = next(

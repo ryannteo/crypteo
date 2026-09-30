@@ -34,7 +34,9 @@ class PointInTimeDataGateway:
     """Expose only completed candles visible at the simulation clock."""
 
     def __init__(self, clock: SimulationClock, candles: Iterable[Candle]) -> None:
-        materialized_candles = tuple(candles)
+        materialized_candles = tuple(
+            Candle.model_validate(candle.model_dump()) for candle in candles
+        )
         identities = [
             (candle.venue, candle.pair, candle.timeframe, candle.open_time)
             for candle in materialized_candles
