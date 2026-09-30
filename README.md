@@ -32,24 +32,18 @@ thesis generation, critic, and final AI research assessment), agentic replay,
 durable lifecycle journaling, and the integrated evaluation and reporting harness.
 No agents, live mode, or UI are implemented yet.
 
-## V1 architecture
+## Architecture
 
-A Python modular monolith under `src/crypteo/`, with this intended evaluation flow
-(the complete pipeline is not yet wired together):
+Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authoritative
+clock and point-in-time gateway. Scanner-only replay connects the scanner,
+deterministic trade terms, risk authorization, and simulated broker/portfolio,
+then produces validated replay artifacts and metrics. Standalone research tools
+turn visible market data into normalized evidence for future model-backed work.
 
-```text
-Historical market data -> point-in-time gateway -> analytics / scanner
-  -> research tools / evidence -> thesis -> critic -> research assessment
-  -> deterministic risk authorization -> simulated execution / portfolio
-  -> journal / metrics / evaluation
-Replay advances the authoritative clock and coordinates the flow.
-```
-
-**LLMs handle interpretation and judgment; deterministic software handles
-calculation, authorization, execution, and accounting.** A research `TRADE` is
-not risk approval. Risk sizing uses decision-time information and estimates
-nongapped stop loss; the simulator separately handles actual next-open
-affordability and execution outcomes. Authorization does not cap realized loss.
+LLMs are reserved for interpretation and judgment. Deterministic code owns
+calculation, authorization, simulation, and accounting. Research selection and
+risk approval remain separate; estimated stop risk does not cap realized gap loss.
+See the [architecture overview](docs/architecture.md) for component flow.
 
 ## V1 scope
 
@@ -77,14 +71,16 @@ for configuration, boundary behavior, and reproducibility.
 
 ## Documentation
 
-- [V1 specification](docs/v1-specification.md): intended architecture, scope,
-  invariants, evaluation protocol, and completion criteria.
-- [Engineering build log](docs/build-log.md): development history, consequential
-  decisions, review findings, and recorded verification.
-- [Architecture decision records](docs/decisions/README.md): durable constraints
-  and their rationale.
-- [Data pipeline](docs/data-pipeline.md): implemented Coinbase acquisition,
-  provenance, dataset identity, persistence, and failure semantics.
+Documentation describes the system that exists at HEAD.
+ADRs preserve rationale for durable architectural decisions.
+Git preserves implementation history.
+
+- [Architecture](docs/architecture.md): current components, boundaries, and flow.
+- [V1 specification](docs/v1-specification.md): authoritative behavioral contracts,
+  formulas, temporal rules, risk, execution, and replay semantics.
+- [Data pipeline](docs/data-pipeline.md): Coinbase acquisition, identity,
+  provenance, persistence, and failure behavior.
+- [ADRs](docs/decisions/README.md): durable decisions, rationale, and trade-offs.
 
 ## Local development
 

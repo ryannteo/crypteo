@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted; implemented as the pre-Slice-10 prerequisite
-(`97e4ee032f95ec3adc6e43f432a961b77b36d02f`).
+Accepted.
 
 ## Context
 
@@ -48,11 +47,11 @@ target reward, and sizing. Schema validation alone does not prove that supplied
 statistics came from visible market data; authoritative generation establishes
 that boundary.
 
-Slice 10 runtime owns opportunity freshness and stale-term admission, as well as
-deduplication, replay orchestration, proposal construction, metrics, and experiment
+Replay runtime owns opportunity freshness and stale-term admission, as well as
+deduplication, orchestration, proposal construction, metrics, and experiment
 manifests. A current pair-level generation result does not establish that an older
-scanner opportunity is still eligible. This prerequisite does not implement those
-runtime policies.
+scanner opportunity is still eligible. Those runtime policies are governed by
+[ADR-008](ADR-008-scanner-only-replay-boundary-delivery-ordering.md).
 
 ## Rationale
 
@@ -72,8 +71,7 @@ guarantee positive realized target-exit P&L or cap realized loss. The broker ret
 the execution responsibilities in
 [ADR-005](ADR-005-completed-bar-execution-reconciliation.md); this decision extends
 the decision-time authorization boundary in
-[ADR-006](ADR-006-decision-time-risk-authorization.md) and resolves its historical
-note that deterministic level generation was unimplemented.
+[ADR-006](ADR-006-decision-time-risk-authorization.md).
 
 The current multiplier, SMA20 target, and 20-range window are V1 policy recorded in
 the [specification](../v1-specification.md#deterministic-trade-terms), not universal

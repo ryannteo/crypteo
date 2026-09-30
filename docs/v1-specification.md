@@ -1,73 +1,55 @@
-# Crypteo V1 Architecture Specification
+# Crypteo V1 Behavioral Specification
 
-Status: architecture locked for V1. Changes to a hard invariant require an architecture decision record.
+This is the authoritative specification of current V1 behavior at HEAD. The
+[architecture overview](architecture.md) explains component boundaries; the
+[data pipeline](data-pipeline.md) defines acquisition and storage semantics.
+Durable architectural changes require an [ADR](decisions/README.md).
 
-Implementation status: deterministic infrastructure through Slice 11 is complete,
-including scanner-only replay and the seven market-research tools below. Slice 12
-LangGraph/model-backed investigation, thesis generation, critic, final AI research
-assessment, agentic replay, durable lifecycle journal, and live mode/UI remain
-unimplemented. Workflow sections describe intended behavior unless marked implemented.
-
-## Product and Research Question
-
-Crypteo is an agentic crypto research copilot for traders and researchers with existing market knowledge. Its long-term product is a live, up-to-date research assistant that investigates market opportunities, gathers and synthesizes evidence, challenges trade theses, surfaces uncertainty and counterevidence, and supports more informed trading decisions. AI researchers and portfolio reviewers are secondary users.
-
-V1 is the first market-analysis capability of the broader Crypteo research platform. It uses historical OHLCV-derived evidence and does not yet implement the wider research domains intended for the eventual live product. It asks:
-
-> Given the same deterministic trade opportunities, does bounded agentic market analysis improve trade-selection quality relative to deterministic baselines under identical execution and risk assumptions?
-
-Historical replay, the deterministic scanner, paper trading, and structured trade-selection decisions form an evaluation lab for testing whether Crypteo's research improves trade selection. They are not Crypteo's primary product identity. V1 tests selection, not autonomous strategy invention or LLM price prediction. It makes no profitability claim and can never trade real money.
-
-Long term, Crypteo is expected to evolve into a bounded multi-agent research system that tests whether progressively richer, temporally valid research improves selection. Market, derivatives, on-chain, news/catalyst, fundamentals/protocol, tokenomics, macro, and sentiment specialists should contribute normalized evidence to one integrated thesis—not independent buy/sell votes. A future research coordinator dynamically selects only the specialists relevant to a trader's question or setup instead of invoking every research domain indiscriminately. A capability may later be a tool, service, node, subgraph, or agent only when its complexity warrants that form. V1 intentionally remains one bounded research workflow and does not implement the coordinator or specialist agents.
+The implementation provides deterministic scanner-only replay, seven market
+research tools, and common research schemas. Model-backed investigation, thesis
+generation, critique, LangGraph orchestration, agentic replay, durable lifecycle
+journaling, and the integrated evaluation harness are not implemented.
 
 ## V1 Scope and Market Environment
 
-- Coinbase Exchange spot market; `BTC-USD`, `ETH-USD`, and `SOL-USD`.
+- Coinbase Exchange spot: `BTC-USD`, `ETH-USD`, and `SOL-USD`.
 - Completed 1-hour OHLCV candles on a timezone-aware UTC timeline.
-- Exactly one deterministic scanner shared by Crypteo and scanner-only baseline.
-- Long positions only; domain direction remains an enum to permit a later `SHORT` value.
-- Market-derived evidence only: price, returns, volume, trend, momentum, volatility, Bollinger position, recent observed levels, and relative strength. Slice 11 does not assign predictive support/resistance or volatility percentile/regime labels.
-- Historical replay is the first complete evaluation mode.
-- Decisions are `TRADE`, `NO_TRADE`, or `ABSTAIN`; `RISK_REJECTED` is a separate deterministic outcome.
-
-Excluded from V1 research are web/news, social, on-chain, derivatives, macro, protocol/fundamental, and tokenomics data.
+- One deterministic scanner; LONG simulation with one pending or open trade.
+- Market-derived evidence only; no predictive support/resistance or volatility
+  percentile/regime labels.
+- Research contracts distinguish `TRADE`, `NO_TRADE`, and `ABSTAIN`;
+  deterministic risk rejection is a separate outcome.
+- No real orders, trading credentials, private keys, or withdrawal capabilities.
 
 ## Hard Responsibility Boundary
 
-The LLM chooses permitted tools, interprets evidence, identifies conflict and assumptions, constructs bull/bear cases and a falsifiable thesis, critiques it, selects a decision, and writes qualitative post-trade analysis.
+Deterministic Python owns market calculations, scanning, trade terms, risk
+estimation and sizing, simulation, accounting, temporal access, replay, and metrics.
+The future LLM workflow may select tools and interpret evidence, construct and
+critique theses, and form qualitative research assessments. A `TRADE` assessment
+cannot authorize execution or supply calculated financial values.
 
-Deterministic Python owns OHLCV, indicators, returns, volatility, scanning, all arithmetic, candidate price levels, reward/risk, sizing, exposure, portfolio/risk rules, validation, fills, fees, slippage, stops, targets, time exits, accounting, P&L, clocks, replay, and metrics.
+`TradeTerms` does not automatically enter the model-facing schema. Any future
+candidate-level references require an explicit research-contract change and must
+refer to runtime-owned deterministic contracts. See
+[ADR-001](decisions/ADR-001-deterministic-vs-llm-boundary.md).
 
-The invariant is: LLM for judgment and orchestration; deterministic software for calculation, authorization, execution, and accounting. A `TRADE` research assessment does not invent calculated values, quantity, P&L, exposure, reward/risk, execution price, or undeclared references to deterministic level or risk-template contracts. Generating `TradeTerms` does not automatically expose them to the LLM; any later model-facing candidate-level references require an explicit research-contract change and must point to runtime-owned deterministic contracts.
+## Market Contracts
 
-## Components and Extension Seams
-
-Crypteo is a modular monolith composed of point-in-time data, deterministic analytics, scanner and trade-terms service, research tools, LangGraph workflow, risk service, simulated broker/portfolio, append-only journal, replay engine, and evaluation harness.
-
-The eventual product supports two research entry modes without making either entry contract universal:
-
-- **Trader-led research:** the user supplies a market question, trade idea, or thesis for Crypteo to investigate. This mode does not require a scanner or manufacture an `Opportunity`; it may later use its own research-request or context contract.
-- **Opportunity-led research:** a deterministic scanner or another discovery mechanism creates an `Opportunity` as research context. The scanner generates a candidate only; the `Opportunity` does not imply that a trade should be taken.
-
-Both converge on `research context -> normalized evidence -> integrated thesis -> critic -> final research assessment`. V1 historical evaluation implements opportunity-led research first because identical scanner-generated opportunities provide a controlled basis for agent-versus-baseline comparison. The scanner and `Opportunity` contract are evaluation-path inputs, not prerequisites for all future live research.
-
-The minimal extension seams are conceptual:
-
-- scanner invocation to produce opportunities;
-- research-tool invocation to produce normalized evidence;
-- broker submission and processing of authorized simulated orders;
-- authoritative clock access for UTC time;
-- point-in-time market-data access through `PointInTimeDataGateway`.
-
-Concrete method signatures may remain narrower; these seams do not prescribe exact APIs.
-
-No plugin framework, dependency-injection framework, or speculative capability hierarchy is required. Future research capabilities register tools that emit the same evidence representation. They may join historical replay only if classified `POINT_IN_TIME_REPLAY_SAFE`; sources without defensible historical availability are `LIVE_ONLY`.
+Frozen `Candle` records use finite Decimal prices and volume (rejecting binary
+float inputs), strict aware UTC timestamps, hourly open/close boundaries, one-hour
+intervals, positive OHLC prices, nonnegative volume, and consistent high/low bounds.
+Availability cannot precede completion but need not be hourly aligned. Python
+inputs cannot coerce strings or numbers into timestamps. Dataset manifests use
+schema version `"1"` and strict nonnegative row counts, with validated coverage
+and gap relationships. Canonical identity and acquisition validation are defined
+in the [data pipeline](data-pipeline.md).
 
 ## Opportunity Contract
 
 An `Opportunity` is the small deterministic research-candidate contract for opportunity-led research. It contains only `opportunity_id`, `venue`, `pair`, `timeframe`, `observed_at`, `available_at`, `trigger_type`, `trigger_payload`, and `summary`.
 
-`opportunity_id` is assigned by deterministic runtime or scanner logic, is never generated by the LLM, has no random schema default, and is stable enough for research, replay, journaling, and evaluation to reference. V1 uses the canonical Coinbase Exchange spot venue, supported `BTC-USD`, `ETH-USD`, and `SOL-USD` pairs, and one-hour timeframe. No UUID framework or concrete ID-generation algorithm is prescribed here.
+`opportunity_id` is assigned by deterministic runtime or scanner logic, is never generated by the LLM, has no random schema default, and is stable enough for research, replay, journaling, and evaluation to reference. V1 uses the canonical Coinbase Exchange spot venue, supported `BTC-USD`, `ETH-USD`, and `SOL-USD` pairs, and one-hour timeframe. The scanner’s concrete identity encoding is defined under [Scanner Lock](#scanner-lock).
 
 `observed_at` is when the deterministic trigger became complete. For the V1 hourly scanner this is the trigger candle's completion, not its open; for a window-derived trigger it is the latest point required for the trigger to be valid. `available_at` is the earliest time the opportunity could legitimately have been known, and the schema enforces only `available_at >= observed_at`.
 
@@ -80,18 +62,18 @@ An `Opportunity` is not an LLM decision, directional vote, order, execution or r
 Every normalized `EvidenceItem` contains `evidence_id`, category/type, source, `observed_at`, `available_at`, provenance, tool/query parameters, dataset/source version, immutable structured payload or artifact reference, concise relevance, and optional quality metadata. Large dataframes and raw datasets stay outside graph state. Research capabilities emit this evidence rather than independent `BUY`, `SELL`, `BULLISH`, or `BEARISH` votes; the integrated research process owns interpretation.
 
 Tool runtime owns authoritative time, fixed venue/timeframe, and source bindings.
-Slice 11 tool arguments select a supported pair and, for relative strength, an
+Research tool arguments select a supported pair and, for relative strength, an
 explicit benchmark; callers cannot supply a cutoff or window override. Results
 expose temporal provenance and typed unavailability. The future thesis and critic
 consume evidence contracts rather than market-provider objects.
 
-`Opportunity` and `EvidenceItem` schemas enforce internal timestamp consistency, including `available_at >= observed_at`. They do not enforce `available_at <= SimulationClock.now`; Slice 4's `SimulationClock` and `PointInTimeDataGateway` own authoritative visibility at replay time.
+`Opportunity` and `EvidenceItem` schemas enforce internal timestamp consistency, including `available_at >= observed_at`. They do not enforce `available_at <= SimulationClock.now`; `SimulationClock` and `PointInTimeDataGateway` own authoritative visibility at replay time.
 Common research contracts revalidate existing and nested model instances and
 detach mutable input collections into deeply immutable validated state.
 
 ## Deterministic Market Research
 
-Completed Slice 11 implements `MarketResearchService` in
+`MarketResearchService` is implemented in
 [market_research.py](../src/crypteo/market_research.py), with immutable typed
 [contracts and payloads](../src/crypteo/domain/market_research.py) and private
 [research arithmetic](../src/crypteo/domain/_market_research_arithmetic.py).
@@ -114,7 +96,7 @@ dataset objects, with one binding per supplied pair; duplicate bindings raise.
 The supplied clock remains runtime-owned. Direct service construction is a runtime
 integration seam whose source bindings must describe the gateway's datasets.
 Raw-capture verification remains at the acquisition/publication boundary.
-Slice 11 does not rewire scanner-only replay or implement an LLM workflow.
+Research tools are standalone; scanner-only replay does not invoke them.
 
 ### Fixed capabilities, windows, and formulas
 
@@ -222,7 +204,7 @@ schema version `1`, not dataset content identity or research-policy version.
 
 ### Numerical policy
 
-New arithmetic uses deterministic Decimal operations in a private
+Research arithmetic uses deterministic Decimal operations in a private
 50-significant-digit, half-even context, independent of ambient Decimal settings
 and without binary floats. Scanner Bollinger/SMA20 arithmetic is reused;
 existing `mean_true_range` retains its exact arithmetic rather than being rounded
@@ -235,67 +217,66 @@ reason as appropriate. They do not make otherwise valid evidence unavailable.
 Zero numerators with positive denominators produce defined zero ratios; prices
 and price means used as denominators must remain positive.
 
-## Initial LangGraph
-
-```text
-Research context -> Investigate (bounded tools) -> Draft thesis -> Critic
-                 -> Final schema-validated research assessment
-```
-
-For the V1 opportunity-led path, the research context is an `Opportunity`; a future trader-led path may use its own request/context contract. Investigation dynamically selects relevant typed market tools. The critic is a distinct model call receiving the evidence and draft. V1 has no planning agent, specialist-agent team, delegation, debate, recursive hierarchy, or repeated autonomous research loop. This bounded single workflow validates the common research, evidence, critique, and evaluation architecture before later specialist orchestration is introduced.
-
-Configurable limits cover tool calls, total tokens, graph iterations, retries, model calls, and decision age. Exhaustion, malformed output, unavailable/stale evidence, or unrecoverable tool/model failure fails closed to `ABSTAIN`. The graph may retry only within its fixed budget.
-
-Graph state contains runtime-owned identity/context and compact structured results: evidence references, tool-call records, draft thesis, critique, final decision, budgets consumed, status, and errors. It does not contain raw candle collections. Runtime identity is associated with model-facing records by orchestration and journaling rather than generated inside those records.
-
-## Long-Term Research Architecture and Presentation
-
-The intended long-term research flow is:
-
-```text
-Research request / opportunity
-        -> Research coordinator
-        -> Select only relevant specialist research agents
-        -> Normalized evidence
-        -> Integrated synthesis / thesis
-        -> Critic
-        -> Final structured research assessment
-        -> Interactive research dashboard
-```
-
-Potential specialists include market, derivatives, on-chain, news/catalysts, protocol/fundamentals, tokenomics, macro, and sentiment research. The coordinator selects only those relevant to the request; not every specialist runs every time. Specialists produce normalized, provenance-aware evidence and do not independently emit `BUY` or `SELL` decisions. Integrated synthesis owns the combined interpretation, the critic remains distinct from synthesis, and the final result remains a structured research assessment rather than execution authorization.
-
-Multi-agent orchestration must remain bounded and auditable. It must not introduce recursive delegation, unrestricted autonomous loops, or independently trading agent teams. These are long-term product directions, not V1 implementation requirements.
-
-The interactive research dashboard is intended to be the primary structured presentation layer. It may eventually visualize price and market data, evidence and provenance, bull and bear cases, uncertainty, critic output, research activity, and domain-specific research results. Chat remains available for follow-up questions, refinement, and re-running research. Domain models remain frontend-independent, and no frontend technology choice is prescribed here.
-
 ## Temporal and Replay Invariants
 
-`SimulationClock` is authoritative. `PointInTimeDataGateway` revalidates candle
-records on ingestion. Every historical read crosses the gateway, which rejects
-`available_at > clock.now`. The scanner sees completed bars only. A decision after
-close T cannot fill before the next bar open. The model cannot choose or extend a
-cutoff. Journal reads enforce availability time and V1 exposes no prior decisions,
-theses, or outcomes to decision-making. All timestamps are aware UTC.
+`SimulationClock` advances explicitly with strict UTC timestamps, permits the
+same time, and rejects backward movement. The gateway reconstructs and validates
+every `Candle` instance before indexing, rejects duplicate market/open identities,
+and detaches its sorted history from the caller's collection. `read_candles`
+accepts market identity and returns only candles with both
+`close_time <= clock.now` and `available_at <= clock.now`; it exposes no cutoff
+argument or clock mutation. Future records stay hidden rather than invalidating
+the stored history. All timestamps are aware UTC.
+
+Historical consumers use this gateway. Acquisition and persistence can inspect
+full datasets for integrity, but cannot grant historical visibility. A decision
+after close T is eligible for the next bar open at T; financial recording waits
+for completed evidence. No model may choose or extend the cutoff. Decision-time
+retrieval of prior theses, decisions, or outcomes is prohibited; the durable
+journal is unimplemented.
 
 Tests deliberately seed future data and require it to remain unreachable. Prompts are not a security control.
 
-Model parametric knowledge is a residual replay limitation: a model may remember historical events. Model-facing replay context should omit absolute calendar dates where they are not analytically required, while persisted evidence retains exact timestamps. Robustness experiments may blind or normalize price paths. This mitigates but cannot prove elimination of memorized historical knowledge, so reports must disclose it.
-
 ## Scanner Lock
 
-V1 uses one hourly lower-Bollinger-band breach scanner. After each completed bar, emit one opportunity when close crosses from at/above to below `SMA(20) - 2 * population_standard_deviation(20)`; require 20 valid hourly closes and suppress repeat opportunities until price closes back at/above the lower band. The scanner supplies a candidate, not a trade signal.
+`OpportunityScanner.scan(pair=...)` returns every qualifying opportunity in the
+current gateway-visible snapshot, in chronological order, with no delivery state.
+Repeated calls may return the same opportunities; replay owns run-local delivery.
 
-This rule is transparent, intentionally untuned, volatility-scaled across assets, and active in both ranges and selloffs. It should create a manageable order of several opportunities per asset-month, but frequency is an unverified planning estimate and must be measured on development data before freezing configuration. In ranges it often identifies potentially reversible extremes; in downtrends it produces falling-knife candidates. That ambiguity gives the agent meaningful work: assess trend, regime, momentum, relative strength, volume, volatility, and nearby levels. Scanner-only measures naive dip buying; the agent is tested on whether it filters poor breaches without receiving different opportunities. If frequency is inadequate, changing parameters is a versioned design change made using development data only.
+For each 20-close contiguous window, including the current candle:
+`SMA20 = sum(closes) / 20`, `variance = sum((close - SMA20)^2) / 20`,
+`σ = sqrt(variance)`, and `lower_band = SMA20 - 2σ`. Calculation uses a private
+50-digit, half-even Decimal context, independent of caller settings. Mixed markets,
+duplicate timestamps, and reversed ordering raise. Missing hours reset warm-up;
+statistics are `None` until 20 contiguous bars exist again. Pure analytics accepts
+supplied candles; callers establish visibility through the gateway.
+
+A crossover requires the previous close at/above its own lower band and the
+current close below its own lower band. The first valid band only initializes
+comparison, so the earliest opportunity is candle 21. `None`/gaps reset comparison.
+Continued below-band closes do not emit; equality or an above-band close re-arms.
+Observation time is the trigger close; availability is the maximum availability
+across both compared windows, including all dependencies.
+
+The trigger type is `bollinger_lower_cross_v1`. IDs are `sha256:` plus the digest
+of sorted compact UTF-8 JSON containing trigger type, venue, pair, timeframe, and
+observed time (UTC `Z`, six fractional digits). Payload, availability, and summary
+are excluded from identity. Compact payloads retain previous/current closes and
+lower bands. Newly visible internal candles can change snapshot results.
+
+The transparent, untuned rule scales its band with observed volatility and supplies
+comparable candidates without separate scanners for research and baseline selection. It can identify extremes in both ranges and
+selloffs; candidate generation makes no claim that buying is appropriate. See
+[ADR-004](decisions/ADR-004-scanner-snapshot-semantics.md) for snapshot rationale.
 
 ## Canonical Historical Data
 
-For the implemented acquisition boundaries, artifact formats, identities, and
-publication checks, see the [data pipeline guide](data-pipeline.md).
-
-Use the public Coinbase Exchange REST candles endpoint for the Coinbase spot pairs `BTC-USD`, `ETH-USD`, and `SOL-USD`, with granularity 3600 seconds. Persist immutable raw responses, then normalize them into a versioned local dataset. Coinbase is a recognizable USD spot venue, supplies the exact products and hourly aggregation, and requires no multi-venue reconciliation.
-
-Limitations are material: requests are capped at 300 candles, candles can be incomplete, and intervals without ticks may be absent. Ingestion must request bounded nonoverlapping windows, deduplicate, sort, validate OHLC invariants, and produce a gap manifest. Never silently forward-fill OHLCV. A missing hour makes indicators depending on that window invalid; scanner/replay skip affected opportunities until the required contiguous warm-up is restored. Dataset integrity checks may inspect timestamps, schema, and gaps across all splits, but final-period prices, signals, and outcomes remain off limits during development.
+Canonical inputs contain validated hourly candles, actual coverage, internal gaps,
+and semantic dataset identity. Requested completeness and raw observations retain
+separate acquisition/capture identities. There is no synthesized or forward-filled
+OHLCV. Coinbase normalization assigns candle close as `available_at`; acquisition
+time is separate provenance. See the [data pipeline guide](data-pipeline.md) for
+the full normalization, identity, publication, and loading contract.
 
 ## Decision and Risk Outcomes
 
@@ -304,13 +285,13 @@ Limitations are material: requests are capped at 300 candles, candles can be inc
 - `TRADE`: research supports proceeding with the candidate long trade. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
 - `NO_TRADE`: Crypteo has enough evidence to actively reject the candidate. It is a substantive research conclusion, not an abstention.
 - `ABSTAIN`: Crypteo cannot form a sufficiently reliable research conclusion because evidence is insufficient, conflicting, stale, unavailable, or unreliable, or because of research/tool failure, budget exhaustion, or validation failure.
-- `RISK_REJECTED`: after `TradeDecision.TRADE`, deterministic authorization refused the candidate. It is a downstream risk outcome that the LLM cannot emit.
+- `RISK_REJECTED`: deterministic authorization refused a proposal. It is a downstream risk outcome that the LLM cannot emit.
 
-`TRADE`, `NO_TRADE`, and `ABSTAIN` remain distinct in research storage and evaluation. In the intended V1 flow, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using frozen deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
+The research schema keeps `TRADE`, `NO_TRADE`, and `ABSTAIN` distinct. In the intended V1 flow, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using frozen deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
 
 ## Deterministic Trade Terms
 
-The completed pre-Slice-10 prerequisite implements stateless `TradeTermsService.generate(pair=...)` through the authoritative point-in-time gateway. Generation reads `gateway.now`, never accepts a caller/model cutoff, and never advances the clock. It requires exactly 21 contiguous visible completed hourly candles spanning `[gateway.now - 21h, gateway.now)`, with the last candle ending at `gateway.now`. Every required candle must be available by that time; older history cannot replace a missing or delayed candle.
+The stateless `TradeTermsService.generate(pair=...)` reads through the authoritative point-in-time gateway. Generation reads `gateway.now`, never accepts a caller/model cutoff, and never advances the clock. It requires exactly 21 contiguous visible completed hourly candles spanning `[gateway.now - 21h, gateway.now)`, with the last candle ending at `gateway.now`. Every required candle must be available by that time; older history cannot replace a missing or delayed candle.
 
 The current V1 policy is:
 
@@ -322,9 +303,9 @@ The current V1 policy is:
 
 Generation fails closed with `REFERENCE_UNAVAILABLE`, `HISTORY_UNAVAILABLE`, `ZERO_MEAN_TRUE_RANGE`, `INVALID_RAW_STOP`, `INVALID_RAW_TARGET`, or `INVALID_ALIGNED_LEVELS`. It does not shorten the window, substitute older candles, clamp invalid stops, or raise collapsed targets. Malformed inputs raise validation errors rather than ordinary rejection outcomes.
 
-Successful terms are immutable and retain decision time, market identity, configuration, reference, derived statistics, and aligned levels. Their contract recomputes the levels; the service establishes the statistics' market provenance and temporal visibility. In the intended evaluation flow, terms are frozen before selection, authorization, and execution so selection cannot change the trade being evaluated. Generation does not imply research approval, portfolio sizing, execution authority, or automatic LLM exposure. See [ADR-007](decisions/ADR-007-deterministic-trade-terms.md) for the durable boundaries; the multiplier, window, and target formula above are current V1 policy.
+Successful terms are immutable and retain decision time, market identity, configuration, reference, derived statistics, and aligned levels. Their contract recomputes the levels; the service establishes the statistics' market provenance and temporal visibility. In scanner-only replay, terms are frozen before selection, authorization, and execution so selection cannot change the trade being evaluated. Generation does not imply research approval, portfolio sizing, execution authority, or automatic LLM exposure. See [ADR-007](decisions/ADR-007-deterministic-trade-terms.md) for the durable boundaries; the multiplier, window, and target formula above are current V1 policy.
 
-Slice 10 implements opportunity freshness, deduplication, stale-term admission, replay orchestration and clock advancement, proposal construction from frozen terms, core metrics, and experiment manifests. The generator accepts a pair rather than an `Opportunity`; replay establishes whether a scanner candidate remains fresh.
+Replay implements opportunity freshness, deduplication, stale-term admission, replay orchestration and clock advancement, proposal construction from frozen terms, core metrics, and experiment manifests. The generator accepts a pair rather than an `Opportunity`; replay establishes whether a scanner candidate remains fresh.
 
 ## Scanner-Only Replay
 
@@ -339,7 +320,7 @@ with optional explicit acquisition linkage. `ReplayConfig` requires UTC hourly
 increments must match. `start == end` is valid: reconcile and observe once, with
 no decision boundaries. An end before start is invalid.
 
-One authoritative `SimulationClock` drives one gateway shared by the unchanged
+One authoritative `SimulationClock` drives one gateway shared by the snapshot
 scanner, terms service, risk service, and broker. At each hourly boundary in
 `[start, end)`, replay reconciles the broker and records new lifecycle outcomes,
 then scans every configured pair. Admission requires
@@ -380,9 +361,9 @@ fills, closed trades, entry rejections, gaps, and boundary observations, reusing
 domain payloads. A holding gap continues the schedule with unavailable valuation
 and halted finances; subsequent valid proposals can receive `PORTFOLIO_HALTED`.
 Malformed inputs, stale/mismatched terms, invariant violations, and unexpected
-errors raise, with no partial result or recovery/persistence path. This is not
-the durable Slice 13 journal. Slice 10 includes no LLM research or `TradeDecision`
-workflow, live mode, or real-money execution.
+errors raise, with no partial result or recovery/persistence path. Durable
+journaling and recovery are unimplemented. Scanner-only replay does not
+invoke research tools, an LLM, or the `TradeDecision` workflow.
 
 `ReplayResult` validates manifest/run identity, contiguous record sequences,
 record/payload timing and linkage, the complete hourly observation schedule, and
@@ -441,91 +422,126 @@ deferred.
 
 ## Simulation and Risk
 
-Slice 9 implements deterministic LONG risk authorization and sizing through `RiskService.authorize(TradeProposal, PortfolioSnapshot)`, independent of `TradeDecision`. Authorization uses current flat cash as capital and the exact gateway-visible completed candle close ending at `decision_at`, which must equal gateway time. Supplied stop/target levels must align to the price increment and satisfy `0 < stop < reference < target`; the separate trade-terms service now generates them. Risk authorization also accepts direct proposals and independently validates their economics; it does not depend on a `TradeTerms` object.
+Deterministic LONG risk authorization and sizing use `RiskService.authorize(TradeProposal, PortfolioSnapshot)`, independent of `TradeDecision`. Authorization uses current flat cash as capital and the exact gateway-visible completed candle close ending at `decision_at`, which must equal gateway time. Supplied stop/target levels must align to the price increment and satisfy `0 < stop < reference < target`; the separate trade-terms service generates them. Risk authorization also accepts direct proposals and independently validates their economics; it does not depend on a `TradeTerms` object.
 
-Let `C` be current cash, `r` the configured risk fraction, `d` the quantity increment, and `E`/`S` the estimated entry/stop execution prices from shared Slice 8 adverse slippage and tick rounding. With entry/exit fee rates `f_entry`/`f_exit`, cash per unit is `A = E * (1 + f_entry)` and estimated loss per unit is `L = A - S * (1 - f_exit)`. Quantity is `q = d * min(floor(C * r / (L * d)), floor(C / (A * d)))`, computed exactly; fewer than one increment is rejected. This is the largest aligned quantity satisfying both risk and cash constraints. Authorization is nonmutating and bounds estimated nongapped stop loss, not guaranteed realized loss. Actual next-open prices never enter sizing; Slice 8 owns gap affordability and realized execution outcomes. See [ADR-006](decisions/ADR-006-decision-time-risk-authorization.md) for the durable decision-time boundary.
+Let `C` be current cash, `r` the configured risk fraction, `d` the quantity increment, and `E`/`S` the estimated entry/stop execution prices from shared adverse slippage and tick rounding. With entry/exit fee rates `f_entry`/`f_exit`, cash per unit is `A = E * (1 + f_entry)` and estimated loss per unit is `L = A - S * (1 - f_exit)`. Quantity is `q = d * min(floor(C * r / (L * d)), floor(C / (A * d)))`, computed exactly; fewer than one increment is rejected. This is the largest aligned quantity satisfying both risk and cash constraints. Authorization is nonmutating and bounds estimated nongapped stop loss, not guaranteed realized loss. Actual next-open prices never enter sizing; the broker owns gap affordability and realized execution outcomes. See [ADR-006](decisions/ADR-006-decision-time-risk-authorization.md) for the durable decision-time boundary.
 
 `RiskService` requires strictly positive estimated net target reward per unit. Let `E` be the estimated BUY execution price from the decision-time reference and `X` the estimated SELL execution price at the aligned target, using shared adverse slippage and tick rounding. With entry/exit fee rates `entry_fee`/`exit_fee`, estimated net target reward per unit is `G = X * (1 - exit_fee) - E * (1 + entry_fee)`, and authorization requires `G > 0`; zero or negative reward yields `NON_POSITIVE_TARGET_REWARD`, after level/stop-executability checks and before capital/quantity checks. There is no epsilon or minimum reward/risk threshold. `RiskAuthorization` records the target execution estimate and net reward and recomputes them from the reference, proposal, and configuration, preventing forged diagnostics from bypassing validation. These are decision-time estimated economics, not a guarantee of positive realized target-exit P&L: actual next-open entry and opening-gap exits can differ.
 
-Slice 8 consumes already-authorized LONG terms without an `Opportunity` or `TradeDecision` dependency. A decision after completed close T is eligible for the open of [T, T+1h), with the fill recorded only once that candle is gateway-visible. Market phase/time, candle availability, and recording time remain distinct; intrabar fills have no invented exact timestamp, and the broker never advances or owns a second clock. See [ADR-005](decisions/ADR-005-completed-bar-execution-reconciliation.md) for the reconciliation rationale and contract.
+Risk input validation precedes ordinary rejection: malformed proposal/portfolio
+state, future portfolio history, mismatched decision time, or misaligned levels
+raise. Ordinary rejection precedence is `PORTFOLIO_HALTED`, `REUSED_ORDER_ID`,
+`PORTFOLIO_BUSY`, `REFERENCE_UNAVAILABLE`, `INVALID_LONG_LEVELS`,
+`UNEXECUTABLE_STOP`, `NON_POSITIVE_TARGET_REWARD`, `NO_CAPITAL`, then
+`QUANTITY_BELOW_INCREMENT`. Authorization reserves no cash, consumes no order ID,
+and advances no clock. Its public contract recomputes execution estimates and
+validates alignment and maximal sizing, including existing/nested and JSON inputs.
 
-Entries use configurable adverse slippage and fees, validated quantity/price increments, and exact Decimal accounting. Stops and targets activate after entry. Observed opening gaps fill using the opening price and take precedence over later intrabar touches; otherwise simultaneous stop/target touches resolve stop-first for a long position. A versioned maximum holding duration counts the entry candle as holding bar one; stop/target takes priority over a time exit at the final holding bar's close. An entry candle missing or unavailable at its expected close causes terminal rejection, never rollover or revival on delayed data. Missing holding data halts financial processing with the position unresolved. Slice 8 preserves immutable snapshots and append-only order, fill, and outcome histories within execution state; durable append-only journaling of the complete lifecycle remains a later V1 responsibility. Every baseline uses exactly the same risk and execution configuration.
+`SimulatedBroker` consumes already-authorized LONG terms without an `Opportunity` or `TradeDecision` dependency. A decision after completed close T is eligible for the open of [T, T+1h), with the fill recorded only once that candle is gateway-visible. Market phase/time, candle availability, and recording time remain distinct; intrabar fills have no invented exact timestamp, and the broker never advances or owns a second clock. See [ADR-005](decisions/ADR-005-completed-bar-execution-reconciliation.md) for the reconciliation rationale and contract.
+
+Entries use configurable adverse slippage and fees, validated quantity/price increments, and exact Decimal accounting. Stops and targets activate after entry. Observed opening gaps fill using the opening price and take precedence over later intrabar touches; otherwise simultaneous stop/target touches resolve stop-first for a long position. A versioned maximum holding duration counts the entry candle as holding bar one; stop/target takes priority over a time exit at the final holding bar's close. An entry candle missing or unavailable at its expected close causes terminal rejection, never rollover or revival on delayed data. Missing holding data halts financial processing with the position unresolved. The broker preserves immutable snapshots and append-only order, fill, and outcome histories within execution state; durable append-only journaling of the complete lifecycle remains a later V1 responsibility. Future baseline comparisons must use exactly the same risk and execution configuration.
+
+For reference price `P`, adverse slippage fraction `s`, and price increment `t`,
+BUY price is `t * ceil(P * (1 + s) / t)` and SELL price is
+`t * floor(P * (1 - s) / t)`, using exact increment arithmetic. A rounded
+nonpositive execution price raises. Fill fee is `quantity * execution_price *
+fee_rate`. Entry cash debit and cost basis include the entry fee; exit proceeds
+subtract the exit fee. Gross P&L is `quantity * (exit_price - entry_price)`;
+net P&L subtracts both fees. Flat cash equals initial cash plus cumulative realized
+net P&L. Financial amounts are exact and independent of ambient Decimal context.
+
+The broker permits one pending or open order and full fills only. Repeating an
+identical submitted order ID is a no-op; conflicting reuse raises. New submissions
+require `decision_at == gateway.now` and aligned quantity/levels. Actual next-open
+entry cost above cash yields terminal `UNAFFORDABLE`, without resizing. Missing
+entry data yields terminal `MISSING_ENTRY_CANDLE`. Data delayed past its expected
+close counts as missing even if processing happens after it becomes visible.
+Due candles process chronologically. Each processing call commits once; an
+exception, including an unexecutable rounded price, leaves the prior snapshot
+intact. Internal transitions and public portfolio contracts validate ledger,
+position, fill, and outcome consistency.
 
 The execution path remains simulation-only. No credentials, private keys, trading permissions, exchange adapter package, or real order path may exist.
 
-## Journal and Reproducibility
+## Research Contract Validation
 
-The V1 journal must ultimately persist opportunities, evidence, tool calls and responses, theses, critiques, decisions, risk results, orders, fills, exits, outcomes, post-trade reviews, graph traces, and experiment metadata. V1 journal access is for audit, evaluation, debugging, and post-trade analysis only; there is no decision memory, embedding, or vector retrieval.
+`ResearchThesis`, `Critique`, and `TradeDecision` contain research content without
+run/decision IDs, authoritative cutoffs, or runtime/graph/journal timestamps.
+Runtime associates those records with context; the model cannot maintain linkage.
+`Opportunity` and `EvidenceItem` retain deterministic IDs for references.
 
-`ResearchThesis`, `Critique`, and `TradeDecision` contain model-facing research content, not `run_id`, `decision_id`, authoritative cutoffs, or runtime, graph, journal, decision, and experiment timestamps. The runtime/journal layer associates them with run and opportunity/request identity, authoritative timestamps, graph traces, experiment metadata, and applicable model/prompt/tool configuration. `EvidenceItem` retains `evidence_id` because theses and decisions reference evidence; `Opportunity` retains its deterministic `opportunity_id` because downstream processing must reference its input. The LLM never invents or maintains runtime linkage.
+Common research models are frozen, reject undeclared fields, revalidate existing
+and nested instances, and detach mutable collections into deeply immutable state.
+Evidence requires a nonempty structured payload or an artifact reference; prose
+alone is insufficient. Evidence references must be nonblank and unique within
+each reference collection. Schemas check local relationships, not whether an ID
+actually resolves to evidence in a research run.
 
-Slice 10 implements the [scanner-only experiment manifest](#scanner-only-replay).
-Later agentic replay slices will extend it with prompts, models, research tools,
-and agent configuration when the research workflow is integrated. Slice 11's
-standalone tools do not change the scanner-only manifest.
+`TRADE` requires supporting evidence IDs, confidence, and a critic response;
+`NO_TRADE` requires counterevidence IDs, confidence, and a critic response. Neither
+permits abstention reasons. `ABSTAIN` requires at least one abstention reason and
+may retain available research results. Confidence is a strict integer from 0 to
+100 expressing confidence in the research conclusion, not a calibrated probability
+of profit. These schemas exist; model-backed generation and orchestration do not.
 
-Each experiment ultimately records the applicable versioned configuration, asset universe and period, requests/responses, decisions, and traces. `FROZEN_RESPONSE` reproduction reuses stored model/tool artifacts to replay deterministic components. `FRESH_INFERENCE` preserves information boundaries and configuration but invokes the model again. Reports label them separately.
+## Validation Coverage
 
-## Evaluation Protocol
+Current tests exercise market/schema validation, planted future and delayed data,
+scanner crossover and gap recovery, formula goldens, exact financial accounting,
+risk sizing against independent arithmetic, research identity/provenance,
+immutable instance revalidation, artifact containment, and deterministic replay.
+Replay artifact checks cover retained lifecycle and financial consistency and
+recompute metrics on deserialization. They cannot reconstruct unretained market
+paths or prove that externally supplied statistics came from visible candles.
 
-Process quality and trading performance are independent. Process metrics include schema validity, grounding, unsupported claims, tool success, temporal validity, abstention appropriateness, critic effectiveness, contradiction detection, consistency, efficiency, latency, tokens, cost, and recovery. Trading metrics derive from the equity curve and include return, drawdown, volatility, downside deviation, cautious Sharpe/Sortino, profit factor, win rate, expectancy, average win/loss, exposure, turnover, costs, loss streaks, frequency, exit reason, and breakdowns by asset, regime, and confidence.
+The [local quality commands](../README.md#local-development) run Ruff formatting
+and lint, strict mypy, and pytest. Model-backed evaluation remains separate from
+normal CI; future model integration must use mocked responses in normal tests.
 
-Scanner-only is the mandatory first baseline. Later baselines may add deterministic filtering, frequency-matched random selection, LLM without tools, LLM without critic, always-reject, and contextual buy-and-hold. Comparable runs share opportunities, cutoff, risk, fees, slippage, and simulation assumptions.
+## Unimplemented Research and Evaluation Boundaries
 
-Use chronological walk-forward splits:
+These constraints guide integration; they are not executable behavior at HEAD.
+The proposed bounded workflow is investigation with typed tools, draft thesis,
+a distinct critic call, and final schema-validated assessment. Tool/model calls,
+tokens, iterations, retries, and decision age must have fixed budgets. Exhaustion
+or unrecoverable failures must yield `ABSTAIN`. State should retain compact
+results and references rather than raw datasets. Architecture and future entry
+modes are described in [the extension boundary](architecture.md#research-extension-boundary).
 
-- Development: `2021-07-01T00:00:00Z` through `2023-06-30T23:00:00Z`.
-- Validation: `2023-07-01T00:00:00Z` through `2024-06-30T23:00:00Z`.
-- Untouched test: `2024-07-01T00:00:00Z` through `2026-06-30T23:00:00Z`.
+Durable journaling must preserve the append-only lifecycle, tool requests/responses,
+research records, graph traces, and applicable code/data/scanner/risk/simulation/
+prompt/model/tool versions. Journal access is for audit, evaluation, debugging,
+and post-trade analysis, never decision memory. The current scanner-only manifest
+is defined under [replay](#scanner-only-replay); standalone research tools do not
+extend it with model or prompt settings.
 
-The common start follows SOL-USD's June 2021 Coinbase launch and leaves a short availability buffer. Development spans late bull, 2022 contraction, and early recovery; validation spans consolidation and renewed expansion; test is long enough to contain more than one condition. These labels are qualitative prior knowledge, not statistical regime labels; deterministic regime calculations must define actual subsets. The split has only one broad market cycle and three correlated assets, so uncertainty intervals and claims must remain conservative. Prompts, scanner, risk, and design freeze before final-test outcome inspection.
+Agentic reproduction must distinguish `FROZEN_RESPONSE` (reuse stored model/tool
+artifacts) from `FRESH_INFERENCE` (preserve information boundaries and configuration
+while invoking the model again). Neither agentic mode is implemented. Model
+parametric knowledge remains a replay limitation: omitting unnecessary absolute
+dates from model context or blinding paths may mitigate memorized events, but
+cannot prove their elimination. Persisted evidence must retain exact timestamps.
 
-## Testing Policy
+The evaluation question is whether bounded research improves selection among the
+same opportunities under identical risk and execution assumptions. Scanner-only
+is the implemented baseline. Additional baselines and process/performance graders
+are unimplemented. Process measures such as grounding, temporal validity, critic
+effectiveness, abstention, latency, and cost must be reported separately from
+trading performance. Core implemented metrics are specified under replay;
+advanced performance statistics remain deferred.
 
-Normal CI must mock model responses once model integration is added. The completed V1 test suite will include unit, property, golden, contract, graph-routing, integration, and replay tests covering indicators, scanner, sizing, accounting, costs, stops/targets, limits, timing, schemas, abstention, critic paths, deterministic replay, leakage, baseline fairness, and opportunity-to-close behavior. Model-backed evaluations remain separate and versioned.
+The planned chronological split policy is:
 
-## Implementation Slices
+| Role | First hourly boundary | Last hourly boundary |
+| --- | --- | --- |
+| Development | `2021-07-01T00:00:00Z` | `2023-06-30T23:00:00Z` |
+| Validation | `2023-07-01T00:00:00Z` | `2024-06-30T23:00:00Z` |
+| Untouched test | `2024-07-01T00:00:00Z` | `2026-06-30T23:00:00Z` |
 
-Each slice ends with passing automated tests and a usable repository state.
-
-1. Project quality shell: package metadata, formatter/linter/type-checker/pytest configuration, CI, and architecture-invariant tests; acceptance: documented local checks pass on an empty package.
-2. Market domain schemas: UTC timestamps, pair/venue/timeframe enums, candle and dataset-manifest models; acceptance: serialization and invalid-value tests pass.
-3. Research-domain contracts: `Opportunity`, evidence, thesis, critique, abstention, and final research-decision contracts; acceptance: internal timestamp consistency, evidence grounding, outcome-dependent decision rules, and rejection of forbidden calculated or runtime-owned LLM fields pass.
-4. Clock and temporal gateway: simulation clock plus in-memory provider; acceptance: completed-bar and planted-future-data tests pass before real ingestion exists.
-5. Coinbase ingestion: paginated raw capture, normalization, validation, version hashing, and gap report; acceptance: fixture-based ingestion is deterministic and never forward-fills.
-6. Deterministic analytics: only calculations required by scanner and initial tools; acceptance: independent golden examples and gap/warm-up behavior pass.
-7. Locked scanner: Bollinger breach through `OpportunityScanner`; acceptance: crossover, reset, duplicate suppression, and cutoff tests pass.
-8. Execution kernel: orders, fills, portfolio ledger, fees/slippage, gaps, intrabar priority, and time exits; acceptance: accounting invariants and scenario tables pass.
-9. Risk gate: deterministic position sizing and risk authorization with explicit risk and execution configuration; acceptance: known boundary cases approve/reject deterministically with reason codes.
-10. Scanner-only replay: opportunity freshness and deduplication, stale-term admission, proposal construction from frozen deterministic terms, event loop, equity curve, core metrics, and experiment manifest; acceptance: a fixture period reproduces byte-stable deterministic results.
-11. Deterministic market research (complete): seven fixed-window typed tools returning normalized evidence; acceptance: formula goldens, temporal/gap handling, semantic identity/provenance, numerical isolation, and success/unavailable contracts pass. See the [fixed policy](#deterministic-market-research).
-12. Minimal LangGraph: investigate, draft, critic, finalize with mocked model adapter and budgets; acceptance: all routes, retries, fail-closed abstention, and schema repair limits pass.
-13. Append-only journal: durable local persistence for the complete lifecycle; acceptance: linkage/audit tests pass and decision-time reads cannot access memory.
-14. Integrated agent replay: same opportunities flow through agent, risk, broker, and journal; acceptance: frozen-response replay is deterministic and baseline inputs are identical.
-15. Agent evaluation: labeled process cases, graders, cost/latency capture, critic and no-tool/no-critic ablations as selected; acceptance: versioned report separates process and trading metrics.
-16. Walk-forward runner: enforce split roles and final-test access guard; acceptance: development/validation reports run while outcome-level test access remains disabled.
-17. Final experiment and presentation: unlock test once, generate reproducible report and architecture narrative; acceptance: clean-environment instructions reproduce frozen results and disclose limitations.
-
-## V1 Definition of Done
-
-V1 is complete only when it:
-
-- loads and validates versioned Coinbase BTC/ETH/SOL hourly data in UTC;
-- enforces the simulation clock, completed-bar rule, and future-data isolation;
-- generates candidates with the single locked scanner;
-- runs scanner-only through the paper simulator;
-- exposes bounded typed market tools and the locked minimal LangGraph workflow;
-- produces grounded, critiqued, schema-valid decisions and distinct risk outcomes;
-- applies deterministic sizing/risk and next-open fills with fees, slippage, stops, targets, gaps, and time exits;
-- journals the complete append-only lifecycle and reproducibility metadata;
-- runs frozen-response and fresh-inference historical experiments;
-- reports process metrics separately from equity-curve trading metrics;
-- compares Crypteo fairly with scanner-only and any agreed additional baseline;
-- passes automated timing, leakage, accounting, replay, tool, graph, and integration tests; and
-- produces a reproducible evaluation report on locked walk-forward periods.
-
-## Explicitly Postponed
-
-Post-V1: multiple scanners, shorts, live ingestion/paper mode, alerts, all non-market research, bounded specialist-agent orchestration, interactive dashboard/UI/authentication, embeddings/vector or thesis memory, PostgreSQL unless demonstrated necessary, multiple venues, order books/ticks, limit/partial fills, Docker/cloud unless reproducibility requires it, and all real-exchange connectivity. Recursive delegation and unrestricted autonomous planning remain excluded.
-
-Future live mode reuses the core domain services, research engine, evidence model, agent workflow, journal, and applicable evaluation and risk infrastructure. Opportunity-led live research may reuse the scanner; trader-led research does not require one. Live operation fundamentally changes the clock and data providers, not the core research contracts.
+These split labels are not enforcement in `ReplayConfig`, which uses an exclusive
+`end`. The common start accommodates SOL-USD availability. Dataset integrity
+checks may inspect timestamps/schema/gaps across splits, but final-period prices,
+signals, and outcomes must remain uninspected during development. Prompts, scanner,
+risk, and design must freeze before final-test outcome inspection. The small,
+correlated asset universe and limited market cycles constrain generalization.
+Walk-forward enforcement and the final-test access guard are not implemented.

@@ -1,9 +1,13 @@
 # Architectural decisions
 
-Architecture decision records (ADRs) document decisions that materially constrain
-future architecture. The [build log](../build-log.md) records chronological
-development; git records implementation detail. Ordinary implementation choices
-do not need ADRs.
+Architecture decision records (ADRs) preserve rationale for decisions that
+materially constrain architecture: the chosen rule, important alternatives,
+consequences, and trade-offs. Ordinary implementation choices do not need ADRs.
+
+Documentation describes the system that exists at HEAD. ADRs preserve rationale
+for durable architectural decisions. Git preserves implementation history.
+See the [architecture overview](../architecture.md) for current component flow
+and the [behavioral specification](../v1-specification.md) for exact semantics.
 
 Use sequential identifiers and descriptive filenames (`ADR-001-short-title.md`).
 Keep each record focused on one constraint and use this minimal format:
@@ -34,16 +38,9 @@ Obligations, tradeoffs, and implications for future work.
 
 Accepted ADRs are not silently rewritten when superseded. Add a new ADR and mark
 the older record superseded with a link to its replacement when appropriate.
-Ground rationale in repository evidence or explicit decisions; distinguish
-reconstructed rationale from unavailable historical discussion.
-
-ADRs 001–004 retrospectively record established constraints through Slice 7.
-Their Accepted status records those existing decisions, not completion of later
-components described by the specification.
-ADR-005 records the completed Slice 8 execution semantics.
-ADR-006 records the completed Slice 9 decision-time risk semantics.
-ADR-007 records the completed pre-Slice-10 deterministic trade-terms prerequisite.
-ADR-008 records the completed Slice 10 replay boundary, delivery, and ordering semantics.
+Ground rationale in repository evidence or explicit decisions. Retain rationale
+when updating obsolete implementation-status notes; record a new ADR when a
+durable decision actually changes.
 
 | ADR | Decision | Status |
 | --- | --- | --- |

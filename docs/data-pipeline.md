@@ -1,8 +1,10 @@
 # Coinbase historical data pipeline
 
 This document describes the implemented Coinbase acquisition and local persistence
-path. The [V1 specification](v1-specification.md#canonical-historical-data) defines
-the historical-data scope; [ADR-003](decisions/ADR-003-canonical-data-and-acquisition-provenance.md)
+path. Coinbase supplies the supported USD spot pairs and hourly aggregation
+without multi-venue reconciliation. The
+[V1 specification](v1-specification.md#canonical-historical-data) defines the
+historical-data scope; [ADR-003](decisions/ADR-003-canonical-data-and-acquisition-provenance.md)
 records why raw captures, canonical datasets, and acquisition records have separate
 identities. Scanner-only replay consumes explicitly supplied canonical datasets;
 see the [replay specification](v1-specification.md#scanner-only-replay).
@@ -102,8 +104,9 @@ retain the retriever's request spelling (hourly start/end use `Z` without fracti
 digits). See the [capture encoding](../src/crypteo/coinbase_capture.py).
 
 Identical captures are idempotent; revised bodies or acquisition boundaries yield
-different capture identities and coexist. Existing request-only raw directories
-are not migrated. Dataset schema version remains `"1"`.
+different capture identities and coexist. Capture envelopes are required; there
+is no automatic format migration.
+Dataset schema version is `"1"`.
 
 ## Normalization and composition
 
@@ -140,7 +143,7 @@ envelope with sorted keys and compact separators. It includes:
 Canonical candle rows are chronological. Timestamps use UTC `Z` with six fractional
 digits. Decimal values use exact fixed-point strings with insignificant trailing
 zeros removed, and zero is encoded as `"0"`, without Decimal-context rounding.
-New `candles.json` artifacts use this same candle representation.
+Persisted `candles.json` artifacts use this same candle representation.
 
 Creation time and acquisition provenance are excluded from canonical identity.
 Equivalent numeric spellings, raw formatting, response order, and request chunking

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; retrospectively records the V1 responsibility boundary.
+Accepted.
 
 ## Context
 
@@ -13,8 +13,6 @@ or execution behavior would confound that comparison.
 Sources: [specification](../v1-specification.md#hard-responsibility-boundary),
 [repository guidelines](../../AGENTS.md#architecture-boundaries), and
 [research contracts](../../src/crypteo/domain/research.py).
-Architecture foundations: `77fa2f1`–`195b0ee`; research contracts: `2e0d092`;
-analytics/scanner: `00b40d7`, `758d2de`.
 
 ## Decision
 
@@ -36,11 +34,10 @@ prevents model-generated sizes, prices, PnL, or fill rules from becoming authori
 
 ## Consequences
 
-Future tools expose code-calculated values as evidence. Future risk, execution,
+Research tools expose code-calculated values as evidence. Risk, execution,
 accounting, and replay components must enforce their own contracts regardless of
 the research assessment. Runtime identity and timestamps remain runtime-owned.
 
-Through Slice 7, research schemas, data boundaries, analytics, and scanner exist;
-LLM orchestration, risk authorization, simulated execution, and replay are later
-work. This ADR does not claim those components are implemented. Real order routing
-remains outside Crypteo's scope.
+Model-backed orchestration remains unimplemented. The implemented deterministic
+components enforce this boundary independently. Real order routing remains outside
+Crypteo's scope.

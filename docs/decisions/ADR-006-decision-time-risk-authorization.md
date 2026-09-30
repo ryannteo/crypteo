@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted; implemented in Slice 9
-(`715f36457e52c80e45cfb68e8443076b2af25395`).
+Accepted.
 
 ## Context
 
@@ -27,12 +26,13 @@ Estimated entry and stop execution use the same adverse slippage and tick roundi
 as the broker: BUY rounds up, SELL rounds down. Entry fees and stop exit fees are
 included in estimated cash use and stop loss. Quantity is the largest whole number
 of configured quantity increments satisfying both the risk budget and available
-cash. Slice 9 uses current flat cash as its capital basis.
+cash. The current risk service uses flat cash as its capital basis.
 
 Authorization bounds the modeled nongapped stop loss under those pricing and cost
 assumptions. It does **not** guarantee realized loss is at or below the risk budget:
-entry or exit gaps can change execution prices. Slice 8 remains responsible for
-actual next-open affordability and execution outcomes, without resizing the order.
+entry or exit gaps can change execution prices. The simulated broker remains
+responsible for actual next-open affordability and execution outcomes, without
+resizing the order.
 Authorization does not mutate or reserve portfolio state, consume an order ID, or
 advance the clock; submission and execution remain separate operations.
 
@@ -54,5 +54,6 @@ future portfolio history is an input error before ordinary risk rejection.
 
 Specific risk fractions, holding durations, stop/target formulas, and the temporary
 one-position limitation are not permanent architectural constraints of this ADR.
-Slice 9 validates supplied stop/target levels; deterministic level generation
-remains unspecified and unimplemented before full replay integration.
+Risk validates supplied stop/target levels independently of their generator.
+[ADR-007](ADR-007-deterministic-trade-terms.md) defines the separate deterministic
+generation boundary.

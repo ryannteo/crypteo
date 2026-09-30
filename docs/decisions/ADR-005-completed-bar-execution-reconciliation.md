@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted; implemented in Slice 8
-(`22087f12c533d90f14ac48640fc7477b0dd274b3`).
+Accepted.
 
 ## Context
 
@@ -65,5 +64,5 @@ Consumers must distinguish a fill's market time from when its evidence and ledge
 record became available. Replay runtime remains responsible for advancing the
 single clock. Rejected orders and unresolved holding gaps cannot be silently
 repaired by newly visible data. These semantics constrain execution reconciliation;
-fee values, increments, and the Slice 8 one-trade scope limit are not permanent
+fee values, increments, and the current one-trade scope limit are not permanent
 architectural constraints established by this ADR.

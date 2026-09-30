@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; implemented in Slice 10 (`70b8c8e`).
+Accepted.
 
 ## Context
 
@@ -68,4 +68,4 @@ Later agentic replay must preserve these temporal and delivery semantics unless
 explicitly superseded. The scanner remains snapshot-based under
 [ADR-004](ADR-004-scanner-snapshot-semantics.md); replay owns delivery state and
 does not promise cross-run deduplication or restart recovery. Its in-memory audit
-artifact does not implement the durable Slice 13 journal.
+artifact does not provide durable lifecycle journaling.

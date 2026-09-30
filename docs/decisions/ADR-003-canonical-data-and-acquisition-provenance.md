@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; established by Slice 5 and pre-Slice-6 stabilization.
+Accepted.
 
 ## Context
 
@@ -15,7 +15,6 @@ Sources: [capture](../../src/crypteo/coinbase_capture.py),
 [dataset composition](../../src/crypteo/coinbase_dataset.py),
 [acquisition record](../../src/crypteo/coinbase_acquisition.py), and
 [publication](../../src/crypteo/coinbase_persistence.py).
-Key commits: `a739b78`, `4d40da5`, `f3eda18`, `9c1df9c`, `fee0cae`, `e5f50c4`.
 
 ## Decision
 

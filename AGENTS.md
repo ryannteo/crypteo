@@ -52,7 +52,7 @@ Every behavior change needs tests. Prioritize unit tests for deterministic finan
 
 Financial state transitions, evidence records, research traces, and journal records must be append-only and auditable where appropriate.
 
-After an approved slice or architectural stabilization is complete, update `docs/build-log.md` with its objective, consequential decisions, material review findings, verification, commit reference, and AI model/reasoning configuration when known. Add an ADR only for a decision that materially constrains future architecture. Do not fabricate rationale or historical AI configuration.
+Documentation describes the system that exists at HEAD. ADRs preserve rationale for durable architectural decisions. Git preserves implementation history. Keep README as the product front door, `docs/architecture.md` for current component boundaries and flow, `docs/v1-specification.md` for authoritative behavioral semantics, and `docs/data-pipeline.md` for the Coinbase acquisition/storage subsystem. Update the appropriate current-state document when behavior changes. Add an ADR only for a decision that materially constrains future architecture; preserve useful rationale, but keep development chronology, resolved review findings, historical test counts, and engineering AI configuration in Git.
 
 ## Reproducibility, Secrets, and Reviews
 

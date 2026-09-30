@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; established in Slice 4 (`6bab7c5`).
+Accepted.
 
 ## Context
 
@@ -34,9 +34,9 @@ available. Explicit time makes runs independent of machine time.
 
 ## Consequences
 
-The Slice 7 scanner reads through the gateway; future replay and research consumers
-must do the same. Pure analytics accepts supplied candles and does not independently
-authorize visibility. Acquisition/persistence may inspect a full dataset to build
+Scanner, replay services, and research tools read through the gateway; future
+consumers must do the same. Pure analytics accepts supplied candles and does not
+independently authorize visibility. Acquisition/persistence may inspect a full dataset to build
 artifacts; that access does not authorize exposing it to historical consumers.
 
 Tests must plant future and delayed data and check exact visibility boundaries.
