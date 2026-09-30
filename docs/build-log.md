@@ -18,9 +18,10 @@ in the inspected repository history. Verification for those entries identifies
 committed coverage, not proof
 of a historical passing run. Repairs are evidenced by diffs; their attribution to
 particular reviewers is unavailable. AI configuration is recorded separately below.
-The Slice 8–11 entries and the pre-Slice-10 prerequisite entry use the completed
-implementations and tests, with review and verification results supplied explicitly
-by the user. AI workflow settings are recorded only where supplied.
+The Slice 8–11 entries, the pre-Slice-10 prerequisite entry, and the pre-Slice-12
+audit entry use completed implementations and tests, with review and verification
+results supplied explicitly by the user. AI workflow settings are recorded only
+where supplied.
 
 ## Development phases
 
@@ -393,6 +394,42 @@ by the user. AI workflow settings are recorded only where supplied.
   unimplemented.
 - **AI workflow/configuration:** implementation, review, and repair model variants
   and reasoning settings were not supplied; none are inferred.
+
+### Pre-Slice-12 deterministic-substrate audit and stabilization
+
+- **Objective:** audit the whole codebase at pre-repair HEAD
+  `47a3aefe3bf931c5dd48e9515825629fba05336f` before model-backed work.
+  Deterministic calculations and runtime were largely sound; the read-only audit
+  found 1 HIGH, 2 MEDIUM, and 1 LOW issue and judged the substrate **READY AFTER
+  LISTED REPAIRS**.
+- **F1 HIGH — replay artifact consistency:** internally balanced serialized
+  ledgers and metrics could contradict execution configuration, order levels, or
+  portfolio-state risk-rejection causes. Validation now checks shared execution
+  pricing, exact fees, retained STOP/TARGET levels, provable same-candle behavior,
+  and necessary portfolio state. It remains a pure consistency check, not a
+  second broker or a reconstruction of unretained market paths.
+- **F2 MEDIUM — common research-model instance revalidation:** forged
+  `model_copy` instances and mutable nested provenance could bypass direct or
+  nested validation. Existing and nested instances are revalidated, and validated
+  collections are detached and deeply immutable. Public schemas are unchanged.
+- **F3 MEDIUM — gateway input revalidation:** malformed existing `Candle`
+  instances could bypass constructor invariants. The gateway now reconstructs
+  each candle before indexing, sorting, and visibility processing; normal temporal
+  semantics are unchanged.
+- **F4 LOW — persistence write containment:** raw and acquisition writers could
+  follow escaping symlinks that the loader rejected. Write destinations now use
+  resolved artifact-root containment; contained symlinks remain supported.
+- **Independent verification:** all four findings **RESOLVED**, no new
+  BLOCKER/HIGH/MEDIUM/LOW findings, and deterministic Slices 1–11 declared
+  **READY for Slice 12**. The repair added 117 parameterized cases; full pytest
+  passed (2,227 tests), as did Ruff format/check, strict mypy, and
+  `git diff --check`. These are supplied repair-verification results, not a new
+  test run for this documentation update.
+- **Stabilization commit:** `d4db9174e44716671588e27f709e576880eb2187`
+  (`Harden deterministic substrate validation`). No new ADR: the repairs harden
+  existing validation, temporal, and artifact-containment contracts.
+- **AI workflow/configuration:** audit and repair model variants and reasoning
+  settings were not supplied; none are inferred.
 
 ## Backfill verification
 

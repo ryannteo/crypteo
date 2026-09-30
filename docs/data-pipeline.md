@@ -21,7 +21,9 @@ Before reading, the loader resolves the canonical directory and both leaf paths
 (`manifest.json` and `candles.json`) and requires containment beneath the resolved
 artifact root. A leaf symlink escaping that root is rejected; a symlink remaining
 inside it is allowed. An explicitly requested acquisition path is also checked
-for containment.
+for containment. Persistence applies the same resolved-root containment rule to
+raw, canonical, and acquisition write destinations, including directories and
+leaves; contained symlinks remain allowed.
 
 This narrow reader does not fetch data or repeat raw recomposition, which belongs
 to acquisition publication validation. Missing or corrupt artifacts raise without

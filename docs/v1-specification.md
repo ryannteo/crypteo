@@ -86,6 +86,8 @@ expose temporal provenance and typed unavailability. The future thesis and criti
 consume evidence contracts rather than market-provider objects.
 
 `Opportunity` and `EvidenceItem` schemas enforce internal timestamp consistency, including `available_at >= observed_at`. They do not enforce `available_at <= SimulationClock.now`; Slice 4's `SimulationClock` and `PointInTimeDataGateway` own authoritative visibility at replay time.
+Common research contracts revalidate existing and nested model instances and
+detach mutable input collections into deeply immutable validated state.
 
 ## Deterministic Market Research
 
@@ -269,7 +271,12 @@ The interactive research dashboard is intended to be the primary structured pres
 
 ## Temporal and Replay Invariants
 
-`SimulationClock` is authoritative. Every historical read crosses `PointInTimeDataGateway`, which rejects `available_at > clock.now`. The scanner sees completed bars only. A decision after close T cannot fill before the next bar open. The model cannot choose or extend a cutoff. Journal reads enforce availability time and V1 exposes no prior decisions, theses, or outcomes to decision-making. All timestamps are aware UTC.
+`SimulationClock` is authoritative. `PointInTimeDataGateway` revalidates candle
+records on ingestion. Every historical read crosses the gateway, which rejects
+`available_at > clock.now`. The scanner sees completed bars only. A decision after
+close T cannot fill before the next bar open. The model cannot choose or extend a
+cutoff. Journal reads enforce availability time and V1 exposes no prior decisions,
+theses, or outcomes to decision-making. All timestamps are aware UTC.
 
 Tests deliberately seed future data and require it to remain unreachable. Prompts are not a security control.
 
@@ -383,12 +390,15 @@ agreement between final observation and portfolio. Its
 [replay_validation.py](../src/crypteo/replay_validation.py) checks lifecycle
 stage ordering, scan-to-delivery coverage and identity collisions, admitted
 opportunity-to-terms/proposal/risk/submission linkage, and financial outcomes
-against prior submissions and each observation's ledger prefix. These are
-artifact consistency checks, not a second execution simulation or a reconstruction
-of market evidence. Validation, including JSON deserialization, also recomputes
-all metrics with the canonical calculator and requires exact equality with the
-supplied metrics. Immutable in-memory records and these checks make serialized
-artifacts auditable without providing durable storage or recovery.
+against prior submissions and each observation's ledger prefix. It also checks
+retained fills against execution configuration, STOP/TARGET exits against order
+levels and provable same-candle facts, and state-based risk rejections against the
+retained portfolio. These are artifact consistency checks, not a second execution
+simulation or a reconstruction of market evidence. Validation, including JSON
+deserialization, also recomputes all metrics with the canonical calculator and
+requires exact equality with the supplied metrics. Immutable in-memory records
+and these checks make serialized artifacts auditable without providing durable
+storage or recovery.
 
 `ExperimentManifest` contains schema version, `SCANNER_ONLY` mode, git commit and
 deterministic source digest, Python/Pydantic versions, replay bounds/cash/ordered
