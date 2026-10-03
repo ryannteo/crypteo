@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "An agentic crypto research copilot for evidence-based trade research."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.11,<3"]
+dependencies = [
+    "pydantic>=2.11,<3",
+    "langgraph>=1.2.12,<2",
+    "openai>=2.54,<3",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -30,6 +34,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 
 [tool.mypy]
 python_version = "3.12"

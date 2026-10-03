@@ -72,6 +72,16 @@ class MarketResearchService:
         self._gateway = gateway
         self._sources = MappingProxyType({item.pair: item for item in bindings})
 
+    @property
+    def now(self) -> datetime:
+        """Read the tools' authoritative time without exposing clock mutation."""
+        return self._gateway.now
+
+    @property
+    def source_bindings(self) -> tuple[MarketSourceBinding, ...]:
+        """Immutable provenance in canonical asset order, without dataset access."""
+        return tuple(self._sources[p] for p in TradingPair if p in self._sources)
+
     def trend(self, pair: TradingPair) -> ResearchToolSuccess | ResearchToolUnavailable:
         return self._research(
             MarketResearchQuery(capability=MarketResearchCapability.TREND, pair=pair)
