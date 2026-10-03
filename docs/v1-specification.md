@@ -6,9 +6,9 @@ This is the authoritative specification of current V1 behavior at HEAD. The
 Durable architectural changes require an [ADR](decisions/README.md).
 
 The implementation provides deterministic scanner-only replay, seven market
-research tools, and common research schemas. Model-backed investigation, thesis
-generation, critique, LangGraph orchestration, agentic replay, durable lifecycle
-journaling, and the integrated evaluation harness are not implemented.
+research tools, and bounded opportunity-led model investigation, thesis, critique,
+and final assessment through LangGraph. Historical model-backed replay, durable
+lifecycle journaling, and the integrated evaluation harness are not implemented.
 
 ## V1 Scope and Market Environment
 
@@ -25,8 +25,8 @@ journaling, and the integrated evaluation harness are not implemented.
 
 Deterministic Python owns market calculations, scanning, trade terms, risk
 estimation and sizing, simulation, accounting, temporal access, replay, and metrics.
-The future LLM workflow may select tools and interpret evidence, construct and
-critique theses, and form qualitative research assessments. A `TRADE` assessment
+The bounded LLM workflow selects tools and interprets evidence, constructs and
+critiques theses, and forms qualitative research assessments. A `TRADE` assessment
 cannot authorize execution or supply calculated financial values.
 
 `TradeTerms` does not automatically enter the model-facing schema. Any future
@@ -64,7 +64,7 @@ Every normalized `EvidenceItem` contains `evidence_id`, category/type, source, `
 Tool runtime owns authoritative time, fixed venue/timeframe, and source bindings.
 Research tool arguments select a supported pair and, for relative strength, an
 explicit benchmark; callers cannot supply a cutoff or window override. Results
-expose temporal provenance and typed unavailability. The future thesis and critic
+expose temporal provenance and typed unavailability. The thesis and critic stages
 consume evidence contracts rather than market-provider objects.
 
 `Opportunity` and `EvidenceItem` schemas enforce internal timestamp consistency, including `available_at >= observed_at`. They do not enforce `available_at <= SimulationClock.now`; `SimulationClock` and `PointInTimeDataGateway` own authoritative visibility at replay time.
@@ -87,7 +87,7 @@ The service exposes `trend(pair)`, `momentum(pair)`, `volatility(pair)`,
 `ResearchToolSuccess | ResearchToolUnavailable`. Supported markets are Coinbase
 `BTC-USD`, `ETH-USD`, and `SOL-USD`, using completed 1h candles. Tools require no
 `Opportunity` and expose no timestamp, arbitrary lookback, or window override,
-allowing reuse by future opportunity-led and trader-led orchestration.
+allowing reuse by opportunity-led research and future trader-led orchestration.
 
 `build_market_research(clock, datasets)` validates canonical datasets and any
 supplied acquisition linkage, then constructs the gateway and source-provenance
@@ -96,7 +96,8 @@ dataset objects, with one binding per supplied pair; duplicate bindings raise.
 The supplied clock remains runtime-owned. Direct service construction is a runtime
 integration seam whose source bindings must describe the gateway's datasets.
 Raw-capture verification remains at the acquisition/publication boundary.
-Research tools are standalone; scanner-only replay does not invoke them.
+The model-backed research workflow consumes this service; scanner-only replay
+does not invoke the tools or workflow.
 
 ### Fixed capabilities, windows, and formulas
 
@@ -282,12 +283,12 @@ the full normalization, identity, publication, and loading contract.
 
 `TradeDecision` is the final LLM-facing research assessment. It contains qualitative rationale, evidence and counterevidence references, confidence, uncertainties, critic response, abstention reasons, and exactly one of `TRADE|NO_TRADE|ABSTAIN`. It does not own runtime/journal identity, authoritative timestamps, financial arithmetic, execution fields, or references to deterministic trade-level/template contracts. The implemented `TradeTerms` contract remains runtime-owned and is not part of this model-facing schema.
 
-- `TRADE`: research supports proceeding with the candidate long trade. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
+- `TRADE`: research supports further consideration of the candidate LONG setup. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
 - `NO_TRADE`: Crypteo has enough evidence to actively reject the candidate. It is a substantive research conclusion, not an abstention.
 - `ABSTAIN`: Crypteo cannot form a sufficiently reliable research conclusion because evidence is insufficient, conflicting, stale, unavailable, or unreliable, or because of research/tool failure, budget exhaustion, or validation failure.
 - `RISK_REJECTED`: deterministic authorization refused a proposal. It is a downstream risk outcome that the LLM cannot emit.
 
-The research schema keeps `TRADE`, `NO_TRADE`, and `ABSTAIN` distinct. In the intended V1 flow, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using frozen deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
+The research schema keeps `TRADE`, `NO_TRADE`, and `ABSTAIN` distinct. Mapping a model assessment into a trade proposal is not implemented. In the planned integration, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using frozen deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
 
 ## Deterministic Trade Terms
 
@@ -474,15 +475,210 @@ Common research models are frozen, reject undeclared fields, revalidate existing
 and nested instances, and detach mutable collections into deeply immutable state.
 Evidence requires a nonempty structured payload or an artifact reference; prose
 alone is insufficient. Evidence references must be nonblank and unique within
-each reference collection. Schemas check local relationships, not whether an ID
-actually resolves to evidence in a research run.
+each reference collection. These common schemas check local relationships. The
+workflow and retained `ResearchRunResult` additionally require references to resolve to successful
+evidence collected in that run.
 
 `TRADE` requires supporting evidence IDs, confidence, and a critic response;
 `NO_TRADE` requires counterevidence IDs, confidence, and a critic response. Neither
 permits abstention reasons. `ABSTAIN` requires at least one abstention reason and
 may retain available research results. Confidence is a strict integer from 0 to
 100 expressing confidence in the research conclusion, not a calibrated probability
-of profit. These schemas exist; model-backed generation and orchestration do not.
+of profit. There is no deterministic decision threshold. Every completed
+model assessment, including `ABSTAIN`, also requires a nonblank critic response;
+runtime interruption assessments follow the failure semantics below.
+
+## Bounded Model-backed Research
+
+The async `run_opportunity_research(request, service, model, configuration, *, code=None)`
+API in [research_workflow.py](../src/crypteo/research_workflow.py) returns an
+in-memory `ResearchRunResult`. It is research-only: no risk authorization,
+trade-term calculation, execution, portfolio mutation, or P&L/accounting occurs.
+[ADR-009](decisions/ADR-009-bounded-model-directed-research.md) records the durable
+choice; [workflow contracts](../src/crypteo/domain/research_workflow.py) define
+validated inputs, limits, results, and trace records.
+
+### Entry and temporal binding
+
+Entry is opportunity-led only. `OpportunityResearchRequest` requires an explicit
+nonblank `research_run_id` and validated `Opportunity`; no run ID is generated by
+the model. Subject, venue, and timeframe derive from the opportunity. Runtime
+captures one `T = service.now` from the same executing `MarketResearchService`,
+with its source bindings. T must be an hourly UTC boundary;
+`Opportunity.observed_at == T` and `Opportunity.available_at <= T` are required.
+Invalid entry/context raises before inference. There is no caller-selectable
+cutoff or lookback, and the model cannot choose or change T.
+
+Time is checked around model, tool, and cache boundaries and before return.
+Moving the authoritative clock raises an invariant error, including movement
+while awaiting inference. Deterministic evidence remains subject to
+`PointInTimeDataGateway` visibility and the fixed-window research service.
+Model parametric knowledge is not guaranteed to be historically pure; a frozen
+data boundary does not establish historical purity of model inference or imply
+historical model-backed replay integration.
+
+### Investigation policy and graph
+
+The runtime-enforced policy is `bounded_research_v1`. Budget and operational
+limits are validated literal configuration values, not freely tunable overrides.
+Exactly seven deterministic
+capabilities are exposed: `trend`, `momentum`, `volatility`, `bollinger_position`,
+`levels`, `volume_context`, and `relative_strength`. Runtime binds the subject;
+the six single-asset tools accept empty arguments. Relative-strength `benchmark`
+is the only model-selectable research argument. Permitted benchmarks are the
+other two supported BTC/ETH/SOL USD pairs, in deterministic BTC, ETH, SOL order.
+They are offered even if a source is absent; the service then returns typed
+unavailability. Venue, timeframe, cutoff, and windows are runtime-owned.
+
+| Bound | Current policy |
+| --- | --- |
+| Admitted tool attempts | At most 8 per run |
+| Tool requests per investigation response | Exactly 1 for a tool response; completion requests none |
+| Investigation model calls | At most 9 |
+| Thesis, critic, final assessment calls | Exactly 1 each in a completed run |
+| Total model calls | At most 12 |
+| Invalid tool requests | First permits recovery; second interrupts |
+| Automatic provider and graph retries | 0 |
+| Graph recursion limit | 24, a defensive guard rather than the primary budget |
+
+Admitted invalid requests, unavailable results, and cache hits consume attempts.
+Identical bound queries are cached within a run, including unavailable results;
+cache hits retain linkage to an earlier result and do not dispatch again.
+Malformed/unknown/extra arguments or multiple tool requests dispatch nothing and
+produce typed rejection feedback. The first invalid request allows another
+investigation response within remaining budgets. The second interrupts. A tool
+request after all admitted attempts are consumed interrupts with
+`TOOL_BUDGET_EXHAUSTED`; the investigator may instead complete on its ninth call.
+
+The graph sequence is
+`investigate --tool request--> execute_tool --result--> investigate`;
+only investigation completion advances through
+`investigate --complete--> draft_thesis → critique → final_assessment`.
+Investigation returns either a tool request or structured completion containing
+summary, relevant evidence IDs, and remaining gaps. Synthesis stages have no tools.
+A completed run cannot skip critic; interruptions terminate without requiring
+later stages to execute. Outputs must contain exactly the declared structured
+schema fields; the runtime does not repair malformed output or fill missing fields.
+
+### Model boundary and operational limits
+
+`ResearchModel` owns provider identity, preparation of the provider-facing JSON,
+and async invocation returning typed replies. `OpenAIResearchModel` is the current
+implementation, using the OpenAI Responses API with strict structured output,
+parallel tool calls disabled, `store=False`, and no retained provider conversation.
+The caller supplies an async client, owns its lifetime, and explicitly selects
+model and supported parameters. The adapter enforces zero SDK retries even for
+an injected client; there are no workflow retries.
+
+| Limit | Current value |
+| --- | --- |
+| Per-model-call deadline | 60 seconds |
+| Overall workflow deadline | 600 seconds |
+| Investigation output cap | 1,024 output tokens per call |
+| Thesis/critic/assessment output cap | 2,048 output tokens per call |
+| Provider-facing request | At most 128 KiB (131,072 UTF-8 bytes) per call |
+
+The input limit applies to the exact prepared credential-free provider request
+body, including messages, schemas, tool definitions, and provider parameters;
+internal audit-only fields do not count. A body above the limit is retained as a
+request rejection and is not transmitted. The OpenAI adapter sends those same
+prepared UTF-8 bytes rather than independently rendering another body.
+
+Software uses monotonic deadlines; each inference wait is bounded by the earlier
+of its per-call deadline and the remaining workflow deadline. Late model replies
+are never accepted, even if the provider returns after suppressing cancellation.
+Overdue tasks are cancelled and eventual completion/exceptions observed without
+awaiting cancellation cooperation, so suppression cannot extend normal workflow
+control indefinitely. The task may outlive the workflow; cancellation is not a
+promise of provider-side termination. External cancellation propagates rather
+than returning an ordinary research assessment. Synchronous preparation/tool
+work is checked at boundaries, not forcibly preempted by the overall deadline.
+
+### Evidence and independent critique
+
+Only successful runtime-produced `EvidenceItem`s are citeable. Typed unavailable
+results are retained as missing evidence, not converted into `EvidenceItem`s.
+Collected evidence IDs are deduplicated with full-content consistency: an ID
+repeated with different content raises. Presentation order is capability order
+(trend, momentum, volatility, Bollinger position, levels, volume context, relative
+strength), then benchmark order, then evidence ID. Exact deterministic structured
+values are preserved in model context; Decimal values remain strings rather than
+being rounded or converted to binary floats. Raw candle datasets stay outside
+workflow state.
+
+Investigation, thesis, and final assessment evidence references must belong to
+successful evidence collected in that run. Critique is structured textual content
+without separate citation fields. The critic is a separate fresh model call and
+context receiving the exact validated thesis, all collected evidence, and tool
+request history including unavailability. It challenges unsupported claims,
+contradictions, missing evidence, assumptions, and interpretive overreach. It does
+not inherit the investigator's completion narrative or a provider conversation.
+Independence is procedural only; statistical independence is not claimed.
+Final assessment receives the validated thesis and critique and must address the
+critic explicitly for every completed outcome.
+
+### Outcomes and failure semantics
+
+`TradeDecision` retains its research vocabulary:
+
+- `TRADE`: research supports further consideration of the LONG setup.
+- `NO_TRADE`: research supports rejecting it.
+- `ABSTAIN`: a reliable research conclusion could not be formed.
+
+`TRADE` is not deterministic authorization, position sizing, trade-term generation,
+or order submission. Confidence, when present, is the existing strict 0–100
+self-assessment of the research conclusion. There is no deterministic confidence
+threshold, calibration guarantee, or probability-of-profit claim.
+
+| Run status | Assessment origin | Required result |
+| --- | --- | --- |
+| `COMPLETED` | `MODEL` | Investigation completion, validated thesis, critique, and final assessment; no failure |
+| `INTERRUPTED` | `RUNTIME` | Typed failure and deterministic runtime `ABSTAIN` with matching abstention category |
+
+A completed model `ABSTAIN` has passed all research stages and contains a critic
+response. Runtime `ABSTAIN` represents an operational interruption and may retain
+only the stages already produced. It is not a completed model research conclusion.
+Provider failure must never become `NO_TRADE`.
+
+Typed operational failures distinguish provider network/HTTP errors, model timeout,
+overall workflow timeout, refusal, incomplete output, malformed provider envelope
+or model output, unknown evidence references, invalid-tool policy, and tool/model/
+input budget exhaustion. Envelope/output/reference and invalid-tool failures map
+to `VALIDATION_FAILURE`; exhausted budgets map to `BUDGET_EXHAUSTED`; provider,
+timeout, refusal, and incomplete failures map to `RESEARCH_FAILURE`. These are
+runtime abstention reasons, not financial or substantive rejection outcomes.
+
+Clock movement, corrupt deterministic results, programmer errors, and invariant
+failures raise rather than becoming ordinary research conclusions. Unexpected
+provider-adapter exceptions also raise; only typed operational replies are
+converted into interruption results.
+
+### In-memory audit and retained-result validation
+
+Current retention includes research-run identity, opportunity/context, T and source
+bindings; code identity, workflow configuration, provider adapter/SDK identity and
+LangGraph version; deterministic local model-call IDs (`<run>/model/0001`, etc.);
+prompt/schema/tool-definition versions and digests; exact observable model
+requests and responses; requested model and parameters, returned model identity
+and available provider metadata (request/response IDs, status, usage, and sanitized
+error metadata); tool requests/results/rejections/cache linkage; investigation,
+thesis, critique, assessment; and transitions/termination. Bodies are retained when
+observable; network failures/timeouts do not invent a response body. Credentials,
+arbitrary headers, SDK objects, and hidden chain of thought are not trace content.
+
+This is in-memory auditability. Durable lifecycle/model-call journaling and restart
+recovery are not implemented. Exact fresh-inference reproducibility is not
+promised; repeated inference may yield different research under identical inputs.
+
+Retained-result validation requires repeated evidence IDs to have identical full
+content; local IDs to belong to the enclosing run; tool subjects/queries, research
+times, and source relationships to match context; cache links to resolve to earlier
+identical queries/results; and model request contexts, evidence collections, and
+request histories to match the accumulated trace. Output references resolve to
+that run's evidence, and status/origin/failure/stage relationships are validated.
+Retained trace and context cannot be arbitrarily recombined into a valid result.
+These guarantees validate represented relationships, not authenticity of external
+market data or regeneration of model inference from an artifact.
 
 ## Validation Coverage
 
@@ -490,23 +686,23 @@ Current tests exercise market/schema validation, planted future and delayed data
 scanner crossover and gap recovery, formula goldens, exact financial accounting,
 risk sizing against independent arithmetic, research identity/provenance,
 immutable instance revalidation, artifact containment, and deterministic replay.
+Research coverage includes graph routing, runtime budgets/deadlines, grounded
+references, critic context, provider envelopes, and retained-artifact relationships.
 Replay artifact checks cover retained lifecycle and financial consistency and
 recompute metrics on deserialization. They cannot reconstruct unretained market
 paths or prove that externally supplied statistics came from visible candles.
 
 The [local quality commands](../README.md#local-development) run Ruff formatting
 and lint, strict mypy, and pytest. Model-backed evaluation remains separate from
-normal CI; future model integration must use mocked responses in normal tests.
+normal CI; normal workflow/provider tests use mocked model responses and transports.
 
 ## Unimplemented Research and Evaluation Boundaries
 
-These constraints guide integration; they are not executable behavior at HEAD.
-The proposed bounded workflow is investigation with typed tools, draft thesis,
-a distinct critic call, and final schema-validated assessment. Tool/model calls,
-tokens, iterations, retries, and decision age must have fixed budgets. Exhaustion
-or unrecoverable failures must yield `ABSTAIN`. State should retain compact
-results and references rather than raw datasets. Architecture and future entry
-modes are described in [the extension boundary](architecture.md#research-extension-boundary).
+Historical model-backed replay and mapping model `TRADE` into deterministic
+trade proposals/risk/execution are unimplemented. Trader-led interactive research,
+live mode, UI, web/news/social/on-chain/derivatives research, and long-term
+memory/RAG remain future work. Architecture and future entry modes are described
+in [the extension boundary](architecture.md#research-extension-boundary).
 
 Durable journaling must preserve the append-only lifecycle, tool requests/responses,
 research records, graph traces, and applicable code/data/scanner/risk/simulation/
@@ -515,11 +711,12 @@ and post-trade analysis, never decision memory. The current scanner-only manifes
 is defined under [replay](#scanner-only-replay); standalone research tools do not
 extend it with model or prompt settings.
 
-Agentic reproduction must distinguish `FROZEN_RESPONSE` (reuse stored model/tool
-artifacts) from `FRESH_INFERENCE` (preserve information boundaries and configuration
-while invoking the model again). Neither agentic mode is implemented. Model
-parametric knowledge remains a replay limitation: omitting unnecessary absolute
-dates from model context or blinding paths may mitigate memorized events, but
+Future historical model-backed reproduction must distinguish `FROZEN_RESPONSE`
+(reuse stored model/tool artifacts) from `FRESH_INFERENCE` (preserve information
+boundaries and configuration while invoking the model again). Neither historical
+model-backed reproduction mode is implemented; standalone research currently
+performs fresh inference at a fixed boundary. Model parametric knowledge remains
+a replay limitation: omitting unnecessary absolute dates from model context or blinding paths may mitigate memorized events, but
 cannot prove their elimination. Persisted evidence must retain exact timestamps.
 
 The evaluation question is whether bounded research improves selection among the

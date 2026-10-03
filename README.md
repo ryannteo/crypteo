@@ -8,7 +8,7 @@ assistant; historical replay and paper trading provide its evaluation lab.
 
 ## Current status
 
-The repository implements the deterministic foundations:
+The repository implements deterministic foundations and bounded AI research:
 
 - Validated market and research contracts, including normalized evidence, theses,
   critiques, and research assessments.
@@ -18,8 +18,11 @@ The repository implements the deterministic foundations:
 - Deterministic Bollinger analytics and a lower-band crossover opportunity scanner.
 - Seven deterministic market-research tools producing point-in-time evidence:
   trend, momentum, volatility, Bollinger position, recent levels, volume context,
-  and relative strength. These provide infrastructure for the future AI workflow;
-  see the [research tool specification](docs/v1-specification.md#deterministic-market-research).
+  and relative strength.
+- Bounded opportunity-led model research: the model chooses deterministic tools,
+  then produces a structured thesis, a separate critique, and a final research
+  assessment. An OpenAI adapter implements the provider boundary; see the
+  [workflow specification](docs/v1-specification.md#bounded-model-backed-research).
 - Simulated LONG execution and portfolio accounting with fees, slippage,
   stop/target and time exits, and conservative missing-data handling.
 - Deterministic market-derived stop/target terms and decision-time LONG risk
@@ -27,18 +30,19 @@ The repository implements the deterministic foundations:
 - Deterministic scanner-only historical replay with reproducible in-memory
   results, marked equity, and core metrics for later research comparisons.
 
-Still unfinished: the bounded LangGraph/LLM workflow (model-backed investigation,
-thesis generation, critic, and final AI research assessment), agentic replay,
-durable lifecycle journaling, and the integrated evaluation and reporting harness.
-No agents, live mode, or UI are implemented yet.
+Still unfinished: historical model-backed replay, durable lifecycle journaling,
+mapping research assessments into trade proposals, trader-led interactive research,
+and the integrated evaluation/reporting harness. Live mode and UI are unimplemented.
 
 ## Architecture
 
 Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authoritative
 clock and point-in-time gateway. Scanner-only replay connects the scanner,
 deterministic trade terms, risk authorization, and simulated broker/portfolio,
-then produces validated replay artifacts and metrics. Standalone research tools
-turn visible market data into normalized evidence for future model-backed work.
+then produces validated replay artifacts and metrics. The separate bounded research
+workflow turns an opportunity and visible market evidence into a research assessment, with
+in-memory trace records. It does not authorize risk, calculate trade terms, execute,
+mutate a portfolio, or account for P&L.
 
 LLMs are reserved for interpretation and judgment. Deterministic code owns
 calculation, authorization, simulation, and accounting. Research selection and
@@ -51,8 +55,8 @@ See the [architecture overview](docs/architecture.md) for component flow.
   OHLCV candles in UTC; LONG positions only.
 - Market-derived research and one shared deterministic scanner for agent/baseline
   comparisons. V1 tests trade selection under identical risk and execution rules.
-- One bounded research workflow is planned. Live mode, non-market research,
-  specialist agents, and a dashboard are deferred.
+- One bounded opportunity-led research workflow is implemented. Trader-led chat,
+  live mode, non-market research, specialist agents, memory/RAG, and UI are deferred.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
 
@@ -68,6 +72,25 @@ portfolio observations, final portfolio, and metrics; `result.canonical_bytes()`
 produces byte-stable JSON. This is an in-memory baseline for later agentic
 comparisons. See the [replay specification](docs/v1-specification.md#scanner-only-replay)
 for configuration, boundary behavior, and reproducibility.
+
+## Model-backed research API
+
+`crypteo.research_workflow.run_opportunity_research(request, service, model, configuration)`
+is async and requires an explicit research-run ID, a current `Opportunity`, and a
+`MarketResearchService` whose authoritative clock matches the opportunity's
+observation time. It returns a validated in-memory `ResearchRunResult`.
+
+After installing the package, supply `OPENAI_API_KEY` securely in the local process
+environment for `openai.AsyncOpenAI()` and wrap that caller-owned client in
+`crypteo.openai_research.OpenAIResearchModel`. Configure `ResearchWorkflowConfig`
+with an explicit `ModelConfiguration(provider="openai", model=...)` and supported
+parameters for your chosen model. The package includes the OpenAI SDK; no model is
+selected by default and no `.env` file is automatically loaded. Keep keys out of
+Git and documentation. This is a Python API; no research CLI or chat UI exists.
+
+See the [architecture](docs/architecture.md#model-backed-research),
+[behavioral specification](docs/v1-specification.md#bounded-model-backed-research),
+and [ADR-009](docs/decisions/ADR-009-bounded-model-directed-research.md).
 
 ## Documentation
 

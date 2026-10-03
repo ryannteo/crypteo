@@ -38,6 +38,7 @@ Research tools expose code-calculated values as evidence. Risk, execution,
 accounting, and replay components must enforce their own contracts regardless of
 the research assessment. Runtime identity and timestamps remain runtime-owned.
 
-Model-backed orchestration remains unimplemented. The implemented deterministic
-components enforce this boundary independently. Real order routing remains outside
+The bounded model-backed research workflow enforces this separation; see
+[ADR-009](ADR-009-bounded-model-directed-research.md). Deterministic components
+enforce their own authority independently. Real order routing remains outside
 Crypteo's scope.

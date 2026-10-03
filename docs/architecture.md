@@ -1,17 +1,17 @@
 # Current architecture
 
 Crypteo is a Python modular monolith under `src/crypteo/`. It implements a
-simulation-only research substrate: canonical market data, controlled historical
-visibility, deterministic opportunity discovery and evidence, trade terms, risk,
-execution, accounting, and scanner-only replay. Model-backed research orchestration
-is unimplemented. The [README](../README.md) describes the product; the
+research platform with canonical market data, controlled historical visibility,
+deterministic opportunity discovery and evidence, bounded model-backed research,
+and separate simulated trade terms, risk, execution, accounting, and scanner-only
+replay. The [README](../README.md) describes the product; the
 [V1 specification](v1-specification.md) defines exact behavioral semantics.
 
 ## Component flow
 
-Solid arrows show current data/control relationships. The dashed connection marks
-an unimplemented research consumer. Research tools are standalone and are not
-invoked by scanner-only replay.
+Arrows show current data/control relationships. Model-backed research is a
+separate caller-invoked API; scanner-only replay invokes neither research tools
+nor the model workflow.
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,7 @@ flowchart TD
     CLOCK[SimulationClock] --> GW
     REPLAY[Scanner-only replay] -->|advances| CLOCK
     REPLAY -->|coordinates| SCAN[OpportunityScanner]
-    REPLAY -->|coordinates| TERMS[TradeTermsService]
+    REPLAY -->|coordinates| TERMS[TradeTermsService / TradeTerms]
     REPLAY -->|coordinates| RISK[RiskService]
     REPLAY -->|coordinates| BROKER[SimulatedBroker]
     GW --> SCAN
@@ -36,9 +36,17 @@ flowchart TD
     REPLAY --> RESULT[Replay records and experiment manifest]
     PORT --> RESULT
     RESULT --> METRICS[Marked equity and metrics]
-    GW --> TOOLS[MarketResearchService]
+    OP[Opportunity supplied by caller] --> WORK[Bounded research workflow]
+    WORK --> INV[Investigate model call]
+    INV --> ADAPTER[Deterministic research-tool adapter]
+    ADAPTER --> TOOLS[MarketResearchService]
+    GW --> TOOLS
     TOOLS --> EVIDENCE[EvidenceItem and typed results]
-    EVIDENCE -.-> FUTURE[Future bounded model-backed research]
+    EVIDENCE --> INV
+    INV -->|investigation completion| THESIS[Draft thesis]
+    THESIS --> CRITIC[Critique]
+    CRITIC --> FINAL[Final assessment]
+    FINAL --> DECISION[TradeDecision: research judgment only]
 ```
 
 The opportunity-to-terms-to-risk arrows represent replay's coordination. Services
@@ -78,7 +86,52 @@ identities remain provenance. Large candle windows stay outside the envelope.
 
 Common opportunity, evidence, thesis, critique, and assessment schemas are validated
 contracts. They revalidate existing/nested instances and detach mutable inputs.
-Thesis and assessment schemas exist without a model-backed producer.
+The model-backed workflow produces validated theses, critiques, and assessments
+through those common contracts.
+
+## Model-backed research
+
+`run_opportunity_research` compiles a five-node typed LangGraph workflow:
+`investigate --tool request--> execute_tool --result--> investigate`;
+only investigation completion advances through
+`investigate --complete--> draft_thesis → critique → final_assessment`.
+The investigator chooses among seven deterministic market capabilities; the tool
+adapter binds the opportunity's subject and allows only a relative-strength
+benchmark argument. Software enforces tool-attempt, invalid-request, model-call,
+output, provider-input, and deadline budgets. The graph recursion limit is a
+secondary guard. Exact limits live in the
+[specification](v1-specification.md#bounded-model-backed-research).
+
+`ResearchModel` is the project-owned async provider abstraction: it prepares the
+provider-facing request and returns typed replies and observable metadata.
+`OpenAIResearchModel` currently implements it with the OpenAI Responses API,
+strict structured schemas, no automatic retries, and no provider conversation
+state. The caller owns client lifetime and chooses the model and supported
+parameters. Prompts, schemas, and tool definitions carry versions and digests.
+
+The runtime captures one research time from the executing `MarketResearchService`
+and requires the opportunity's observation time to match it. The service binds
+all reads to its authoritative gateway; models cannot choose cutoffs or windows.
+Clock checks surround model/tool/cache boundaries and return. Successful evidence
+is deduplicated consistently, and research references must resolve within the run.
+The critic receives a fresh context containing the validated thesis, all collected
+evidence, and request history; completed research cannot skip it. This is
+procedural independence, not statistical independence.
+
+A completed run contains a model assessment. An operational interruption contains
+a typed failure and deterministic runtime `ABSTAIN`; it is not a completed model
+conclusion. Neither result calls `TradeTermsService`, `RiskService`,
+`SimulatedBroker`, or portfolio/accounting. `TRADE` supports further consideration
+of a LONG setup and grants no financial authority. Mapping that judgment into a
+trade proposal and historical model-backed replay remain future integration work.
+[ADR-009](decisions/ADR-009-bounded-model-directed-research.md) records this boundary.
+
+`ResearchRunResult` retains in-memory context, configuration, code/provider/graph
+identity, exact observable model requests/replies, provider metadata, tool attempts
+and cache/rejection links, research stages, and transitions/termination. Retained
+relationships are validated so trace, evidence, and context cannot be arbitrarily
+recombined. This is in-memory auditability; durable trace/lifecycle persistence and
+exact fresh-inference reproducibility are not implemented or promised.
 
 ## Terms, authorization, and execution
 
@@ -123,16 +176,16 @@ semantics live in the [replay specification](v1-specification.md#scanner-only-re
 
 ## Research extension boundary
 
-Future bounded orchestration can consume the existing evidence contracts to
-investigate, draft a thesis, critique it, and produce `TRADE`, `NO_TRADE`, or
-`ABSTAIN`. Research selection stays separate from deterministic authorization.
-Trader-led questions and opportunity-led research should converge on that same
-workflow; tools already operate without requiring an `Opportunity`.
+Opportunity-led model research is implemented. Future trader-led interactive
+research should converge on the same evidence, thesis, critique, and assessment
+engine; deterministic tools already operate without requiring an `Opportunity`.
+Research assessment stays separate from deterministic authorization.
 
 Future research domains should emit normalized evidence. Sources require credible
 historical availability to be replay safe; live-only sources cannot enter historical
 evaluation. A bounded coordinator and relevant specialist capabilities are a
 long-term direction, not current components or V1 orchestration. Recursive
 delegation, unrestricted loops, and independently trading agents remain excluded.
-Live mode, non-market research, and UI are unimplemented. Real order routing,
+Trader-led chat, live mode, UI, web/news/social/on-chain/derivatives research,
+and long-term memory/RAG are unimplemented. Real order routing,
 trading credentials, private keys, and withdrawal capabilities are out of scope.
