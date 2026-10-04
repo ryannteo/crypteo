@@ -93,8 +93,10 @@ context. Point-in-time tool access does not guarantee historical purity of model
 parametric knowledge or deterministic fresh inference.
 
 In-memory traces retain requests, results, versions, stage outputs, and termination
-for inspection with validated relationships. Durable journaling, historical
-model-backed replay, and mapping research assessments into deterministic trade
-proposals remain separate integration work. They must preserve the difference
-between completed research and operational interruption and must not confer
+for inspection with validated relationships. Optional durable retention and
+transactional terminal publication are governed by
+[ADR-010](ADR-010-durable-research-lifecycle.md). Historical model-backed replay
+and mapping research assessments into deterministic trade proposals remain separate
+integration work. They must preserve the difference between completed research
+and operational interruption and must not confer
 financial authority on model output.

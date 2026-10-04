@@ -53,3 +53,4 @@ durable decision actually changes.
 | [007](ADR-007-deterministic-trade-terms.md) | Deterministic market-derived trade terms | Accepted |
 | [008](ADR-008-scanner-only-replay-boundary-delivery-ordering.md) | Scanner-only replay boundary, delivery, and simultaneous-candidate ordering | Accepted |
 | [009](ADR-009-bounded-model-directed-research.md) | Bounded model-directed research | Accepted |
+| [010](ADR-010-durable-research-lifecycle.md) | Durable append-only research lifecycle and transactional terminal publication | Accepted |

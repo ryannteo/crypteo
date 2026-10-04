@@ -7,8 +7,9 @@ Durable architectural changes require an [ADR](decisions/README.md).
 
 The implementation provides deterministic scanner-only replay, seven market
 research tools, and bounded opportunity-led model investigation, thesis, critique,
-and final assessment through LangGraph. Historical model-backed replay, durable
-lifecycle journaling, and the integrated evaluation harness are not implemented.
+and final assessment through LangGraph, with optional durable SQLite lifecycle
+journaling and immutable terminal research artifacts. Historical model-backed
+replay and the integrated evaluation harness are not implemented.
 
 ## V1 Scope and Market Environment
 
@@ -233,8 +234,8 @@ Historical consumers use this gateway. Acquisition and persistence can inspect
 full datasets for integrity, but cannot grant historical visibility. A decision
 after close T is eligible for the next bar open at T; financial recording waits
 for completed evidence. No model may choose or extend the cutoff. Decision-time
-retrieval of prior theses, decisions, or outcomes is prohibited; the durable
-journal is unimplemented.
+retrieval of prior theses, decisions, or outcomes is prohibited. Durable research
+journal access supports auditing and inspection, never decision memory.
 
 Tests deliberately seed future data and require it to remain unreachable. Prompts are not a security control.
 
@@ -362,9 +363,9 @@ fills, closed trades, entry rejections, gaps, and boundary observations, reusing
 domain payloads. A holding gap continues the schedule with unavailable valuation
 and halted finances; subsequent valid proposals can receive `PORTFOLIO_HALTED`.
 Malformed inputs, stale/mismatched terms, invariant violations, and unexpected
-errors raise, with no partial result or recovery/persistence path. Durable
-journaling and recovery are unimplemented. Scanner-only replay does not
-invoke research tools, an LLM, or the `TradeDecision` workflow.
+errors raise, with no partial result or recovery/persistence path. Scanner-only
+replay lifecycle persistence and resumption are unimplemented. Scanner-only replay
+does not invoke research tools, an LLM, or the `TradeDecision` workflow.
 
 `ReplayResult` validates manifest/run identity, contiguous record sequences,
 record/payload timing and linkage, the complete hourly observation schedule, and
@@ -440,7 +441,7 @@ validates alignment and maximal sizing, including existing/nested and JSON input
 
 `SimulatedBroker` consumes already-authorized LONG terms without an `Opportunity` or `TradeDecision` dependency. A decision after completed close T is eligible for the open of [T, T+1h), with the fill recorded only once that candle is gateway-visible. Market phase/time, candle availability, and recording time remain distinct; intrabar fills have no invented exact timestamp, and the broker never advances or owns a second clock. See [ADR-005](decisions/ADR-005-completed-bar-execution-reconciliation.md) for the reconciliation rationale and contract.
 
-Entries use configurable adverse slippage and fees, validated quantity/price increments, and exact Decimal accounting. Stops and targets activate after entry. Observed opening gaps fill using the opening price and take precedence over later intrabar touches; otherwise simultaneous stop/target touches resolve stop-first for a long position. A versioned maximum holding duration counts the entry candle as holding bar one; stop/target takes priority over a time exit at the final holding bar's close. An entry candle missing or unavailable at its expected close causes terminal rejection, never rollover or revival on delayed data. Missing holding data halts financial processing with the position unresolved. The broker preserves immutable snapshots and append-only order, fill, and outcome histories within execution state; durable append-only journaling of the complete lifecycle remains a later V1 responsibility. Future baseline comparisons must use exactly the same risk and execution configuration.
+Entries use configurable adverse slippage and fees, validated quantity/price increments, and exact Decimal accounting. Stops and targets activate after entry. Observed opening gaps fill using the opening price and take precedence over later intrabar touches; otherwise simultaneous stop/target touches resolve stop-first for a long position. A versioned maximum holding duration counts the entry candle as holding bar one; stop/target takes priority over a time exit at the final holding bar's close. An entry candle missing or unavailable at its expected close causes terminal rejection, never rollover or revival on delayed data. Missing holding data halts financial processing with the position unresolved. The broker preserves immutable snapshots and append-only order, fill, and outcome histories within execution state; durable journaling of the financial/execution lifecycle remains unimplemented and is separate from the research journal. Future baseline comparisons must use exactly the same risk and execution configuration.
 
 For reference price `P`, adverse slippage fraction `s`, and price increment `t`,
 BUY price is `t * ceil(P * (1 + s) / t)` and SELL price is
@@ -666,9 +667,10 @@ thesis, critique, assessment; and transitions/termination. Bodies are retained w
 observable; network failures/timeouts do not invent a response body. Credentials,
 arbitrary headers, SDK objects, and hidden chain of thought are not trace content.
 
-This is in-memory auditability. Durable lifecycle/model-call journaling and restart
-recovery are not implemented. Exact fresh-inference reproducibility is not
-promised; repeated inference may yield different research under identical inputs.
+The in-memory entrypoint retains this audit content without persistence. The
+[durable entrypoint](#durable-research-lifecycle) additionally commits lifecycle
+boundaries and opaque provider observations. Exact fresh-inference reproducibility
+is not promised; repeated inference may yield different research under identical inputs.
 
 Retained-result validation requires repeated evidence IDs to have identical full
 content; local IDs to belong to the enclosing run; tool subjects/queries, research
@@ -680,6 +682,226 @@ Retained trace and context cannot be arbitrarily recombined into a valid result.
 These guarantees validate represented relationships, not authenticity of external
 market data or regeneration of model inference from an artifact.
 
+## Durable Research Lifecycle
+
+### Durable entrypoint and ownership
+
+`run_opportunity_research` remains a valid in-memory API returning
+`ResearchRunResult`. The async durable API in
+[research_workflow.py](../src/crypteo/research_workflow.py) is
+`run_durable_opportunity_research(request, service, model, configuration, *, store, code=None)`.
+It requires a `ResearchStore` and an `ObservableResearchModel` supporting observation
+before project decoding; `OpenAIResearchModel` implements this boundary. It uses
+the same bounded opportunity-led workflow, temporal bindings, and research policy.
+The caller/runtime explicitly supplies `research_run_id`. Registration commits
+the header and `RUN_STARTED` together; duplicate run IDs reject before inference,
+including IDs belonging to incomplete or terminal runs.
+
+`ResearchStore(path, *, lock_wait_ms=1000)` in
+[research_persistence.py](../src/crypteo/research_persistence.py) uses a caller-owned
+local SQLite database through Python's standard library, with no new persistence
+dependency. The parent directory must already exist and be writable; the store
+creates an empty database/schema when needed. It supplies one writer capability
+per newly registered run. There is no reopen-for-append API, takeover, or lease.
+Distinct runs may proceed concurrently, including across local processes; SQLite
+serializes write transactions, so concurrency does not guarantee freedom from
+contention failures. Callers must serialize use of a given run's writer.
+
+### Storage and durability
+
+The database schema uses `PRAGMA user_version=1` and versioned run, event, and
+artifact tables. Headers/event envelopes use `schema_version="1"`; artifacts use
+`artifact_schema_version="1"`. The store checks the expected schema and constraints
+on transactions and rejects unsupported versions or altered schemas without
+automatic migration. Each transaction owns its connection; writes use
+`BEGIN IMMEDIATE`, reads use `BEGIN`.
+
+Every connection configures and verifies:
+
+| PRAGMA | Enforced value |
+| --- | --- |
+| `journal_mode` | `DELETE` (rollback journal) |
+| `synchronous` | `EXTRA` (`3`) |
+| `foreign_keys` | `ON` |
+| `busy_timeout` | `lock_wait_ms` |
+| `fullfsync` | `ON` on macOS |
+
+Lock waiting defaults to 1,000 ms and accepts integer values from 0 through
+60,000 ms. Failure to establish the configured settings fails closed. `EXTRA`
+requests rollback-journal synchronization including directory synchronization
+after journal deletion; macOS additionally requests full filesystem synchronization.
+Transactional recovery and durability rely on SQLite and a local filesystem/storage
+stack honoring locking and synchronization. This is not a distributed durability
+guarantee or protection against arbitrary filesystem/hardware failure.
+
+### Events and lifecycle states
+
+The closed lifecycle vocabulary is defined by the
+[journal contracts](../src/crypteo/domain/research_journal.py):
+
+| Event | Retained boundary |
+| --- | --- |
+| `RUN_STARTED` | Registered run header, context, configuration, and version identities |
+| `MODEL_REQUEST_PREPARED` | Normalized request and prepared provider-facing JSON |
+| `MODEL_REQUEST_REJECTED` | Prepared request rejected before invocation for input budget or workflow deadline |
+| `MODEL_CALL_STARTED` | Local call ID admitted before entering the provider |
+| `MODEL_RESPONSE_OBSERVED` | Exact client-visible HTTP entity bytes, status, request ID, and encoding |
+| `MODEL_CALL_FINISHED` | Request paired with normalized project-owned `ModelReply` |
+| `TOOL_REQUESTED` | Attempt ID, producing model-call ID, and original tool requests |
+| `TOOL_RESOLVED` | Bound query, result or rejection, admission, and cache linkage |
+| `STAGE_COMPLETED` | Validated investigation, thesis, critique, or assessment and producing call ID |
+| `NODE_TRANSITION` | Graph source/target and any termination reason |
+| `RUN_FINISHED` | Completed/interrupted status, assessment origin, assessment, and failure if present |
+| `RUN_ABORTED` | Restricted cancellation or invariant/programmer failure diagnostic |
+
+Inspection exposes four durable states:
+
+| State | Meaning |
+| --- | --- |
+| `INCOMPLETE` | Valid committed lifecycle prefix with no terminal event; no terminal artifact |
+| `COMPLETED` | `RUN_FINISHED` with completed model research and a terminal artifact |
+| `INTERRUPTED` | `RUN_FINISHED` with typed operational failure, runtime `ABSTAIN`, and a terminal artifact |
+| `ABORTED` | `RUN_ABORTED` closes the history without manufacturing a `ResearchRunResult` or ordinary `ResearchArtifact` |
+
+`INCOMPLETE` does not prove a process crashed: work may be active, deliberately
+stopped, or unable to record another boundary. A completed model `ABSTAIN` remains
+`COMPLETED`, distinct from operational `INTERRUPTED` research.
+
+Events have journal-owned contiguous sequence numbers starting at zero. Terminal
+events permanently close a run. Schema triggers and lifecycle validation reject
+`UPDATE`, `DELETE`, replacement of immutable rows, duplicate event submission,
+duplicate registrations, and events after terminal closure. A terminal artifact
+cannot be silently replaced. Each append checks that the committed registration
+and prefix still match the writer's retained history.
+
+### Write order and external effects
+
+Successful commits establish these ordering guarantees:
+
+1. `RUN_STARTED` persists before inference.
+2. The prepared model request persists before invocation. Input-size/deadline
+   rejection is retained without invoking that request.
+3. `MODEL_CALL_STARTED` persists before provider invocation. Runtime checks the
+   deadline after that synchronous commit and again immediately inside the
+   scheduled provider coroutine, with no yield before entering the provider.
+   A call-start record therefore does not prove the provider was entered.
+4. Provider entity bytes persist before project decoding and normalization.
+5. Tool request persists before dispatch or cache resolution; resolution persists
+   before downstream use.
+6. Validated stage output persists before advancing to its dependent stage.
+7. `RUN_FINISHED` and the validated `ResearchArtifact` publish in one transaction.
+
+No transaction spans SQLite and the external provider, nor does one span tool
+execution. A committed start/request may have an unresolved external outcome;
+the journal cannot establish exactly-once external effects. Observation callbacks
+close at deadline/cancellation, so late responses cannot append to closed history.
+A response observed and committed before the software deadline may still precede
+a normalized timeout if the call finishes too late.
+
+### Exact provider observation
+
+The OpenAI adapter's observable invocation exposes both successful and HTTP-error
+response entities before project decoding. `MODEL_RESPONSE_OBSERVED` retains the
+exact bytes separately as a SQLite BLOB, including malformed content. Here
+"exact" means HTTP entity bytes observable by the client, not TLS records or wire
+framing. Network failures/timeouts do not invent a body when none was observed.
+
+Project decoding is strict UTF-8, independent of a conflicting charset header.
+Malformed UTF-8 remains opaque retained bytes and cannot become replacement-character
+model content; a malformed success entity normalizes to an invalid-envelope failure.
+Normalized project-owned `ModelReply` and metadata remain distinct from the raw
+observation. Neither layer claims to capture hidden model reasoning, credentials,
+arbitrary headers, or SDK objects.
+
+### Failure semantics
+
+Journal/database creation failure, duplicate run ID, append/lock/commit or
+synchronization failure, uncertain commit outcome, unsupported schema/version,
+and stored corruption/validation failure raise `ResearchStorageError` from
+[research_journal.py](../src/crypteo/research_journal.py). Persistence failures
+stop further workflow work and return no terminal artifact to the caller. They
+never become substantive `NO_TRADE` or ordinary runtime `ABSTAIN`.
+
+A failed or uncertain write invalidates the writer capability, preventing further
+appends/publication. A commit acknowledgement can fail after SQLite committed:
+later validated inspection may find that event, or even a fully published terminal
+artifact, although the failing invocation returned none. The runtime does not
+retry, infer rollback, or continue inference on that uncertain history.
+
+Unexpected programmer/invariant failures preserve their original exception
+identity; they are not broadly translated into persistence errors or research
+conclusions. External cancellation propagates. If the journal remains healthy,
+`RUN_ABORTED` recording is best effort and cannot hide the original error or
+cancellation. It retains only the restricted diagnostic category. Persistence
+failure itself does not attempt an abort on an unhealthy writer.
+
+### Serialization and integrity
+
+Project records use deterministic UTF-8 JSON: Pydantic JSON-mode values, sorted
+keys, compact separators, unescaped valid Unicode, and no nonfinite JSON constants.
+Invalid Unicode surrogates and duplicate JSON keys are rejected on project JSON
+loading. Decimal fields use exact strings without conversion through binary floats;
+their retained Decimal spelling can preserve trailing zeros or exponent notation
+(for example `"1.2300"` or `"1E+3"`). UTC datetimes use RFC 3339 `Z`, omitting
+fractional seconds when zero and using six fractional digits otherwise. This
+research encoding is distinct from Coinbase's canonical numeric/time encoding.
+Opaque provider bodies bypass JSON encoding and retain their exact bytes.
+
+Each event has a SHA-256 checksum over a version-labeled, length-framed envelope
+and body-presence/body bytes. The terminal artifact links to the ordered digest
+of all event checksums and has its own checksum excluding its checksum field.
+These checks detect corruption and inconsistent retained data. They do not
+authenticate history against a party able to rewrite data and recompute hashes.
+
+### Validation on inspection and load
+
+`store.inspect_run(research_run_id)` validates a committed snapshot and returns
+`ResearchRunInspection`: header, state, events/receipts, pending boundaries, and
+an artifact when present. Pending boundaries identify prepared or started calls,
+observed responses awaiting resolution, requested tools, and the current
+nonterminal node. `store.load_terminal(research_run_id)` returns a validated
+`ResearchArtifact` for completed/interrupted runs; incomplete/aborted runs raise
+because they have no terminal artifact.
+
+Loading validates relationships as well as schemas and checksums:
+
+- SQLite integrity/foreign keys, expected schema, canonical record encoding,
+  registration versus `RUN_STARTED`, contiguous sequence, and lifecycle grammar/order.
+- Run/call/attempt IDs, unique request/response pairing, stage ordering, budgets,
+  and transitions consistent with retained work and termination causes.
+- Tool request/query/result/rejection/cache linkage, subject, research time, and
+  source bindings; evidence identity/content consistency and grounded references.
+- Prepared provider JSON versus normalized request, and requests versus accumulated
+  context, evidence, request history, prompts, schemas, and tool definitions.
+- Provider observation versus normalized reply using the pure provider decoder,
+  including strict UTF-8/error handling and the permitted software-timeout case.
+- Validated stage output versus producing reply, final `ResearchRunResult` versus
+  journal projection, and terminal artifact/run/sequence/digest/checksum consistency.
+
+Shared in-memory research validators in
+[research_validation.py](../src/crypteo/research_validation.py) are reused where
+appropriate. These checks validate retained relationships; they cannot establish
+authenticity of external market observations. Loading performs no model inference,
+market-data reads, or tool redispatch.
+
+### Terminal artifact and recovery boundary
+
+`ResearchArtifact` is the immutable terminal projection for `COMPLETED` or
+`INTERRUPTED` research. It contains the validated `ResearchRunResult`, run ID,
+terminal sequence, ordered journal digest, artifact version, and checksum. It is
+validated against the journal before atomic publication with `RUN_FINISHED` and
+again on load. Journal events remain authoritative; the artifact is the validated
+consumer-facing projection. `ABORTED` runs have no ordinary artifact/result.
+
+Recovery means SQLite transactional recovery, inspection of valid committed
+prefixes, identification of unresolved operations, and validated terminal loading.
+Automatic graph resumption, provider retry after crash, tool redispatch, conversion
+of incomplete runs into `ABSTAIN`, and stale-run takeover/leases are unimplemented.
+Validated terminal `ResearchArtifact` loading is the current consumer boundary.
+It does not implement historical model-backed replay, frozen-response agentic
+replay, baseline/model comparison, or `TRADE` integration with terms/risk/execution.
+[ADR-010](decisions/ADR-010-durable-research-lifecycle.md) records the rationale.
+
 ## Validation Coverage
 
 Current tests exercise market/schema validation, planted future and delayed data,
@@ -688,6 +910,9 @@ risk sizing against independent arithmetic, research identity/provenance,
 immutable instance revalidation, artifact containment, and deterministic replay.
 Research coverage includes graph routing, runtime budgets/deadlines, grounded
 references, critic context, provider envelopes, and retained-artifact relationships.
+Durable coverage includes lifecycle ordering, immutable closure, exact opaque
+observations, commit/lock failures, cancellation, concurrent distinct runs,
+transactional prefix recovery, and relational corruption rejected on load.
 Replay artifact checks cover retained lifecycle and financial consistency and
 recompute metrics on deserialization. They cannot reconstruct unretained market
 paths or prove that externally supplied statistics came from visible candles.
@@ -704,10 +929,11 @@ live mode, UI, web/news/social/on-chain/derivatives research, and long-term
 memory/RAG remain future work. Architecture and future entry modes are described
 in [the extension boundary](architecture.md#research-extension-boundary).
 
-Durable journaling must preserve the append-only lifecycle, tool requests/responses,
-research records, graph traces, and applicable code/data/scanner/risk/simulation/
-prompt/model/tool versions. Journal access is for audit, evaluation, debugging,
-and post-trade analysis, never decision memory. The current scanner-only manifest
+The durable research journal retains lifecycle, model/tool records, stage outputs,
+graph transitions, and research code/data/prompt/model/tool identities. Future
+historical model-backed integration must also bind scanner/risk/simulation versions
+to its experiment. Journal access is for audit, evaluation, debugging, and
+post-trade analysis, never decision memory. The current scanner-only manifest
 is defined under [replay](#scanner-only-replay); standalone research tools do not
 extend it with model or prompt settings.
 

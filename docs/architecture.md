@@ -47,6 +47,13 @@ flowchart TD
     THESIS --> CRITIC[Critique]
     CRITIC --> FINAL[Final assessment]
     FINAL --> DECISION[TradeDecision: research judgment only]
+    WORK -->|durable entrypoint| HOOKS[Injected lifecycle journal hooks]
+    HOOKS --> JOURNAL[SQLite research journal]
+    JOURNAL --> EVENTS[Append-only lifecycle events]
+    JOURNAL --> RAW[Exact provider response observations]
+    JOURNAL --> ARTIFACT[Immutable terminal ResearchArtifact]
+    ARTIFACT --> LOAD[Validated terminal loading]
+    WORK -->|in-memory entrypoint| MEMORY[ResearchRunResult]
 ```
 
 The opportunity-to-terms-to-risk arrows represent replay's coordination. Services
@@ -108,6 +115,9 @@ provider-facing request and returns typed replies and observable metadata.
 strict structured schemas, no automatic retries, and no provider conversation
 state. The caller owns client lifetime and chooses the model and supported
 parameters. Prompts, schemas, and tool definitions carry versions and digests.
+Its observable invocation boundary exposes client-visible HTTP entity bytes
+before project decoding; durable hooks persist those observations separately
+from normalized project-owned replies.
 
 The runtime captures one research time from the executing `MarketResearchService`
 and requires the opportunity's observation time to match it. The service binds
@@ -130,8 +140,50 @@ trade proposal and historical model-backed replay remain future integration work
 identity, exact observable model requests/replies, provider metadata, tool attempts
 and cache/rejection links, research stages, and transitions/termination. Retained
 relationships are validated so trace, evidence, and context cannot be arbitrarily
-recombined. This is in-memory auditability; durable trace/lifecycle persistence and
-exact fresh-inference reproducibility are not implemented or promised.
+recombined. The in-memory entrypoint remains usable without a store. Exact
+fresh-inference reproducibility is not promised.
+
+## Durable research lifecycle
+
+`run_durable_opportunity_research(..., store=...)` registers a caller-supplied run
+ID and injects a `ResearchJournal` into the same workflow runtime. Runtime hooks
+emit lifecycle records; SQLite persistence is not embedded in graph nodes.
+`ResearchStore` owns local transactions using standard-library SQLite, separately
+from Coinbase acquisition/canonical persistence and scanner-only replay.
+
+The three layers have distinct responsibilities:
+
+- Active in-memory graph state holds the current context, evidence, trace, and
+  stage outputs used to advance bounded research.
+- The durable journal retains the authoritative append-only committed lifecycle:
+  prepared requests, call starts, exact provider response BLOBs, normalized replies,
+  tool requests/resolutions and cache links, validated stages, and transitions.
+  A valid prefix without a terminal event is `INCOMPLETE`; inspection can expose
+  unresolved boundaries without assuming a crash or manufacturing a conclusion.
+- `ResearchArtifact` is an immutable terminal consumer projection containing a
+  validated `ResearchRunResult` and journal integrity linkage. It is published
+  atomically with `RUN_FINISHED` for `COMPLETED` or `INTERRUPTED` research. A
+  best-effort `RUN_ABORTED` closes a run without an ordinary result/artifact.
+
+Lifecycle commits precede dependent provider/tool actions and downstream use of
+their results. No transaction spans SQLite and an external provider or tool
+execution. Storage failure stops further work and raises without returning an
+artifact; it never becomes `NO_TRADE` or ordinary runtime `ABSTAIN`. An uncertain
+commit can leave retained data for later inspection. Terminal closure is permanent.
+
+Consumers call `ResearchStore.load_terminal` to obtain validated `ResearchArtifact`
+objects rather than consume SQL rows. `inspect_run` validates committed prefixes,
+terminal consistency, and unresolved operations. Both validate retained
+relationships without inference, market-data reads, or tool redispatch. Recovery
+means SQLite transactional recovery and inspection/loading; automatic graph resume,
+provider retry after crash, and stale-run takeover are unimplemented.
+
+The model and journal layer grants no financial authority and does not connect
+`TRADE` to terms, risk, execution, or portfolio mutation. Validated terminal loading
+is the current consumer boundary; historical model-backed replay and baseline/model
+comparison remain unimplemented. See the
+[lifecycle specification](v1-specification.md#durable-research-lifecycle) and
+[ADR-010](decisions/ADR-010-durable-research-lifecycle.md).
 
 ## Terms, authorization, and execution
 
@@ -169,10 +221,12 @@ and ledger prefixes, and recomputes metrics. It does not reconstruct market path
 absent from the artifact. Marked equity uses visible completed closes; a holding
 gap leaves only valid-prefix valuation and known realized results available.
 
-These are in-memory audit artifacts with canonical JSON output. Durable lifecycle
-journaling, restart recovery, agentic replay, and a walk-forward evaluation runner
-are unimplemented. Exact ordering, end conditions, artifact identity, and metric
-semantics live in the [replay specification](v1-specification.md#scanner-only-replay).
+These replay artifacts remain in-memory with canonical JSON output; the research
+journal does not persist scanner-only replay. Replay lifecycle persistence, replay
+resumption, historical model-backed replay (including frozen-response agentic
+replay), and a walk-forward evaluation runner are unimplemented. Exact ordering,
+end conditions, artifact identity, and metric semantics live in the
+[replay specification](v1-specification.md#scanner-only-replay).
 
 ## Research extension boundary
 

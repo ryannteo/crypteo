@@ -23,6 +23,8 @@ The repository implements deterministic foundations and bounded AI research:
   then produces a structured thesis, a separate critique, and a final research
   assessment. An OpenAI adapter implements the provider boundary; see the
   [workflow specification](docs/v1-specification.md#bounded-model-backed-research).
+- Durable research lifecycle persistence in SQLite, retaining provider observations,
+  tool resolutions, and stage outputs with immutable terminal research artifacts.
 - Simulated LONG execution and portfolio accounting with fees, slippage,
   stop/target and time exits, and conservative missing-data handling.
 - Deterministic market-derived stop/target terms and decision-time LONG risk
@@ -30,7 +32,7 @@ The repository implements deterministic foundations and bounded AI research:
 - Deterministic scanner-only historical replay with reproducible in-memory
   results, marked equity, and core metrics for later research comparisons.
 
-Still unfinished: historical model-backed replay, durable lifecycle journaling,
+Still unfinished: historical model-backed replay,
 mapping research assessments into trade proposals, trader-led interactive research,
 and the integrated evaluation/reporting harness. Live mode and UI are unimplemented.
 
@@ -40,9 +42,9 @@ Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authorita
 clock and point-in-time gateway. Scanner-only replay connects the scanner,
 deterministic trade terms, risk authorization, and simulated broker/portfolio,
 then produces validated replay artifacts and metrics. The separate bounded research
-workflow turns an opportunity and visible market evidence into a research assessment, with
-in-memory trace records. It does not authorize risk, calculate trade terms, execute,
-mutate a portfolio, or account for P&L.
+workflow turns an opportunity and visible market evidence into a research assessment,
+with in-memory traces or a durable lifecycle journal. It does not authorize risk,
+calculate trade terms, execute, mutate a portfolio, or account for P&L.
 
 LLMs are reserved for interpretation and judgment. Deterministic code owns
 calculation, authorization, simulation, and accounting. Research selection and
@@ -80,6 +82,18 @@ is async and requires an explicit research-run ID, a current `Opportunity`, and 
 `MarketResearchService` whose authoritative clock matches the opportunity's
 observation time. It returns a validated in-memory `ResearchRunResult`.
 
+`run_durable_opportunity_research(request, service, model, configuration, *, store=...)`
+uses the same bounded workflow with lifecycle events committed to SQLite. Supply
+`crypteo.research_persistence.ResearchStore(path)` with a caller-owned database path
+in an existing writable directory and an adapter supporting provider observation,
+such as `OpenAIResearchModel`. Completed or operationally interrupted runs publish
+a validated immutable `ResearchArtifact`. `store.inspect_run(research_run_id)`
+inspects committed history, including incomplete/aborted runs;
+`store.load_terminal(research_run_id)` loads validated terminal artifacts. Neither
+re-runs models, tools, or market-data queries. Storage failures stop work and raise
+without returning an artifact or becoming research conclusions. Automatic crash
+resume is unimplemented.
+
 After installing the package, supply `OPENAI_API_KEY` securely in the local process
 environment for `openai.AsyncOpenAI()` and wrap that caller-owned client in
 `crypteo.openai_research.OpenAIResearchModel`. Configure `ResearchWorkflowConfig`
@@ -91,6 +105,9 @@ Git and documentation. This is a Python API; no research CLI or chat UI exists.
 See the [architecture](docs/architecture.md#model-backed-research),
 [behavioral specification](docs/v1-specification.md#bounded-model-backed-research),
 and [ADR-009](docs/decisions/ADR-009-bounded-model-directed-research.md).
+Durable semantics are defined in the
+[lifecycle specification](docs/v1-specification.md#durable-research-lifecycle)
+and [ADR-010](docs/decisions/ADR-010-durable-research-lifecycle.md).
 
 ## Documentation
 
