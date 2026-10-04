@@ -1,6 +1,5 @@
 """Immutable opportunity-led workflow inputs, retained policy, and audit records."""
 
-import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
@@ -18,7 +17,6 @@ from crypteo.domain.research import (
     AbstentionReason,
     Critique,
     DecisionOutcome,
-    EvidenceItem,
     NonBlankText,
     Opportunity,
     ResearchThesis,
@@ -34,8 +32,6 @@ from crypteo.research_model import (
     ModelRequest,
     ProviderIdentity,
     ToolRequest,
-    parse_json,
-    render_json,
 )
 
 BENCHMARK_ORDER = (
@@ -262,129 +258,9 @@ class ResearchRunResult(ModelContract):
 
     @model_validator(mode="after")
     def validate_trace_relationships(self) -> Self:
-        run_id = self.context.request.research_run_id
-        subject = self.context.request.opportunity.pair
-        now = self.context.research_at
-        sources = {s.pair: s.model_dump() for s in self.context.source_bindings}
-        evidence: dict[str, EvidenceItem] = {}
-        model_ids: set[str] = set()
-        tools: dict[str, ToolRecord] = {}
+        from crypteo.research_validation import validate_trace_relationships
 
-        def local_id(identifier: str, kind: str) -> None:
-            if (
-                re.fullmatch(re.escape(run_id) + f"/{kind}/[0-9]{{4}}", identifier)
-                is None
-            ):
-                raise ValueError(
-                    "local trace identifier belongs to another research run"
-                )
-
-        def failure_id(failure: ResearchFailure | None) -> None:
-            if failure is not None and failure.call_id is not None:
-                local_id(failure.call_id, "model")
-
-        failure_id(self.failure)
-        for record in self.trace:
-            if isinstance(record, (ModelCallRecord, ModelRequestRejection)):
-                request = record.request
-                local_id(request.call_id, "model")
-                if request.call_id in model_ids:
-                    raise ValueError("duplicate local model call identifier")
-                model_ids.add(request.call_id)
-                if isinstance(record, ModelRequestRejection):
-                    failure_id(record.failure)
-                # The rendered context is a represented relationship, not an
-                # independent timestamp/source authority supplied by the model.
-                content = parse_json(request.messages[-1].content)
-                if not isinstance(content, dict) or not isinstance(
-                    content.get("research_data"), dict
-                ):
-                    raise ValueError("retained model request lacks research context")
-                if content["research_data"].get("context") != self.context.model_dump(
-                    mode="json"
-                ):
-                    raise ValueError(
-                        "retained model context differs from enclosing research context"
-                    )
-                data = content["research_data"]
-                retained = data.get("evidence")
-                if not isinstance(retained, list):
-                    raise ValueError("retained model request lacks evidence collection")
-                retained_ids: set[str] = set()
-                for value in retained:
-                    item = EvidenceItem.model_validate_json(render_json(value))
-                    if evidence.get(item.evidence_id) != item:
-                        raise ValueError(
-                            "retained model evidence differs from tool evidence"
-                        )
-                    if item.evidence_id in retained_ids:
-                        raise ValueError(
-                            "model evidence collection must be deduplicated"
-                        )
-                    retained_ids.add(item.evidence_id)
-                if retained_ids != set(evidence):
-                    raise ValueError("retained model request omits collected evidence")
-                if data.get("request_history") != [
-                    tool.model_dump(mode="json") for tool in tools.values()
-                ]:
-                    raise ValueError("retained request history differs from tool trace")
-                continue
-            if not isinstance(record, ToolRecord):
-                continue
-            local_id(record.attempt_id, "tool")
-            local_id(record.model_call_id, "model")
-            if record.attempt_id in tools or record.model_call_id not in model_ids:
-                raise ValueError(
-                    "tool trace has duplicate attempt or absent model call"
-                )
-            if record.query is not None and record.query.pair != subject:
-                raise ValueError("retained tool subject differs from opportunity")
-            result = record.result
-            if result is not None:
-                query = (
-                    result.context.query
-                    if isinstance(result, ResearchToolSuccess)
-                    else result.query
-                )
-                window = (
-                    result.context.window
-                    if isinstance(result, ResearchToolSuccess)
-                    else result.window
-                )
-                if query != record.query or query.pair != subject:
-                    raise ValueError(
-                        "retained tool result differs from bound subject/query"
-                    )
-                if window.end != now:
-                    raise ValueError("retained research time differs from research_at")
-            if isinstance(result, ResearchToolSuccess):
-                # Revalidate the entire envelope before comparing repeated IDs,
-                # including payload and nested provenance, on every input path.
-                item = EvidenceItem.model_validate(result.evidence)
-                if item.observed_at != now or item.available_at != now:
-                    raise ValueError("retained evidence time differs from research_at")
-                previous = evidence.get(item.evidence_id)
-                if previous is not None and previous != item:
-                    raise ValueError("conflicting repeated evidence_id content")
-                evidence[item.evidence_id] = item
-                for research_input in result.context.inputs:
-                    source = research_input.source
-                    if source.model_dump(exclude={"role"}) != sources.get(source.pair):
-                        raise ValueError(
-                            "retained provenance differs from bound source"
-                        )
-            if record.cached_from is not None:
-                local_id(record.cached_from, "tool")
-                cached = tools.get(record.cached_from)
-                if (
-                    cached is None
-                    or cached.query != record.query
-                    or cached.result != record.result
-                ):
-                    raise ValueError(
-                        "cache linkage differs from earlier retained result"
-                    )
-            tools[record.attempt_id] = record
+        validate_trace_relationships(self.context, self.trace, self.failure)
         return self
 
     @model_validator(mode="after")

@@ -1,10 +1,11 @@
 """Project-owned async model boundary; no vendor objects cross this module."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import Annotated, Any, Literal, Protocol, Self
+from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -163,6 +164,8 @@ class ProviderMetadata(ModelContract):
     usage: ImmutableJsonObject | None = None
     request_json: NonBlankText | None = None
     response_json: Annotated[str, Field(strict=True)] | None = None
+    # Escaped diagnostic view of an invalid project reply, never an HTTP entity.
+    rejected_reply_json: Annotated[str, Field(strict=True)] | None = None
     http_status: Annotated[int, Field(strict=True)] | None = None
     error_type: NonBlankText | None = None
     error_code: NonBlankText | None = None
@@ -229,3 +232,25 @@ class ResearchModel(Protocol):
         ...
 
     async def invoke(self, request: ModelRequest) -> ModelReply: ...
+
+
+@dataclass(frozen=True)
+class ProviderObservation:
+    """Observable HTTP entity body, before project decoding; no headers/SDK state."""
+
+    body: bytes
+    http_status: int
+    request_id: str | None = None
+    text_encoding: str = "utf-8"
+
+
+ResponseObserver = Callable[[ProviderObservation], None]
+
+
+@runtime_checkable
+class ObservableResearchModel(ResearchModel, Protocol):
+    async def invoke_observed(
+        self, request: ModelRequest, observe: ResponseObserver
+    ) -> ModelReply:
+        """Observe every available entity before decoding; observer errors propagate."""
+        ...

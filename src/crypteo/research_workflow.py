@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import suppress
 from importlib.metadata import version
 from time import monotonic
 from typing import Any, Literal, TypedDict, cast
@@ -10,7 +11,6 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from crypteo.domain.market_research import (
-    MarketResearchCapability,
     ResearchToolSuccess,
     ResearchToolUnavailable,
 )
@@ -18,9 +18,27 @@ from crypteo.domain.research import (
     AbstentionReason,
     Critique,
     DecisionOutcome,
-    EvidenceItem,
     ResearchThesis,
     TradeDecision,
+)
+from crypteo.domain.research_journal import (
+    AbortDiagnostic,
+    AssessmentStage,
+    CritiqueStage,
+    InvestigationStage,
+    LifecycleEvent,
+    ModelCallFinished,
+    ModelCallStarted,
+    ModelRequestPrepared,
+    ModelRequestRejected,
+    ModelResponseObserved,
+    NodeTransitioned,
+    ResearchArtifact,
+    ResearchRunHeader,
+    StageCompleted,
+    ThesisStage,
+    ToolRequested,
+    ToolResolved,
 )
 from crypteo.domain.research_workflow import (
     BENCHMARK_ORDER,
@@ -42,27 +60,27 @@ from crypteo.domain.research_workflow import (
 )
 from crypteo.experiment import CodeIdentity, current_code_identity
 from crypteo.market_research import MarketResearchService
+from crypteo.research_journal import ResearchStorageError
 from crypteo.research_model import (
     FailureReply,
-    ModelOutputError,
     ModelReply,
     ModelRequest,
+    ObservableResearchModel,
     ProviderFailureCode,
     ProviderIdentity,
     ProviderMetadata,
+    ProviderObservation,
     RefusalReply,
     ResearchModel,
     StructuredReply,
     ToolReply,
-    parse_json,
 )
+from crypteo.research_persistence import ResearchJournal, ResearchStore
 from crypteo.research_prompts import prompt_identity, prompt_messages, structured_schema
 from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
-
-
-class ResearchInvariantError(ValueError):
-    """Runtime integrity violation: never an ordinary research abstention."""
-
+from crypteo.research_validation import ResearchInvariantError as ResearchInvariantError
+from crypteo.research_validation import collected_evidence as collected_evidence
+from crypteo.research_validation import research_data, validate_stage_output
 
 _OVERDUE_MODEL_TASKS: set[asyncio.Task[ModelReply]] = set()
 
@@ -89,30 +107,6 @@ class ResearchState(TypedDict):
     critique: Critique | None
     assessment: TradeDecision | None
     failure: ResearchFailure | None
-
-
-def collected_evidence(trace: tuple[TraceRecord, ...]) -> tuple[EvidenceItem, ...]:
-    """Deduplicate exact runtime envelopes, preserving a stable presentation order."""
-    evidence: dict[str, tuple[tuple[int, int, str], EvidenceItem]] = {}
-    capabilities = tuple(MarketResearchCapability)
-    for record in trace:
-        if not isinstance(record, ToolRecord) or not isinstance(
-            record.result, ResearchToolSuccess
-        ):
-            continue
-        item, query = record.result.evidence, record.result.context.query
-        previous = evidence.get(item.evidence_id)
-        if previous is not None and previous[1] != item:
-            raise ResearchInvariantError("conflicting evidence identity")
-        key = (
-            capabilities.index(query.capability),
-            BENCHMARK_ORDER.index(query.benchmark) if query.benchmark else -1,
-            item.evidence_id,
-        )
-        evidence[item.evidence_id] = (key, item)
-    return tuple(
-        item for _, item in sorted(evidence.values(), key=lambda entry: entry[0])
-    )
 
 
 def _tools(state: ResearchState) -> tuple[ToolRecord, ...]:
@@ -151,9 +145,15 @@ class _ResearchRuntime:
         service: MarketResearchService,
         model: ResearchModel,
         config: ResearchWorkflowConfig,
+        journal: ResearchJournal | None = None,
     ) -> None:
+        self.journal = journal
         self.service, self.model, self.config = service, model, config
         self.deadline = monotonic() + config.workflow_deadline_seconds
+
+    def emit(self, event: LifecycleEvent) -> None:
+        if self.journal is not None:
+            self.journal.append(event)
 
     def guard_clock(self, state: ResearchState) -> None:
         if self.service.now != state["context"].research_at:
@@ -173,35 +173,21 @@ class _ResearchRuntime:
         return state
 
     def data(self, state: ResearchState, stage: str) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "context": state["context"].model_dump(mode="json"),
-            "evidence": [
-                e.model_dump(mode="json") for e in collected_evidence(state["trace"])
-            ],
-            "request_history": [r.model_dump(mode="json") for r in _tools(state)],
-        }
-        if stage == "investigate":
-            data["attempts_remaining"] = self.config.budget.max_tool_attempts - sum(
-                r.admitted for r in _tools(state)
-            )
-        if stage == "draft_thesis":
-            completion = state["investigation"]
-            if completion is None:
-                raise ResearchInvariantError("thesis requires investigation completion")
-            data["investigation_completion"] = completion.model_dump(mode="json")
-        if stage in ("critique", "final_assessment"):
-            thesis = state["thesis"]
-            if thesis is None:
-                raise ResearchInvariantError(
-                    "critic and assessment require validated thesis"
+        return research_data(
+            state["context"],
+            state["trace"],
+            self.config,
+            stage,
+            {
+                key: value
+                for key, value in (
+                    ("investigate", state["investigation"]),
+                    ("draft_thesis", state["thesis"]),
+                    ("critique", state["critique"]),
                 )
-            data["thesis"] = thesis.model_dump(mode="json")
-        if stage == "final_assessment":
-            critique = state["critique"]
-            if critique is None:
-                raise ResearchInvariantError("assessment requires independent critique")
-            data["critique"] = critique.model_dump(mode="json")
-        return data
+                if value is not None
+            },
+        )
 
     async def call(
         self,
@@ -247,6 +233,7 @@ class _ResearchRuntime:
         prepared = request.prepared_input_json
         if prepared is None:
             raise ResearchInvariantError("model adapter did not prepare its input")
+        self.emit(ModelRequestPrepared(request=request))
         if len(prepared.encode("utf-8")) > self.config.max_model_input_bytes:
             state = _failure(
                 state,
@@ -258,6 +245,11 @@ class _ResearchRuntime:
             failure = state["failure"]
             if failure is None:
                 raise ResearchInvariantError("input budget rejection lacks failure")
+            self.emit(
+                ModelRequestRejected(
+                    record=ModelRequestRejection(request=request, failure=failure)
+                )
+            )
             return {
                 **state,
                 "trace": state["trace"]
@@ -266,6 +258,13 @@ class _ResearchRuntime:
         state = self.guard_deadline(state)
         pending_failure = state["failure"]
         if pending_failure is not None:
+            self.emit(
+                ModelRequestRejected(
+                    record=ModelRequestRejection(
+                        request=request, failure=pending_failure
+                    )
+                )
+            )
             return {
                 **state,
                 "trace": state["trace"]
@@ -277,30 +276,80 @@ class _ResearchRuntime:
             self.deadline,
         )
         overall_limited = call_deadline == self.deadline
-        task = asyncio.create_task(self.model.invoke(request), name=call_id)
-        try:
-            done, _ = await asyncio.wait(
-                {task},
-                timeout=max(0, call_deadline - monotonic()),
+        observation_open = True
+
+        def observe(observation: ProviderObservation) -> None:
+            if not observation_open or monotonic() >= call_deadline:
+                return
+            self.emit(
+                ModelResponseObserved(
+                    call_id=call_id,
+                    body=observation.body,
+                    http_status=observation.http_status,
+                    request_id=observation.request_id,
+                    text_encoding=observation.text_encoding,
+                )
             )
-        except asyncio.CancelledError:
-            _cancel_and_observe(task)
-            raise
+
+        async def invoke_before_deadline() -> ModelReply:
+            if monotonic() >= call_deadline:
+                return FailureReply(
+                    code=ProviderFailureCode.TIMEOUT,
+                    message="software model-call deadline exceeded",
+                    metadata=ProviderMetadata(request_json=prepared),
+                )
+            # No yield between this guard and entering the provider: scheduling
+            # the task itself may have consumed the remaining inference budget.
+            if self.journal is not None and isinstance(
+                self.model, ObservableResearchModel
+            ):
+                return await self.model.invoke_observed(request, observe)
+            return await self.model.invoke(request)
+
+        self.emit(ModelCallStarted(call_id=call_id))
+        task: asyncio.Task[ModelReply] | None = None
+        done: set[asyncio.Task[ModelReply]] = set()
+        # The synchronous commit can consume the remaining inference budget.
+        # Do not even create the provider coroutine once that budget has expired.
+        if monotonic() < call_deadline:
+            task = asyncio.create_task(invoke_before_deadline(), name=call_id)
+            try:
+                done, _ = await asyncio.wait(
+                    {task},
+                    timeout=max(0, call_deadline - monotonic()),
+                )
+            except asyncio.CancelledError:
+                observation_open = False
+                _cancel_and_observe(task)
+                raise
+            finally:
+                observation_open = False
+        else:
+            observation_open = False
         try:
             self.guard_clock(state)
         except ResearchInvariantError:
-            _cancel_and_observe(task)
+            if task is not None:
+                _cancel_and_observe(task)
             raise
-        overdue = not done or monotonic() >= call_deadline
+        if self.journal is not None and not self.journal.healthy:
+            if task is not None:
+                if task.done():
+                    task.result()  # Preserve the original observation exception.
+                _cancel_and_observe(task)
+            raise ResearchStorageError("provider observation could not be persisted")
+        overdue = task is None or not done or monotonic() >= call_deadline
         reply: ModelReply
         if overdue:
-            _cancel_and_observe(task)
+            if task is not None:
+                _cancel_and_observe(task)
             reply = FailureReply(
                 code=ProviderFailureCode.TIMEOUT,
                 message="software model-call deadline exceeded",
                 metadata=ProviderMetadata(request_json=prepared),
             )
         else:
+            assert task is not None
             reply = task.result()
         try:
             reply = TypeAdapter(ModelReply).validate_python(reply)
@@ -308,7 +357,7 @@ class _ResearchRuntime:
             # Reject invalid Unicode/envelopes before retaining the reply. Escaped
             # audit JSON preserves the original code units without unsafe scalars.
             metadata = ProviderMetadata(
-                response_json=json.dumps(
+                rejected_reply_json=json.dumps(
                     reply.model_dump(mode="python"), ensure_ascii=True
                 ),
                 request_json=prepared,
@@ -324,6 +373,9 @@ class _ResearchRuntime:
                     metadata=metadata,
                 )
             )
+        self.emit(
+            ModelCallFinished(record=ModelCallRecord(request=request, reply=reply))
+        )
         state = {
             **state,
             "trace": state["trace"] + (ModelCallRecord(request=request, reply=reply),),
@@ -369,31 +421,7 @@ class _ResearchRuntime:
     def validate_output(
         self, state: ResearchState, reply: StructuredReply, schema: type[BaseModel]
     ) -> BaseModel | ResearchFailureCode:
-        try:
-            parsed = parse_json(reply.content)
-            # Wire schemas require every field. Local providers/fakes are held to the
-            # same contract rather than silently filling domain defaults.
-            if not isinstance(parsed, dict) or set(parsed) != set(schema.model_fields):
-                raise ModelOutputError(
-                    "output must contain exactly the structured schema fields"
-                )
-            output = schema.model_validate(parsed)
-            references: tuple[str, ...] = ()
-            if isinstance(output, InvestigationCompletion):
-                references = output.relevant_evidence_ids
-            elif isinstance(output, (ResearchThesis, TradeDecision)):
-                references = output.supporting_evidence_ids + output.counterevidence_ids
-            if set(references) - {
-                e.evidence_id for e in collected_evidence(state["trace"])
-            }:
-                return ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE
-            if isinstance(output, TradeDecision) and output.critic_response is None:
-                raise ModelOutputError(
-                    "completed assessment requires nonblank critic_response"
-                )
-            return output
-        except (ModelOutputError, ValidationError):
-            return ResearchFailureCode.INVALID_MODEL_OUTPUT
+        return validate_stage_output(state["trace"], reply, schema)
 
     async def investigate(self, state: ResearchState) -> ResearchState:
         state, reply = await self.call(state, "investigate")
@@ -408,6 +436,12 @@ class _ResearchRuntime:
             return self.invalid_output(state, output)
         if not isinstance(output, InvestigationCompletion):
             raise ResearchInvariantError("unexpected investigation schema")
+        self.emit(
+            StageCompleted(
+                call_id=_models(state)[-1].request.call_id,
+                value=InvestigationStage(output=output),
+            )
+        )
         return {**state, "investigation": output, "action": None}
 
     def invalid_output(
@@ -436,6 +470,11 @@ class _ResearchRuntime:
             f"{state['context'].request.research_run_id}/tool/{len(history) + 1:04d}"
         )
         call_id = _models(state)[-1].request.call_id
+        self.emit(
+            ToolRequested(
+                attempt_id=attempt_id, model_call_id=call_id, requests=action.requests
+            )
+        )
         query_or_rejection = (
             bind_tool_request(
                 action.requests, state["context"].request.opportunity.pair
@@ -454,6 +493,7 @@ class _ResearchRuntime:
                 admitted=admitted,
                 rejection=query_or_rejection,
             )
+            self.emit(ToolResolved(record=record))
             state = {**state, "trace": state["trace"] + (record,), "action": None}
             if not admitted:
                 return _failure(
@@ -526,6 +566,7 @@ class _ResearchRuntime:
             result=result,
             cached_from=cached.attempt_id if cached else None,
         )
+        self.emit(ToolResolved(record=record))
         state = {**state, "trace": state["trace"] + (record,), "action": None}
         collected_evidence(state["trace"])
         return self.guard_deadline(state)
@@ -541,6 +582,12 @@ class _ResearchRuntime:
             return self.invalid_output(state, output)
         if not isinstance(output, ResearchThesis):
             raise ResearchInvariantError("unexpected thesis schema")
+        self.emit(
+            StageCompleted(
+                call_id=_models(state)[-1].request.call_id,
+                value=ThesisStage(output=output),
+            )
+        )
         return {**state, "thesis": output}
 
     async def critique(self, state: ResearchState) -> ResearchState:
@@ -554,6 +601,12 @@ class _ResearchRuntime:
             return self.invalid_output(state, output)
         if not isinstance(output, Critique):
             raise ResearchInvariantError("unexpected critique schema")
+        self.emit(
+            StageCompleted(
+                call_id=_models(state)[-1].request.call_id,
+                value=CritiqueStage(output=output),
+            )
+        )
         return {**state, "critique": output}
 
     async def final_assessment(self, state: ResearchState) -> ResearchState:
@@ -567,34 +620,37 @@ class _ResearchRuntime:
             return self.invalid_output(state, output)
         if not isinstance(output, TradeDecision):
             raise ResearchInvariantError("unexpected assessment schema")
+        self.emit(
+            StageCompleted(
+                call_id=_models(state)[-1].request.call_id,
+                value=AssessmentStage(output=output),
+            )
+        )
         return {**state, "assessment": output}
 
     def transition(
         self, state: ResearchState, source: str, target: str
     ) -> ResearchState:
         failure = state["failure"]
-        return {
-            **state,
-            "trace": state["trace"]
-            + (
-                NodeTransition(
-                    source=source,
-                    target=target,
-                    termination_reason=(failure.code.value if failure else "COMPLETED")
-                    if target == END
-                    else None,
-                ),
-            ),
-        }
+        record = NodeTransition(
+            source=source,
+            target=target,
+            termination_reason=(failure.code.value if failure else "COMPLETED")
+            if target == END
+            else None,
+        )
+        self.emit(NodeTransitioned(record=record))
+        return {**state, "trace": state["trace"] + (record,)}
 
 
-async def run_opportunity_research(
+async def _run_opportunity_research(
     request: OpportunityResearchRequest,
     service: MarketResearchService,
     model: ResearchModel,
     configuration: ResearchWorkflowConfig,
     *,
     code: CodeIdentity | None = None,
+    journal: ResearchJournal | None = None,
 ) -> ResearchRunResult:
     """Fresh inference at one frozen simulation boundary; no persistence/retries."""
     request = OpportunityResearchRequest.model_validate(request)
@@ -609,7 +665,11 @@ async def run_opportunity_research(
         source_bindings=service.source_bindings,
     )
     code = CodeIdentity.model_validate(code) if code else current_code_identity()
-    runtime = _ResearchRuntime(service, model, configuration)
+    runtime = (
+        _ResearchRuntime(service, model, configuration, journal)
+        if journal
+        else _ResearchRuntime(service, model, configuration)
+    )
     state: ResearchState = {
         "context": context,
         "trace": (),
@@ -733,3 +793,75 @@ async def run_opportunity_research(
         )
     runtime.guard_clock(final)
     return result
+
+
+async def run_opportunity_research(
+    request: OpportunityResearchRequest,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    *,
+    code: CodeIdentity | None = None,
+) -> ResearchRunResult:
+    """Existing in-memory research entrypoint; no persistence is implied."""
+    return await _run_opportunity_research(
+        request, service, model, configuration, code=code
+    )
+
+
+async def run_durable_opportunity_research(
+    request: OpportunityResearchRequest,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    *,
+    store: ResearchStore,
+    code: CodeIdentity | None = None,
+) -> ResearchArtifact:
+    """Commit lifecycle boundaries and atomically publish; never resume or retry."""
+    if not isinstance(model, ObservableResearchModel):
+        raise ValueError("durable research requires a provider observation boundary")
+    request = OpportunityResearchRequest.model_validate(request)
+    configuration = ResearchWorkflowConfig.model_validate(configuration)
+    provider = ProviderIdentity.model_validate(model.identity)
+    if provider.provider != configuration.model.provider:
+        raise ValueError("configured provider differs from model adapter")
+    header = ResearchRunHeader(
+        context=OpportunityResearchContext(
+            request=request,
+            research_at=service.now,
+            benchmarks=tuple(
+                p for p in BENCHMARK_ORDER if p != request.opportunity.pair
+            ),
+            source_bindings=service.source_bindings,
+        ),
+        configuration=configuration,
+        code=CodeIdentity.model_validate(code) if code else current_code_identity(),
+        provider=provider,
+        langgraph_version=version("langgraph"),
+    )
+    journal = store.create_run(header)
+    try:
+        result = await _run_opportunity_research(
+            request,
+            service,
+            model,
+            configuration,
+            code=header.code,
+            journal=journal,
+        )
+        return journal.finalize(result)
+    except ResearchStorageError:
+        raise
+    except BaseException as error:
+        if journal.healthy:
+            # Preserve the original invariant exception/cancellation.
+            with suppress(BaseException):
+                journal.abort(
+                    AbortDiagnostic(
+                        reason="EXTERNAL_CANCELLATION"
+                        if isinstance(error, asyncio.CancelledError)
+                        else "INVARIANT_OR_PROGRAMMER_FAILURE"
+                    )
+                )
+        raise

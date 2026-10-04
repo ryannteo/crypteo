@@ -20,7 +20,9 @@ from crypteo.research_model import (
     ProviderFailureCode,
     ProviderIdentity,
     ProviderMetadata,
+    ProviderObservation,
     RefusalReply,
+    ResponseObserver,
     StructuredReply,
     ToolReply,
     ToolRequest,
@@ -96,6 +98,16 @@ class OpenAIResearchModel:
         )
 
     async def invoke(self, request: ModelRequest) -> ModelReply:
+        return await self._invoke(request, None)
+
+    async def invoke_observed(
+        self, request: ModelRequest, observe: ResponseObserver
+    ) -> ModelReply:
+        return await self._invoke(request, observe)
+
+    async def _invoke(
+        self, request: ModelRequest, observe: ResponseObserver | None
+    ) -> ModelReply:
         if request.prepared_input_json is None:
             request = self.prepare(request)
         encoded = request.prepared_input_json
@@ -123,30 +135,87 @@ class OpenAIResearchModel:
                 metadata=metadata,
             )
         except APIStatusError as error:
-            # Do not retain exception messages or arbitrary request/response headers.
-            return FailureReply(
-                code=ProviderFailureCode.ERROR,
-                message="OpenAI HTTP error",
-                metadata=ProviderMetadata(
-                    request_json=metadata.request_json,
-                    request_id=error.request_id,
-                    http_status=error.status_code,
-                    error_code=error.code
-                    if isinstance(error.code, str) and error.code.strip()
-                    else None,
-                    error_type=error.type
-                    if isinstance(error.type, str) and error.type.strip()
-                    else None,
-                ),
+            if observe is not None:
+                observe(
+                    ProviderObservation(
+                        body=error.response.content,
+                        http_status=error.status_code,
+                        request_id=error.request_id,
+                        text_encoding="utf-8",
+                    )
+                )
+            return decode_http_error(
+                error.response.content,
+                error.status_code,
+                error.request_id,
+                encoded,
             )
         response = raw_response.response
+        if observe is not None:
+            observe(
+                ProviderObservation(
+                    body=response.content,
+                    http_status=response.status_code,
+                    request_id=response.headers.get("x-request-id") or None,
+                    text_encoding="utf-8",
+                )
+            )
         metadata = ProviderMetadata(
             request_json=metadata.request_json,
-            response_json=response.text,
             request_id=response.headers.get("x-request-id") or None,
             http_status=response.status_code,
         )
-        return _decode_response(metadata)
+        return decode_response_entity(response.content, metadata)
+
+
+def decode_response_entity(body: bytes, metadata: ProviderMetadata) -> ModelReply:
+    """Interpret an observed entity without repairing malformed UTF-8."""
+    try:
+        content = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return FailureReply(
+            code=ProviderFailureCode.INVALID_ENVELOPE,
+            message="OpenAI response body is not valid UTF-8",
+            metadata=metadata,
+        )
+    return _decode_response(
+        ProviderMetadata.model_validate(
+            metadata.model_copy(update={"response_json": content})
+        )
+    )
+
+
+def decode_http_error(
+    body: bytes,
+    status: int,
+    request_id: str | None,
+    request_json: str,
+) -> FailureReply:
+    """Normalize only project-owned error fields after observation has committed."""
+    code: str | None = None
+    error_type: str | None = None
+    try:
+        parsed = parse_json(body.decode("utf-8"))
+        if isinstance(parsed, dict):
+            error = parsed.get("error", parsed)
+            if isinstance(error, dict):
+                value = error.get("code")
+                code = value if isinstance(value, str) and value.strip() else None
+                value = error.get("type")
+                error_type = value if isinstance(value, str) and value.strip() else None
+    except (ModelOutputError, UnicodeDecodeError):
+        pass
+    return FailureReply(
+        code=ProviderFailureCode.ERROR,
+        message="OpenAI HTTP error",
+        metadata=ProviderMetadata(
+            request_json=request_json,
+            request_id=request_id,
+            http_status=status,
+            error_code=code,
+            error_type=error_type,
+        ),
+    )
 
 
 def _decode_response(metadata: ProviderMetadata) -> ModelReply:
