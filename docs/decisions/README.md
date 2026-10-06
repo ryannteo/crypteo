@@ -50,7 +50,8 @@ durable decision actually changes.
 | [004](ADR-004-scanner-snapshot-semantics.md) | Scanner snapshot semantics | Accepted |
 | [005](ADR-005-completed-bar-execution-reconciliation.md) | Completed-bar simulated execution reconciliation | Accepted |
 | [006](ADR-006-decision-time-risk-authorization.md) | Decision-time risk authorization under unknown next-open execution | Accepted |
-| [007](ADR-007-deterministic-trade-terms.md) | Deterministic market-derived trade terms | Accepted |
+| [007](ADR-007-deterministic-trade-terms.md) | Deterministic market-derived trade terms | Accepted; selection timing narrowly superseded by ADR-011 |
 | [008](ADR-008-scanner-only-replay-boundary-delivery-ordering.md) | Scanner-only replay boundary, delivery, and simultaneous-candidate ordering | Accepted |
 | [009](ADR-009-bounded-model-directed-research.md) | Bounded model-directed research | Accepted |
 | [010](ADR-010-durable-research-lifecycle.md) | Durable append-only research lifecycle and transactional terminal publication | Accepted |
+| [011](ADR-011-model-research-historical-replay.md) | Model research admission into deterministic historical replay | Accepted |

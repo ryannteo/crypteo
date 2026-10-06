@@ -8,8 +8,10 @@ Durable architectural changes require an [ADR](decisions/README.md).
 The implementation provides deterministic scanner-only replay, seven market
 research tools, and bounded opportunity-led model investigation, thesis, critique,
 and final assessment through LangGraph, with optional durable SQLite lifecycle
-journaling and immutable terminal research artifacts. Historical model-backed
-replay and the integrated evaluation harness are not implemented.
+journaling and immutable terminal research artifacts. One historical replay
+lifecycle supports the deterministic baseline, fresh model research with mandatory
+durable journaling, and frozen validated-research-artifact reproduction. An
+integrated evaluation/comparison harness remains unimplemented.
 
 ## V1 Scope and Market Environment
 
@@ -286,10 +288,10 @@ the full normalization, identity, publication, and loading contract.
 
 - `TRADE`: research supports further consideration of the candidate LONG setup. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
 - `NO_TRADE`: Crypteo has enough evidence to actively reject the candidate. It is a substantive research conclusion, not an abstention.
-- `ABSTAIN`: Crypteo cannot form a sufficiently reliable research conclusion because evidence is insufficient, conflicting, stale, unavailable, or unreliable, or because of research/tool failure, budget exhaustion, or validation failure.
+- Model `ABSTAIN`: completed research cannot form a sufficiently reliable conclusion because evidence is insufficient, conflicting, stale, unavailable, or unreliable. Standalone interrupted research also uses runtime `ABSTAIN` with a typed operational failure; historical replay rejects that interrupted artifact and aborts evaluation.
 - `RISK_REJECTED`: deterministic authorization refused a proposal. It is a downstream risk outcome that the LLM cannot emit.
 
-The research schema keeps `TRADE`, `NO_TRADE`, and `ABSTAIN` distinct. Mapping a model assessment into a trade proposal is not implemented. In the planned integration, a `TRADE` research outcome leads the runtime to construct a deterministic `TradeProposal` using frozen deterministic terms, then request `RiskService` authorization. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
+The research schema keeps `TRADE`, `NO_TRADE`, and `ABSTAIN` distinct. Historical research replay admits only validated `COMPLETED / MODEL` assessments. A `TRADE` outcome permits runtime-owned deterministic terms generation, construction of a `TradeProposal` from those frozen terms, and `RiskService` authorization. `NO_TRADE` and model `ABSTAIN` prohibit financial preparation; operational research failure aborts evaluation. Authorization supplies an authorized `OrderIntent` for simulated processing or yields `RISK_REJECTED`. `RiskService` does not directly consume `TradeDecision`. The LLM does not generate stop/target levels, quantity, or other financial terms; deterministic code supplies the levels and the risk service computes quantity.
 
 ## Deterministic Trade Terms
 
@@ -305,7 +307,7 @@ The current V1 policy is:
 
 Generation fails closed with `REFERENCE_UNAVAILABLE`, `HISTORY_UNAVAILABLE`, `ZERO_MEAN_TRUE_RANGE`, `INVALID_RAW_STOP`, `INVALID_RAW_TARGET`, or `INVALID_ALIGNED_LEVELS`. It does not shorten the window, substitute older candles, clamp invalid stops, or raise collapsed targets. Malformed inputs raise validation errors rather than ordinary rejection outcomes.
 
-Successful terms are immutable and retain decision time, market identity, configuration, reference, derived statistics, and aligned levels. Their contract recomputes the levels; the service establishes the statistics' market provenance and temporal visibility. In scanner-only replay, terms are frozen before selection, authorization, and execution so selection cannot change the trade being evaluated. Generation does not imply research approval, portfolio sizing, execution authority, or automatic LLM exposure. See [ADR-007](decisions/ADR-007-deterministic-trade-terms.md) for the durable boundaries; the multiplier, window, and target formula above are current V1 policy.
+Successful terms are immutable and retain decision time, market identity, configuration, reference, derived statistics, and aligned levels. Their contract recomputes the levels; the service establishes the statistics' market provenance and temporal visibility. In scanner-only replay, terms are frozen before selection, authorization, and execution so selection cannot change the trade being evaluated. In model-backed replay, research precedes generation, and only validated model `TRADE` permits terms; terms are still deterministic and frozen before proposal/risk/execution. Generation does not imply research approval, portfolio sizing, execution authority, or automatic LLM exposure. See [ADR-007](decisions/ADR-007-deterministic-trade-terms.md) and its narrow ordering supersession in [ADR-011](decisions/ADR-011-model-research-historical-replay.md) for the durable boundaries; the multiplier, window, and target formula above are current V1 policy.
 
 Replay implements opportunity freshness, deduplication, stale-term admission, replay orchestration and clock advancement, proposal construction from frozen terms, core metrics, and experiment manifests. The generator accepts a pair rather than an `Opportunity`; replay establishes whether a scanner candidate remains fresh.
 
@@ -419,8 +421,295 @@ entry rejections as foundational replay accounting; these leave no position and
 do not themselves invalidate valuation.
 Zero starting capital gives undefined returns; no closed trades gives undefined
 win rate. Empty schedules reconcile/observe once and have undefined exposure;
-flat/no-trade drawdown is zero. Advanced performance and research metrics remain
-deferred.
+flat/no-trade drawdown is zero. Financial `ReplayMetrics` are shared unchanged by
+research replay; its additional factual metrics are defined below. Advanced
+performance statistics remain deferred.
+
+## Historical Research Replay
+
+### Modes and public entrypoints
+
+One shared historical lifecycle in [replay.py](../src/crypteo/replay.py) supports:
+
+| Entrypoint/settings | Selection source | Manifest |
+| --- | --- | --- |
+| Synchronous `run_scanner_only` | Select every admitted candidate with valid deterministic terms | Schema `"1"`, `SCANNER_ONLY` |
+| Async `run_research_replay`, `FRESH_INFERENCE` | New durable model research for every admitted candidate | Schema `"2"`, `RESEARCH` |
+| Async `run_research_replay`, `FROZEN_RESEARCH` | Explicitly mapped, validated retained terminal research | Schema `"2"`, `RESEARCH` |
+
+The async API in [research_replay.py](../src/crypteo/research_replay.py) is
+`run_research_replay(config, datasets, *, research, store, model=None, code=None)`.
+It returns a normally completed `ReplayResult` or raises; failures do not return
+partial successful metrics. It requires a caller-owned `ResearchStore` in both
+research modes. Configuration/dataset validation, full supplied dataset identity,
+clock/gateway assembly, and optional explicit `CodeIdentity` follow baseline
+semantics. The synchronous baseline remains usable inside an event loop without
+research workflow, provider, or SQLite invocation. There is no research replay CLI.
+
+`FreshResearchSettings` requires `configuration: ResearchWorkflowConfig`, a
+nonblank `trial_id`, and strict positive integer `max_research_runs` (no default
+unlimited cap). Fresh replay requires an `ObservableResearchModel` whose provider
+matches configured model provider. It uses `run_durable_opportunity_research`;
+in-memory-only research is not sufficient for replay admission. Publication is
+followed by `store.load_terminal(research_run_id)` and comparison with the returned
+artifact before replay consumes it.
+
+`FrozenResearchSettings` requires the workflow `configuration` and explicit
+`mapping`. Passing any model is forbidden. Frozen mode neither performs inference
+nor runs LangGraph, invokes research tools, or constructs/invokes
+`MarketResearchService` for research. It loads artifacts through `load_terminal`.
+Deterministic scanning, terms after `TRADE`, execution, and valuation/accounting
+still read point-in-time market data. Frozen mode is not globally free of
+market-data reads.
+
+### Shared lifecycle and candidate ordering
+
+At boundary T:
+
+1. Reconcile the broker and append newly known fills, entry rejections, closed
+   trades, or a holding data gap.
+2. If T equals `end`, record the final observation and finish; no scan or research.
+3. Scan configured assets, sort candidates BTC-USD → ETH-USD → SOL-USD then
+   `opportunity_id`, and record all delivery dispositions.
+4. Process admitted candidates sequentially in that order.
+5. Record the boundary portfolio/equity observation.
+6. Advance exactly one hour, then reconcile the next boundary.
+
+Freshness, availability, first-seen terminal delivery, duplicate identity checking,
+scanning, valuation, and final-boundary semantics remain as specified for baseline.
+No research runs for non-admitted deliveries or at the final boundary. An empty
+interval reconciles/observes once and has zero research assessments.
+
+Baseline preparation remains terms → baseline selection/proposal → risk →
+authorized submission. Research preparation is opportunity → research → validated
+artifact admission → outcome; only `COMPLETED / MODEL / TRADE` continues through
+terms → `ResearchSelection` containing the deterministic `TradeProposal` → risk →
+authorized submission. Research therefore precedes even a possible terms rejection.
+Terms verify subject, configuration, and decision time at T and remain frozen
+before proposal, authorization, and execution. The model supplies no stop, target,
+quantity, risk authorization, execution price, fee, P&L, or portfolio mutation.
+
+Each candidate completes research and optional financial preparation/submission
+before the next candidate begins. There is no concurrent candidate research.
+Risk sees the current portfolio: an earlier submission makes it pending for later
+candidates at the same boundary, preserving the one-active-trade allocation order.
+The model receives no portfolio state. All admitted candidates still undergo
+research while busy or halted; model `TRADE` may subsequently receive
+`PORTFOLIO_BUSY` or `PORTFOLIO_HALTED` from deterministic risk.
+
+### Research conclusions and operational failure
+
+| Admitted research | Meaning | Financial preparation |
+| --- | --- | --- |
+| `COMPLETED / MODEL / TRADE` | Research supports further consideration of the LONG setup | Generate terms; valid terms produce proposal/risk; submit only if authorized |
+| `COMPLETED / MODEL / NO_TRADE` | Substantive model rejection | No terms, risk authorization, or submission |
+| `COMPLETED / MODEL / ABSTAIN` | Model could not form a sufficiently reliable conclusion | No terms, risk authorization, or submission |
+
+Operational interruption is distinct from completed model `ABSTAIN`. Interrupted
+research artifacts may remain durable for inspection, but cannot enter replay.
+Storage failure, invalid/corrupt/missing frozen artifacts, provenance or temporal
+invariant failure, provider/workflow interruption, research-budget exhaustion,
+external cancellation, and comparable operational failures abort evaluation.
+They never become `NO_TRADE`, model `ABSTAIN`, ordinary skipped candidates, or
+successful failure counts. Existing exceptions/cancellation propagate; replay adds
+candidate/run/boundary diagnostic context to research failures, with no automatic
+retry, tolerant continuation, or crash resume. Earlier committed research remains
+inspectable even when replay returns no result. Deterministic terms/risk/entry
+rejections and the existing holding-gap behavior remain ordinary financial outcomes.
+
+### Fresh budget and identity
+
+One unit of `max_research_runs` is reserved for every admitted fresh candidate
+before journal registration or model inference, regardless of eventual outcome,
+terms rejection, or portfolio state. If the next candidate would exceed the cap,
+`ResearchBudgetExceeded` raises before beginning its research. No silent truncation
+produces apparently complete metrics. The existing per-run workflow model-call,
+tool, input/output, and deadline budgets also apply. These are software limits,
+not a provider billing guarantee.
+
+Keep identities distinct:
+
+- Replay `run_id` hashes the input manifest.
+- Fresh `trial_id` is caller-supplied and differentiates fresh trials.
+- `opportunity_id` is scanner/runtime identity, not a hash of all research context.
+- `research_run_id(replay_run_id, opportunity)` hashes purpose
+  `replay_research_invocation_v1`, originating replay ID, opportunity ID, and
+  canonical opportunity-context digest.
+- Model call IDs are deterministic local IDs within that research run.
+- Evidence IDs identify normalized contributing evidence under the research contract.
+
+Research settings/contracts live in
+[replay_research.py](../src/crypteo/domain/replay_research.py).
+`ResearchReplayManifest` retains code, Python/Pydantic versions, full `ReplayConfig`,
+dataset identities and matching source bindings, research settings, and research
+policy identity. It binds scanner, trade-terms, risk, execution, admission, and
+failure policies. Research policy contains the workflow and market-research
+versions, configuration digest, prompt and structured-schema identities for each
+model stage, and tool-definition identities per subject pair. Validation requires
+the currently implemented policy identities.
+
+Fresh semantic identity depends on configured inputs, including requested model
+configuration, trial and cap, not generated conclusions. Returned provider IDs,
+usage, raw observations, actual model replies, provider/SDK and graph execution
+metadata belong to durable research provenance rather than fresh replay input
+identity. There is no circular dependency on artifacts produced during fresh replay.
+Repeating an identical fresh manifest derives the same research-run IDs; duplicate
+store registration rejects before inference. Use an explicit distinct trial for a
+new retained fresh trial. Fresh inference need not yield identical conclusions.
+
+### Frozen mapping and originating compatibility
+
+Each `FrozenResearchMapping` contains `opportunity_id`, `research_run_id`,
+`artifact_checksum`, `context_digest`, and `origin`. Mappings are sorted by
+opportunity ID and require unique opportunity and research-run IDs. Successful
+frozen replay requires exactly the admitted candidate set: missing mappings fail
+on candidate admission, and unused mappings fail completed-result validation.
+There is no heuristic journal search for a similar opportunity or assessment.
+
+`FreshReplayOrigin` retains originating fresh `replay_run_id`, `code`, `trial_id`,
+and `max_research_runs`. Compatibility reconstructs the originating fresh manifest
+from the current research manifest's deterministic/configuration inputs, replacing
+frozen settings with fresh settings containing the retained trial and cap. Its
+canonical identity must equal the retained fresh replay ID; originating code must
+equal current replay code. This binds the full original manifest without copying
+it into every compact record. The expected research-run ID is then derived from
+that originating fresh replay ID and the current canonical opportunity context.
+The artifact's producer `CodeIdentity` must equal the origin code.
+
+Under this strict V1 contract, changed code identity (commit or source digest),
+interval, starting capital, assets/datasets/acquisition/source bindings, risk,
+execution/fees/holding settings, market increments, terms configuration, policy,
+research configuration, or other manifest-bound inputs reject frozen reuse.
+Python/Pydantic identities also participate in manifest reconstruction. Frozen
+settings reference already-produced artifacts; their own replay ID differs from
+the originating fresh ID. This is a reproducibility/provenance contract, not a
+portable assessment cache for arbitrary changed experiments. Integrity linkage
+validates represented relationships, not cryptographic authenticity against a
+party able to rewrite data and recompute hashes.
+
+### Durable artifact admission and external links
+
+`ResearchStore.load_terminal()` remains the journal/artifact validation authority
+specified under [durable loading](#validation-on-inspection-and-load). Replay does
+not duplicate its full lifecycle/checksum validator. After loading, replay adds:
+
+- Exact expected research-run ID and agreement between artifact and retained request.
+- Canonical full `Opportunity` context association via
+  `opportunity_context_digest`, with purpose `replay_opportunity_context_v1` and
+  deterministic replay serialization. This binds opportunity ID, venue, pair,
+  timeframe, trigger type/payload, summary, observation and availability context.
+  Python object equality is not authoritative: Python-equal but canonically
+  different payloads cannot be substituted.
+- `context.research_at == opportunity.observed_at == T` and
+  `opportunity.available_at <= T`, matching the replay record boundary.
+- Exact source bindings and workflow configuration matching the manifest;
+  current manifest workflow/policy/prompt/schema/tool/market-research identities.
+  The durable validator owns retained request/stage/tool relationships; replay
+  association is an additional admission boundary, not an independent reinference.
+- Terminal `COMPLETED` status with `MODEL` assessment origin.
+- Fresh origin matching the current manifest, or frozen origin/mapping compatibility,
+  including expected context digest, research-run ID, and artifact checksum.
+- Artifact producer code matching originating replay code. Terminal sequence and
+  ordered journal digest are retained from the validated artifact.
+
+Pure `ReplayResult` validation cannot prove that external journal artifacts exist
+or that compact projections match them. For imported research results used in
+evaluation, `validate_research_links(result, *, store)` revalidates the result,
+resolves every referenced research run through `load_terminal`, reapplies admission
+against the admitted opportunity and historical boundary, and compares the entire
+compact projection with the loaded artifact. `load_research_replay(encoded, *, store)`
+combines JSON parsing with this external validation. These helpers perform no
+inference, research-tool dispatch, or research market-data reads. They do not
+reconstruct market signals/execution from unretained candle paths.
+
+### Temporal ownership and execution
+
+Fresh research uses the replay's exact `SimulationClock` and
+`PointInTimeDataGateway`. At entry `opportunity.observed_at == T`,
+`opportunity.available_at <= T`, and `gateway.now == T`. Awaiting model inference
+does not advance the clock. After fresh durable publication/loading or frozen
+artifact loading/admission, replay checks that the gateway remains at T before
+financial preparation; the shared lifecycle checks it again when selection returns.
+
+Models cannot select an arbitrary historical cutoff, timestamp, subject pair,
+venue, or lookback/window through research tools. Terms, risk, broker, accounting,
+and replay remain deterministic and point-in-time bounded. Submission at T is
+eligible for the open of `[T, T+1h)`; the fill is reconciled only when that candle
+is completed and visible, normally at T+1h. Wall-clock inference latency changes
+neither eligibility nor simulated chronology. Existing missing-entry, gap,
+affordability, stop/target/time-exit and final-boundary semantics are unchanged.
+
+The gateway excludes future market DATA from deterministic tools. Crypteo cannot
+prove historical purity of an LLM's parametric knowledge. Fresh historical replay
+is auditable and point-in-time data-controlled, but must not be assigned the same
+historical-purity guarantee as a purely deterministic strategy. Frozen artifacts
+reproduce retained conclusions; they do not solve that knowledge limitation.
+
+### Compact records and mode-aware validation
+
+A `RESEARCH` record contains `ReplayResearchRecord`: `opportunity_id`,
+`context_digest`, `research_run_id`, `artifact_schema_version`, `artifact_checksum`,
+`terminal_sequence`, `ordered_journal_digest`, `research_at`, `status`,
+`assessment_origin`, `outcome`, optional `confidence`, `policy_digest`, and `origin`.
+`status` is restricted to `COMPLETED`, `assessment_origin` to `MODEL`, and
+artifact schema to `"1"`.
+`TRADE`/`NO_TRADE` require integer confidence 0–100; model `ABSTAIN` may omit it.
+Full thesis, critique, evidence, provider observations, complete model-call history,
+and journal events remain owned by `ResearchArtifact`/journal and are not duplicated
+into `ReplayResult`. Financial progression derives from the actual record chain,
+without redundant mutable preparation/submission flags.
+
+Every admitted research candidate requires exactly its associated research record.
+For `TRADE`, valid downstream grammar is `RESEARCH → TERMS_REJECTION`, or
+`RESEARCH → TERMS → RESEARCH_SELECTION → RISK_REJECTION`, or
+`RESEARCH → TERMS → RESEARCH_SELECTION → RISK_AUTHORIZATION → SUBMISSION`.
+`NO_TRADE`/model `ABSTAIN` end with `RESEARCH`; financial preparation/submission
+is forbidden. Boundary observations follow all candidate chains. Research run IDs
+cannot be reused across candidates; fresh counts cannot exceed the cap; frozen
+mapping coverage must be exact.
+
+Research and financial records must match the same candidate, opportunity context,
+market, configuration, and historical boundary. Existing ledger-prefix, timing,
+order, valuation and final-result checks remain enforced. `ReplayResult` and directly
+related nested contracts revalidate retained instances as well as dict/JSON inputs;
+passing existing instances or unchecked `model_copy()` results back through those
+validation boundaries cannot bypass nested research invariants. Both financial
+and research metrics are recomputed from authoritative retained records.
+
+### Research metrics and reproduction
+
+Financial `ReplayMetrics` remain unchanged. Research mode additionally requires
+`research_metrics: ResearchReplayMetrics`; baseline has `None` and omits that field
+from serialization. Actual fields and meanings are:
+
+| Field | Meaning |
+| --- | --- |
+| `opportunities_assessed` | Admitted validated research records |
+| `trade_count` | Model `TRADE` outcomes |
+| `no_trade_count` | Model `NO_TRADE` outcomes |
+| `abstain_count` | Completed model `ABSTAIN` outcomes |
+| `terms_rejection_count` | Deterministic terms rejections after `TRADE` |
+| `risk_rejection_count` | Deterministic risk rejections after `TRADE` |
+| `risk_rejection_reasons` | Reason-sorted tuple of `reason`/positive `count` records |
+| `submission_count` | Authorized broker submissions |
+| `entry_count` | Actual `ENTRY` fills |
+| `research_to_entry_conversion` | Entries / opportunities assessed |
+| `trade_to_entry_conversion` | Entries / model `TRADE` outcomes |
+
+Ratios are fractions, rounded half-even to 50 significant digits, and `None` when
+the denominator is zero. These factual counts/ratios do not measure accuracy,
+alpha, significance, confidence calibration, profitability probability, or cost.
+Operational failures abort rather than accumulate successful failure metrics.
+
+Fresh replay is auditable through input identity and durable artifacts, but repeated
+inference can differ even with identical market inputs. Frozen replay performs zero
+new research inference and can be deterministic/byte-stable for identical mapping,
+validated artifacts, deterministic replay inputs, and implementation/provenance
+assumptions. Frozen reproduction consumes terminal research artifacts rather than
+rerunning stored model responses through the graph. Neither mode establishes
+historical purity of parametric knowledge. Shared economics/configuration support
+later comparisons; comparison artifacts and experiment management are future work.
+[ADR-011](decisions/ADR-011-model-research-historical-replay.md) records the rationale.
 
 ## Simulation and Risk
 
@@ -515,8 +804,8 @@ Moving the authoritative clock raises an invariant error, including movement
 while awaiting inference. Deterministic evidence remains subject to
 `PointInTimeDataGateway` visibility and the fixed-window research service.
 Model parametric knowledge is not guaranteed to be historically pure; a frozen
-data boundary does not establish historical purity of model inference or imply
-historical model-backed replay integration.
+data boundary does not establish historical purity of model inference. This
+limitation also applies to historical research replay and frozen artifacts.
 
 ### Investigation policy and graph
 
@@ -897,9 +1186,10 @@ Recovery means SQLite transactional recovery, inspection of valid committed
 prefixes, identification of unresolved operations, and validated terminal loading.
 Automatic graph resumption, provider retry after crash, tool redispatch, conversion
 of incomplete runs into `ABSTAIN`, and stale-run takeover/leases are unimplemented.
-Validated terminal `ResearchArtifact` loading is the current consumer boundary.
-It does not implement historical model-backed replay, frozen-response agentic
-replay, baseline/model comparison, or `TRADE` integration with terms/risk/execution.
+Validated terminal `ResearchArtifact` loading is the durable consumer boundary.
+Historical research replay consumes it for fresh and frozen admission, then owns
+deterministic terms/risk/execution after model `TRADE`. The journal itself grants
+no financial authority or baseline/model comparison framework.
 [ADR-010](decisions/ADR-010-durable-research-lifecycle.md) records the rationale.
 
 ## Validation Coverage
@@ -913,8 +1203,11 @@ references, critic context, provider envelopes, and retained-artifact relationsh
 Durable coverage includes lifecycle ordering, immutable closure, exact opaque
 observations, commit/lock failures, cancellation, concurrent distinct runs,
 transactional prefix recovery, and relational corruption rejected on load.
-Replay artifact checks cover retained lifecycle and financial consistency and
-recompute metrics on deserialization. They cannot reconstruct unretained market
+Research replay coverage includes sequential outcome admission, strict run budgets,
+future/delayed data exclusion, frozen origin/configuration compatibility, canonical
+context association, nested instance revalidation, external durable links, and
+research metrics. Replay artifact checks cover retained lifecycle and financial
+consistency and recompute metrics on deserialization. They cannot reconstruct unretained market
 paths or prove that externally supplied statistics came from visible candles.
 
 The [local quality commands](../README.md#local-development) run Ruff formatting
@@ -923,35 +1216,28 @@ normal CI; normal workflow/provider tests use mocked model responses and transpo
 
 ## Unimplemented Research and Evaluation Boundaries
 
-Historical model-backed replay and mapping model `TRADE` into deterministic
-trade proposals/risk/execution are unimplemented. Trader-led interactive research,
-live mode, UI, web/news/social/on-chain/derivatives research, and long-term
-memory/RAG remain future work. Architecture and future entry modes are described
-in [the extension boundary](architecture.md#research-extension-boundary).
+Trader-led interactive research/chat, live mode, UI, web/news/social/on-chain/
+derivatives/macro/fundamental evidence, sentiment/tokenomics capabilities, and
+long-term memory/RAG remain future work. Real exchange submission, trading
+credentials, private keys, and withdrawal capabilities are out of scope.
+Architecture and future entry modes are described in
+[the extension boundary](architecture.md#research-extension-boundary).
 
-The durable research journal retains lifecycle, model/tool records, stage outputs,
-graph transitions, and research code/data/prompt/model/tool identities. Future
-historical model-backed integration must also bind scanner/risk/simulation versions
-to its experiment. Journal access is for audit, evaluation, debugging, and
-post-trade analysis, never decision memory. The current scanner-only manifest
-is defined under [replay](#scanner-only-replay); standalone research tools do not
-extend it with model or prompt settings.
-
-Future historical model-backed reproduction must distinguish `FROZEN_RESPONSE`
-(reuse stored model/tool artifacts) from `FRESH_INFERENCE` (preserve information
-boundaries and configuration while invoking the model again). Neither historical
-model-backed reproduction mode is implemented; standalone research currently
-performs fresh inference at a fixed boundary. Model parametric knowledge remains
-a replay limitation: omitting unnecessary absolute dates from model context or blinding paths may mitigate memorized events, but
-cannot prove their elimination. Persisted evidence must retain exact timestamps.
+Journal access is for audit, evaluation, debugging, and post-trade analysis, never
+decision memory. V1 decisions do not retrieve prior theses, decisions, or outcomes.
+Research replay binds scanner/risk/simulation inputs to its versioned manifest;
+standalone research does not extend the schema-1 baseline manifest.
 
 The evaluation question is whether bounded research improves selection among the
-same opportunities under identical risk and execution assumptions. Scanner-only
-is the implemented baseline. Additional baselines and process/performance graders
-are unimplemented. Process measures such as grounding, temporal validity, critic
-effectiveness, abstention, latency, and cost must be reported separately from
-trading performance. Core implemented metrics are specified under replay;
-advanced performance statistics remain deferred.
+same opportunities under identical risk and execution assumptions. The implemented
+modes preserve common deterministic configuration, but a first-class baseline/model
+comparison artifact, generalized experiment management, additional baselines,
+process/performance graders, and statistical model-performance evaluation remain
+unimplemented. There is no alpha attribution, confidence calibration, significance
+analysis, profitability probability, or inference-cost estimator. Distributed
+replay, automatic replay crash resumption, concurrent candidate research, tolerant
+continuation after research infrastructure failure, and unrestricted frozen reuse
+across changed configurations are also unimplemented.
 
 The planned chronological split policy is:
 

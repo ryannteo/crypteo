@@ -29,34 +29,42 @@ The repository implements deterministic foundations and bounded AI research:
   stop/target and time exits, and conservative missing-data handling.
 - Deterministic market-derived stop/target terms and decision-time LONG risk
   authorization, positive estimated net target reward checks, and position sizing.
-- Deterministic scanner-only historical replay with reproducible in-memory
-  results, marked equity, and core metrics for later research comparisons.
+- One historical replay lifecycle with scanner-only baseline, fresh model research,
+  and frozen validated-artifact modes, marked equity, and financial/research metrics.
+- Mandatory durable research journaling and an explicit positive research-run cap
+  for fresh replay; strict provenance-compatible frozen reproduction.
 
-Still unfinished: historical model-backed replay,
-mapping research assessments into trade proposals, trader-led interactive research,
-and the integrated evaluation/reporting harness. Live mode and UI are unimplemented.
+Trader-led interactive research, live mode, UI, and an integrated evaluation/reporting
+harness remain unimplemented. There is no first-class baseline/model comparison
+framework, statistical model-performance evaluation, or automatic replay crash resume.
 
 ## Architecture
 
 Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authoritative
-clock and point-in-time gateway. Scanner-only replay connects the scanner,
-deterministic trade terms, risk authorization, and simulated broker/portfolio,
-then produces validated replay artifacts and metrics. The separate bounded research
-workflow turns an opportunity and visible market evidence into a research assessment,
-with in-memory traces or a durable lifecycle journal. It does not authorize risk,
-calculate trade terms, execute, mutate a portfolio, or account for P&L.
+clock and point-in-time gateway shared by scanning, research tools, deterministic
+trade terms, risk, and simulated execution. Baseline replay selects valid terms.
+Research replay admits durable, validated `COMPLETED / MODEL` assessments; only
+`TRADE` proceeds to deterministic terms, proposal, risk, and authorized submission.
+Model `NO_TRADE` and `ABSTAIN` stop before financial preparation. Operational
+research failures abort evaluation rather than become trading conclusions.
 
-LLMs are reserved for interpretation and judgment. Deterministic code owns
-calculation, authorization, simulation, and accounting. Research selection and
-risk approval remain separate; estimated stop risk does not cap realized gap loss.
+LLMs choose research tools and interpret evidence. Deterministic Python owns
+stop/target calculation, quantity, risk authorization, execution prices, fees,
+portfolio mutation, and P&L. Estimated stop risk does not cap realized gap loss.
 See the [architecture overview](docs/architecture.md) for component flow.
+
+Historical tools exclude future market data, and model latency does not advance
+simulated time. Crypteo cannot prove that an LLM's parametric knowledge is
+historically pure: fresh replay is auditable and point-in-time data-controlled,
+but lacks a purely deterministic strategy's historical-purity guarantee. Frozen
+artifacts improve reproducibility without resolving that limitation.
 
 ## V1 scope
 
 - Coinbase Exchange spot: `BTC-USD`, `ETH-USD`, and `SOL-USD`; completed 1-hour
   OHLCV candles in UTC; LONG positions only.
-- Market-derived research and one shared deterministic scanner for agent/baseline
-  comparisons. V1 tests trade selection under identical risk and execution rules.
+- Market-derived research and one shared deterministic scanner and financial
+  lifecycle across replay modes; comparison artifacts remain future work.
 - One bounded opportunity-led research workflow is implemented. Trader-led chat,
   live mode, non-market research, specialist agents, memory/RAG, and UI are deferred.
 - No real-money trading, real order path, exchange trading credentials, private
@@ -71,9 +79,36 @@ configured asset. Supply acquisition results directly or use the
 
 The returned `ReplayResult` contains the experiment manifest, audit records,
 portfolio observations, final portfolio, and metrics; `result.canonical_bytes()`
-produces byte-stable JSON. This is an in-memory baseline for later agentic
-comparisons. See the [replay specification](docs/v1-specification.md#scanner-only-replay)
+produces byte-stable JSON. This is the in-memory deterministic baseline. See the
+[replay specification](docs/v1-specification.md#scanner-only-replay)
 for configuration, boundary behavior, and reproducibility.
+
+## Historical research replay API
+
+`await crypteo.research_replay.run_research_replay(config, datasets, *, research, store, model=None, code=None)`
+returns a `ReplayResult` with compact research links and factual research-policy
+metrics alongside financial records and metrics.
+
+Supply `FreshResearchSettings(configuration=..., trial_id=..., max_research_runs=...)`,
+a caller-owned `ResearchStore`, and an observable model adapter.
+The explicit positive cap reserves one run for every admitted candidate before
+registration/inference; exceeding it aborts without a partial successful result.
+Per-run workflow limits also apply. These software limits are not a billing guarantee.
+Fresh repeats may produce different conclusions.
+
+Supply `FrozenResearchSettings(configuration=..., mapping=...)` and
+the durable store, with no model. Explicit mappings identify retained artifacts;
+frozen replay performs no new inference, workflow execution, or research-tool
+calls. Scanning, terms after `TRADE`, execution, and valuation still read market
+data. Identical frozen inputs can reproduce byte-stable results, subject to strict
+originating code/configuration compatibility. Changed capital, risk, execution,
+interval, or other manifest-bound inputs cannot freely reuse the assessments.
+
+For imported research results, use `load_research_replay(encoded, *, store)` or
+`validate_research_links(result, *, store)` to resolve and validate external journal
+links. Parsing a compact replay result alone does not prove the artifacts exist.
+See the [research replay specification](docs/v1-specification.md#historical-research-replay)
+and [ADR-011](docs/decisions/ADR-011-model-research-historical-replay.md).
 
 ## Model-backed research API
 

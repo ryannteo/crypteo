@@ -93,6 +93,7 @@ they do not authenticate against a party able to rewrite history and recompute t
 Version/schema changes require explicit compatibility decisions.
 
 Incomplete and aborted histories remain inspectable without manufactured results.
-Historical model-backed replay, frozen-response reproduction, and assessment-to-trade
-integration remain separate work. Journal retention grants no market-data visibility,
-decision memory, or financial authority beyond ADR-001/002/009.
+Historical fresh/frozen research replay and assessment admission into deterministic
+trade preparation consume validated artifacts under
+[ADR-011](ADR-011-model-research-historical-replay.md). Journal retention grants no
+market-data visibility, decision memory, or financial authority beyond ADR-001/002/009.

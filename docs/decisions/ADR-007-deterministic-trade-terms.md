@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted.
+Accepted. [ADR-011](ADR-011-model-research-historical-replay.md) supersedes only
+the requirement to generate terms before selection for model-backed replay:
+research precedes terms there. Baseline retains the original ordering;
+deterministic ownership and freezing before proposal/risk/execution remain unchanged.
 
 ## Context
 

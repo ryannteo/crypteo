@@ -96,7 +96,7 @@ In-memory traces retain requests, results, versions, stage outputs, and terminat
 for inspection with validated relationships. Optional durable retention and
 transactional terminal publication are governed by
 [ADR-010](ADR-010-durable-research-lifecycle.md). Historical model-backed replay
-and mapping research assessments into deterministic trade proposals remain separate
-integration work. They must preserve the difference between completed research
-and operational interruption and must not confer
-financial authority on model output.
+and assessment admission into deterministic trade preparation are governed by
+[ADR-011](ADR-011-model-research-historical-replay.md), preserving the difference
+between completed research and operational interruption and granting no financial
+authority to model output.

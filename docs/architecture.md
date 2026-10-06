@@ -3,63 +3,65 @@
 Crypteo is a Python modular monolith under `src/crypteo/`. It implements a
 research platform with canonical market data, controlled historical visibility,
 deterministic opportunity discovery and evidence, bounded model-backed research,
-and separate simulated trade terms, risk, execution, accounting, and scanner-only
-replay. The [README](../README.md) describes the product; the
-[V1 specification](v1-specification.md) defines exact behavioral semantics.
+and deterministic simulated trade terms, risk, execution, accounting, and shared
+baseline/fresh/frozen historical replay. The [README](../README.md) describes the
+product; the [V1 specification](v1-specification.md) defines exact behavioral
+semantics.
 
 ## Component flow
 
-Arrows show current data/control relationships. Model-backed research is a
-separate caller-invoked API; scanner-only replay invokes neither research tools
-nor the model workflow.
+Arrows show current ownership and admission boundaries. Services do not call one
+another or share an autonomous agent loop; replay coordinates them.
 
 ```mermaid
 flowchart TD
-    CB[Coinbase public candles] --> DATA[Acquisition and canonical persistence]
-    DATA --> INPUT[Explicit canonical datasets]
-    INPUT --> GW[PointInTimeDataGateway]
+    DATA[Canonical Coinbase datasets] --> GW[PointInTimeDataGateway]
     CLOCK[SimulationClock] --> GW
-    REPLAY[Scanner-only replay] -->|advances| CLOCK
-    REPLAY -->|coordinates| SCAN[OpportunityScanner]
-    REPLAY -->|coordinates| TERMS[TradeTermsService / TradeTerms]
-    REPLAY -->|coordinates| RISK[RiskService]
-    REPLAY -->|coordinates| BROKER[SimulatedBroker]
+    REPLAY[Shared historical replay lifecycle] -->|alone advances| CLOCK
+    REPLAY --> RECON[Broker reconciliation]
+    RECON -->|decision boundary| SCAN[Scanner and delivery admission]
+    SCAN -->|baseline| TERMS[Deterministic TradeTerms]
+    TERMS -->|baseline valid terms| SELECT[Baseline selection]
+    SCAN -->|fresh| WORK[Bounded durable research workflow]
+    WORK --> TOOLS[MarketResearchService and evidence]
+    WORK --> JOURNAL[SQLite lifecycle journal]
+    JOURNAL --> ART[Immutable terminal ResearchArtifact]
+    ART --> LOAD[ResearchStore.load_terminal]
+    SCAN -->|frozen explicit mapping| LOAD
+    LOAD --> ADMIT[Replay context and provenance admission]
+    ADMIT --> OUTCOME[Completed model outcome]
+    OUTCOME -->|TRADE only| TERMS
+    OUTCOME -->|NO_TRADE or ABSTAIN| NEXT[Next candidate]
+    TERMS -->|research valid terms| PROPOSAL[Deterministic TradeProposal]
+    SELECT --> PROPOSAL
+    PROPOSAL --> RISK[RiskService]
+    RISK -->|authorized| BROKER[SimulatedBroker submission]
+    BROKER --> PORT[Portfolio and accounting]
+    RECON --> PORT
+    PORT -->|current state| RISK
     GW --> SCAN
+    GW --> TOOLS
     GW --> TERMS
     GW --> RISK
-    GW --> BROKER
-    SCAN -->|admitted opportunity| TERMS
-    TERMS -->|frozen terms and proposal| RISK
-    RISK -->|authorized order| BROKER
-    BROKER --> PORT[Portfolio snapshots and accounting]
-    PORT -->|current state| RISK
-    REPLAY --> RESULT[Replay records and experiment manifest]
+    GW --> RECON
+    REPLAY --> RESULT[Compact ReplayResult and metrics]
     PORT --> RESULT
-    RESULT --> METRICS[Marked equity and metrics]
-    OP[Opportunity supplied by caller] --> WORK[Bounded research workflow]
-    WORK --> INV[Investigate model call]
-    INV --> ADAPTER[Deterministic research-tool adapter]
-    ADAPTER --> TOOLS[MarketResearchService]
-    GW --> TOOLS
-    TOOLS --> EVIDENCE[EvidenceItem and typed results]
-    EVIDENCE --> INV
-    INV -->|investigation completion| THESIS[Draft thesis]
-    THESIS --> CRITIC[Critique]
-    CRITIC --> FINAL[Final assessment]
-    FINAL --> DECISION[TradeDecision: research judgment only]
-    WORK -->|durable entrypoint| HOOKS[Injected lifecycle journal hooks]
-    HOOKS --> JOURNAL[SQLite research journal]
-    JOURNAL --> EVENTS[Append-only lifecycle events]
-    JOURNAL --> RAW[Exact provider response observations]
-    JOURNAL --> ARTIFACT[Immutable terminal ResearchArtifact]
-    ARTIFACT --> LOAD[Validated terminal loading]
-    WORK -->|in-memory entrypoint| MEMORY[ResearchRunResult]
+    RESULT --> LINKS[External research-link validation]
+    LOAD --> LINKS
 ```
 
-The opportunity-to-terms-to-risk arrows represent replay's coordination. Services
-do not call one another or share an autonomous agent loop. Research assembly uses
-its supplied runtime clock and datasets to construct its own gateway and matching
-source bindings; it does not attach itself to an existing replay run.
+At each boundary replay reconciles the broker first, scans and records delivery,
+processes admitted candidates sequentially, observes, then advances one hour.
+The final boundary only reconciles and observes. Baseline freezes terms before
+selection. Research freezes terms only after validated model `TRADE`; rejection
+or model uncertainty ends that candidate before financial preparation. Operational
+research failure aborts evaluation.
+
+Fresh replay assembles `MarketResearchService` with the exact replay gateway and
+source bindings. Frozen replay loads mapped durable artifacts without instantiating
+a research service, running the graph, or making model/tool calls. Both use the
+same deterministic financial lifecycle; frozen scanning, terms, execution, and
+valuation still read market data.
 
 ## Data and historical visibility
 
@@ -122,8 +124,12 @@ from normalized project-owned replies.
 The runtime captures one research time from the executing `MarketResearchService`
 and requires the opportunity's observation time to match it. The service binds
 all reads to its authoritative gateway; models cannot choose cutoffs or windows.
-Clock checks surround model/tool/cache boundaries and return. Successful evidence
-is deduplicated consistently, and research references must resolve within the run.
+Clock checks surround model/tool/cache boundaries and return. Replay checks T again
+after durable publication/loading before financial preparation; awaiting inference
+does not advance simulated time. Point-in-time data access cannot prove historical
+purity of model parametric knowledge, including when assessments are frozen.
+Successful evidence is deduplicated consistently, and research references must
+resolve within the run.
 The critic receives a fresh context containing the validated thesis, all collected
 evidence, and request history; completed research cannot skip it. This is
 procedural independence, not statistical independence.
@@ -133,7 +139,7 @@ a typed failure and deterministic runtime `ABSTAIN`; it is not a completed model
 conclusion. Neither result calls `TradeTermsService`, `RiskService`,
 `SimulatedBroker`, or portfolio/accounting. `TRADE` supports further consideration
 of a LONG setup and grants no financial authority. Mapping that judgment into a
-trade proposal and historical model-backed replay remain future integration work.
+trade proposal is replay-owned and occurs only after validated model `TRADE`.
 [ADR-009](decisions/ADR-009-bounded-model-directed-research.md) records this boundary.
 
 `ResearchRunResult` retains in-memory context, configuration, code/provider/graph
@@ -149,7 +155,8 @@ fresh-inference reproducibility is not promised.
 ID and injects a `ResearchJournal` into the same workflow runtime. Runtime hooks
 emit lifecycle records; SQLite persistence is not embedded in graph nodes.
 `ResearchStore` owns local transactions using standard-library SQLite, separately
-from Coinbase acquisition/canonical persistence and scanner-only replay.
+from Coinbase persistence and replay financial records. Fresh replay requires this
+durable entrypoint; standalone research still permits the in-memory API.
 
 The three layers have distinct responsibilities:
 
@@ -178,10 +185,10 @@ relationships without inference, market-data reads, or tool redispatch. Recovery
 means SQLite transactional recovery and inspection/loading; automatic graph resume,
 provider retry after crash, and stale-run takeover are unimplemented.
 
-The model and journal layer grants no financial authority and does not connect
-`TRADE` to terms, risk, execution, or portfolio mutation. Validated terminal loading
-is the current consumer boundary; historical model-backed replay and baseline/model
-comparison remain unimplemented. See the
+The model and journal layer grants no financial authority. Replay consumes validated
+terminal loading and adds candidate/time/policy/origin admission checks without
+duplicating the journal validator. The durable store owns full research histories;
+replay owns compact references and deterministic financial progression. See the
 [lifecycle specification](v1-specification.md#durable-research-lifecycle) and
 [ADR-010](decisions/ADR-010-durable-research-lifecycle.md).
 
@@ -189,7 +196,7 @@ comparison remain unimplemented. See the
 
 `TradeTermsService` creates immutable market-derived stop/target terms from visible
 history. It neither selects opportunities nor sizes positions. Replay freezes
-terms before constructing the baseline proposal. `RiskService` checks that proposal
+terms before constructing either mode's deterministic proposal. `RiskService` checks it
 against the current portfolio and decision-time market reference, validates costs
 and target economics, and sizes the largest permitted aligned quantity.
 Authorization neither reserves cash nor changes portfolio state.
@@ -207,26 +214,52 @@ rejection; missing holding data preserves an unresolved position and halts finan
 
 ## Replay and artifacts
 
-`run_scanner_only` validates explicit canonical inputs and builds one clock/gateway
-shared by scanner, terms, risk, and broker. At each decision boundary it reconciles
-execution first, scans, admits fresh candidates in deterministic order, freezes
-terms, selects every candidate with valid terms, and authorizes/submits sequentially.
-It records a portfolio observation before advancing the clock. The final boundary
-reconciles and observes without new decisions or forced liquidation.
+`run_scanner_only` is the synchronous baseline entrypoint; `run_research_replay`
+is async and supplies fresh or frozen research to the same lifecycle. Candidate
+order is BTC-USD → ETH-USD → SOL-USD, then opportunity ID. Each candidate completes
+research and any financial preparation/submission before the next is processed.
+A submission occupies the one active trade slot; later risk checks see updated
+pending/open/halted state. The model receives no portfolio state. Research remains
+required for every admitted research-mode candidate even while busy or halted.
 
-`ReplayResult` retains the experiment manifest, ordered lifecycle records,
-observations, final portfolio, and metrics. Canonical serialization supports
-byte-stable reproduction. Validation reconciles retained execution/risk records
-and ledger prefixes, and recomputes metrics. It does not reconstruct market paths
-absent from the artifact. Marked equity uses visible completed closes; a holding
-gap leaves only valid-prefix valuation and known realized results available.
+Fresh settings require explicit trial identity, positive `max_research_runs`,
+workflow configuration, observable model, and caller-owned store. One budget unit
+is reserved before registration/inference. Exhaustion aborts rather than truncates
+a successful evaluation; per-run model-call budgets remain independent.
 
-These replay artifacts remain in-memory with canonical JSON output; the research
-journal does not persist scanner-only replay. Replay lifecycle persistence, replay
-resumption, historical model-backed replay (including frozen-response agentic
-replay), and a walk-forward evaluation runner are unimplemented. Exact ordering,
-end conditions, artifact identity, and metric semantics live in the
-[replay specification](v1-specification.md#scanner-only-replay).
+Baseline uses the schema-1 `SCANNER_ONLY` manifest. Research uses a schema-2
+manifest binding deterministic replay inputs, sources, research settings, and
+workflow/prompt/schema/tool/policy identities. Fresh identity excludes generated
+model outputs. Frozen settings contain explicit candidate-to-artifact mappings and
+fresh origins: originating replay ID, code, trial, and cap. Reconstructing the fresh
+manifest from current deterministic inputs and retained origin enforces strict V1
+compatibility; the artifact's producer code must also match. This prevents reuse
+under changed replay economics, interval, datasets, code, or policy.
+
+`ReplayResult` retains ordered lifecycle records, observations, final portfolio,
+financial metrics, and research metrics in research mode. Compact research records
+link canonical opportunity-context digests, run/artifact integrity, outcomes, and
+origin/policy provenance; full thesis, critique, evidence, provider observations,
+model-call history, and journal events remain in the durable artifact/journal.
+Progression is derived from actual records. Canonical serialization supports
+byte-stable baseline and compatible frozen reproduction; fresh inference is auditable
+but may differ under identical inputs.
+
+Mode-aware validation checks admitted-candidate stage chains, timing, financial
+records/ledger prefixes, and recomputed metrics. It does not reconstruct unretained
+market paths or prove external research exists. `validate_research_links` resolves
+each referenced run through `load_terminal`, applies replay admission, and compares
+the full compact projection. `load_research_replay` combines JSON parsing with that
+external validation for imported results used in evaluation.
+
+Marked equity uses visible completed closes; a holding gap leaves valid-prefix
+valuation and known realized results available. Replay results remain in-memory
+with canonical JSON output; durable research persistence does not persist the
+financial replay lifecycle. Automatic replay resumption, distributed replay,
+walk-forward enforcement, and a first-class baseline/model comparison framework
+are unimplemented. Exact contracts live in the
+[baseline specification](v1-specification.md#scanner-only-replay) and
+[research replay specification](v1-specification.md#historical-research-replay).
 
 ## Research extension boundary
 
