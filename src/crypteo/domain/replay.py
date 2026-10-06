@@ -2,9 +2,16 @@
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from crypteo.domain._execution_arithmetic import _add, _multiply
 from crypteo.domain.execution import (
@@ -21,6 +28,12 @@ from crypteo.domain.market import (
     Timeframe,
     TradingPair,
 )
+from crypteo.domain.replay_research import (
+    ReplayResearchRecord,
+    ResearchReplayManifest,
+    ResearchReplayMetrics,
+    ResearchSelection,
+)
 from crypteo.domain.research import Opportunity
 from crypteo.domain.risk import RiskAuthorization, RiskRejection, TradeProposal
 from crypteo.domain.time import UtcDatetime
@@ -29,7 +42,9 @@ from crypteo.experiment import ExperimentManifest, canonical_bytes, identity
 
 
 class ScanSnapshot(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
     pair: TradingPair
     opportunities: tuple[Opportunity, ...]
 
@@ -75,7 +90,9 @@ def proposal_from_terms(
 
 
 class Delivery(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
     opportunity: Opportunity
     disposition: DeliveryDisposition
 
@@ -87,7 +104,9 @@ class BoundaryObservation(BaseModel):
     Pending orders have not changed cash or created exposure.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
     at: UtcDatetime
     portfolio: PortfolioSnapshot
     mark_price: NonNegativeDecimal | None
@@ -126,6 +145,8 @@ ReplayPayload = (
     | EntryRejection
     | DataGap
     | BoundaryObservation
+    | ReplayResearchRecord
+    | ResearchSelection
 )
 RecordKind = Literal[
     "SCAN",
@@ -133,6 +154,8 @@ RecordKind = Literal[
     "TERMS",
     "TERMS_REJECTION",
     "BASELINE_SELECTION",
+    "RESEARCH",
+    "RESEARCH_SELECTION",
     "RISK_AUTHORIZATION",
     "RISK_REJECTION",
     "SUBMISSION",
@@ -148,6 +171,8 @@ PAYLOAD_KINDS: dict[type[BaseModel], RecordKind] = {
     TradeTerms: "TERMS",
     TradeTermsRejection: "TERMS_REJECTION",
     TradeProposal: "BASELINE_SELECTION",
+    ReplayResearchRecord: "RESEARCH",
+    ResearchSelection: "RESEARCH_SELECTION",
     RiskAuthorization: "RISK_AUTHORIZATION",
     RiskRejection: "RISK_REJECTION",
     OrderIntent: "SUBMISSION",
@@ -190,8 +215,17 @@ class ReplayRecord(BaseModel):
                 or (payload.disposition == "NOT_AVAILABLE" and (not fresh or visible))
             ):
                 raise ValueError("delivery disposition contradicts record time")
+        if (
+            isinstance(payload, ReplayResearchRecord)
+            and self.opportunity_id != payload.opportunity_id
+        ):
+            raise ValueError("research opportunity linkage mismatch")
         payload_at = self.at
-        if isinstance(
+        if isinstance(payload, ReplayResearchRecord):
+            payload_at = payload.research_at
+        elif isinstance(payload, ResearchSelection):
+            payload_at = payload.proposal.decision_at
+        elif isinstance(
             payload, (TradeTerms, TradeTermsRejection, TradeProposal, OrderIntent)
         ):
             payload_at = payload.decision_at
@@ -221,7 +255,9 @@ class ReplayMetrics(BaseModel):
     undefined (None); an empty period has undefined exposure and zero drawdown.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
     starting_marked_equity: NonNegativeDecimal
     ending_marked_equity: NonNegativeDecimal | None
     realized_net_pnl: ExactDecimal
@@ -253,12 +289,27 @@ class ReplayMetrics(BaseModel):
 class ReplayResult(BaseModel):
     """A normally completed schedule, possibly with an unresolved holding gap."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    manifest: ExperimentManifest
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    manifest: Annotated[
+        ExperimentManifest | ResearchReplayManifest,
+        Field(discriminator="schema_version"),
+    ]
     run_id: str
     records: tuple[ReplayRecord, ...]
     final_portfolio: PortfolioSnapshot
     metrics: ReplayMetrics
+    research_metrics: ResearchReplayMetrics | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_result(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.research_metrics is None:
+            data.pop("research_metrics", None)
+        return data
 
     @model_validator(mode="after")
     def validate_completion(self) -> Self:
@@ -311,10 +362,15 @@ class ReplayResult(BaseModel):
             raise ValueError("final observation must match end and final portfolio")
         # Local imports keep the pure calculations/checks independent of model
         # construction while allowing the canonical model to enforce them.
-        from crypteo.replay_metrics import calculate_metrics
+        from crypteo.replay_metrics import calculate_metrics, calculate_research_metrics
         from crypteo.replay_validation import validate_lifecycle
 
         validate_lifecycle(self)
+        if isinstance(self.manifest, ResearchReplayManifest):
+            if self.research_metrics != calculate_research_metrics(self.records):
+                raise ValueError("research metrics must match replay records")
+        elif self.research_metrics is not None:
+            raise ValueError("baseline cannot have research metrics")
         if self.metrics != calculate_metrics(
             config, self.final_portfolio, self.observations
         ):

@@ -1,5 +1,6 @@
 """Core scanner-only replay metrics from observed marks and the actual ledger."""
 
+from collections import Counter
 from decimal import (
     MAX_EMAX,
     MIN_EMIN,
@@ -13,9 +14,15 @@ from decimal import (
 from fractions import Fraction
 
 from crypteo.domain._execution_arithmetic import _subtract
-from crypteo.domain.execution import PortfolioSnapshot
+from crypteo.domain.execution import Fill, PortfolioSnapshot
 from crypteo.domain.market import Timeframe
-from crypteo.domain.replay import BoundaryObservation, ReplayMetrics
+from crypteo.domain.replay import BoundaryObservation, ReplayMetrics, ReplayRecord
+from crypteo.domain.replay_research import (
+    ReplayResearchRecord,
+    ResearchReplayMetrics,
+    RiskRejectionCount,
+)
+from crypteo.domain.risk import RiskRejection
 from crypteo.experiment import ReplayConfig
 
 
@@ -98,4 +105,36 @@ def calculate_metrics(
         exposure_complete=complete,
         open_position=state.position is not None,
         unresolved_data_gap=not complete,
+    )
+
+
+def calculate_research_metrics(
+    records: tuple[ReplayRecord, ...],
+) -> ResearchReplayMetrics:
+    """Factual counts over the validated research replay lifecycle."""
+    assessments = tuple(
+        r.payload for r in records if isinstance(r.payload, ReplayResearchRecord)
+    )
+    trades = sum(r.outcome == "TRADE" for r in assessments)
+    reasons = Counter(
+        r.payload.reason for r in records if isinstance(r.payload, RiskRejection)
+    )
+    entries = sum(
+        isinstance(r.payload, Fill) and r.payload.reason == "ENTRY" for r in records
+    )
+    return ResearchReplayMetrics(
+        opportunities_assessed=len(assessments),
+        trade_count=trades,
+        no_trade_count=sum(r.outcome == "NO_TRADE" for r in assessments),
+        abstain_count=sum(r.outcome == "ABSTAIN" for r in assessments),
+        terms_rejection_count=sum(r.kind == "TERMS_REJECTION" for r in records),
+        risk_rejection_count=sum(reasons.values()),
+        risk_rejection_reasons=tuple(
+            RiskRejectionCount(reason=key, count=reasons[key])
+            for key in sorted(reasons)
+        ),
+        submission_count=sum(r.kind == "SUBMISSION" for r in records),
+        entry_count=entries,
+        research_to_entry_conversion=_ratio(entries, len(assessments)),
+        trade_to_entry_conversion=_ratio(entries, trades),
     )

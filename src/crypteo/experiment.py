@@ -1,5 +1,7 @@
 """Minimal scanner-only experiment identity and canonical replay serialization."""
 
+from __future__ import annotations
+
 import json
 import platform
 import subprocess
@@ -7,7 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, Self
 
 import pydantic
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -17,6 +19,9 @@ from crypteo.domain.market import NonNegativeDecimal, TradingPair
 from crypteo.domain.risk import RiskConfig
 from crypteo.domain.time import UtcDatetime
 from crypteo.domain.trade_terms import TradeTermsConfig
+
+if TYPE_CHECKING:
+    from crypteo.domain.replay_research import ResearchReplayManifest, ResearchSettings
 
 ASSET_PRIORITY = (TradingPair.BTC_USD, TradingPair.ETH_USD, TradingPair.SOL_USD)
 SCANNER_POLICY = (
@@ -197,4 +202,33 @@ def build_manifest(
         pydantic_version=pydantic.__version__,
         replay=config,
         datasets=datasets,
+    )
+
+
+def build_research_manifest(
+    config: ReplayConfig,
+    datasets: tuple[DatasetIdentity, ...],
+    code: CodeIdentity,
+    research: ResearchSettings,
+) -> ResearchReplayManifest:
+    # Local imports avoid coupling baseline identity to research implementation.
+    from crypteo.domain.market_research import MarketSourceBinding
+    from crypteo.domain.replay_research import ResearchReplayManifest, research_policy
+
+    return ResearchReplayManifest(
+        code=code,
+        python_version=platform.python_version(),
+        pydantic_version=pydantic.__version__,
+        replay=config,
+        datasets=datasets,
+        source_bindings=tuple(
+            MarketSourceBinding(
+                pair=item.pair,
+                dataset_version=item.dataset_version,
+                acquisition_id=item.acquisition_id,
+            )
+            for item in datasets
+        ),
+        research=research,
+        policy=research_policy(research.configuration),
     )

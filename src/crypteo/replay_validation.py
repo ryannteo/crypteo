@@ -24,7 +24,15 @@ from crypteo.domain.replay import (
     delivery_disposition,
     proposal_from_terms,
 )
-from crypteo.domain.research import Opportunity
+from crypteo.domain.replay_research import (
+    FreshResearchSettings,
+    FrozenResearchSettings,
+    ReplayResearchRecord,
+    ResearchReplayManifest,
+    ResearchSelection,
+    validate_research_record,
+)
+from crypteo.domain.research import DecisionOutcome, Opportunity
 from crypteo.domain.risk import RiskAuthorization, RiskRejection, TradeProposal
 from crypteo.domain.trade_terms import TradeTerms, TradeTermsRejection
 from crypteo.experiment import ASSET_PRIORITY
@@ -61,6 +69,13 @@ def _validate_preparation(
 ) -> OrderIntent | None:
     oid = opportunity.opportunity_id
     config = result.manifest.replay
+    research_mode = isinstance(result.manifest, ResearchReplayManifest)
+    if isinstance(result.manifest, ResearchReplayManifest):
+        research = cursor.take("RESEARCH", opportunity_id=oid)
+        assert isinstance(research, ReplayResearchRecord)
+        validate_research_record(research, opportunity, result.manifest)
+        if research.outcome != DecisionOutcome.TRADE:
+            return None
     terms = cursor.take("TERMS", "TERMS_REJECTION", opportunity_id=oid)
     assert isinstance(terms, (TradeTerms, TradeTermsRejection))
     if (terms.venue, terms.pair, terms.timeframe, terms.decision_at) != (
@@ -72,7 +87,13 @@ def _validate_preparation(
         raise ValueError("terms must match admitted opportunity and configuration")
     if isinstance(terms, TradeTermsRejection):
         return None
-    proposal = cursor.take("BASELINE_SELECTION", opportunity_id=oid)
+    selected = cursor.take(
+        "RESEARCH_SELECTION" if research_mode else "BASELINE_SELECTION",
+        opportunity_id=oid,
+    )
+    proposal = (
+        selected.proposal if isinstance(selected, ResearchSelection) else selected
+    )
     assert isinstance(proposal, TradeProposal)
     if proposal != proposal_from_terms(terms, result.run_id, oid):
         raise ValueError("proposal must match frozen terms and opportunity order ID")
@@ -304,3 +325,21 @@ def validate_lifecycle(result: ReplayResult) -> None:
                 "observation must follow and match complete lifecycle chain"
             )
         previous = state
+
+    if isinstance(result.manifest, ResearchReplayManifest):
+        research_records = tuple(
+            record.payload
+            for record in result.records
+            if isinstance(record.payload, ReplayResearchRecord)
+        )
+        runs = tuple(record.research_run_id for record in research_records)
+        if len(runs) != len(set(runs)):
+            raise ValueError("research run reused for multiple candidates")
+        settings = result.manifest.research
+        if isinstance(settings, FreshResearchSettings):
+            if len(research_records) > settings.max_research_runs:
+                raise ValueError("research records exceed replay budget")
+        elif isinstance(settings, FrozenResearchSettings) and {
+            record.opportunity_id for record in research_records
+        } != {item.opportunity_id for item in settings.mapping}:
+            raise ValueError("frozen mapping must cover exactly admitted candidates")

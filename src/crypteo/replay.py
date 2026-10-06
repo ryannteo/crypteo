@@ -1,6 +1,6 @@
 """Bounded deterministic scanner-only historical replay over explicit datasets."""
 
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 
 from pydantic import TypeAdapter
 
@@ -24,7 +24,13 @@ from crypteo.domain.replay import (
     delivery_disposition,
     proposal_from_terms,
 )
-from crypteo.domain.research import Opportunity
+from crypteo.domain.replay_research import (
+    ReplayResearchRecord,
+    ResearchReplayManifest,
+    ResearchSelection,
+    validate_research_record,
+)
+from crypteo.domain.research import DecisionOutcome, Opportunity
 from crypteo.domain.risk import RiskAuthorization
 from crypteo.domain.trade_terms import TradeTerms, TradeTermsRejection
 from crypteo.execution import SimulatedBroker
@@ -32,11 +38,12 @@ from crypteo.experiment import (
     ASSET_PRIORITY,
     CodeIdentity,
     DatasetIdentity,
+    ExperimentManifest,
     ReplayConfig,
     build_manifest,
     current_code_identity,
 )
-from crypteo.replay_metrics import calculate_metrics
+from crypteo.replay_metrics import calculate_metrics, calculate_research_metrics
 from crypteo.risk import RiskService
 from crypteo.scanner import OpportunityScanner
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
@@ -133,9 +140,27 @@ def run_scanner_only(
     config = ReplayConfig.model_validate(config.model_dump())
     candles, dataset_ids = _inputs(config.assets, datasets)
     manifest = build_manifest(config, dataset_ids, code or current_code_identity())
-    run_id = manifest.run_id
     clock = SimulationClock(config.start)
     gateway = PointInTimeDataGateway(clock, candles)
+    engine = _replay_engine(manifest, clock, gateway)
+    try:
+        while True:
+            engine.send(None)
+    except StopIteration as finished:
+        result: ReplayResult = finished.value
+        return result
+    finally:
+        engine.close()
+
+
+def _replay_engine(
+    manifest: ExperimentManifest | ResearchReplayManifest,
+    clock: SimulationClock,
+    gateway: PointInTimeDataGateway,
+) -> Generator[Opportunity, ReplayResearchRecord | None, ReplayResult]:
+    """The single hourly lifecycle; drivers supply selection at candidate yields."""
+    config = manifest.replay
+    run_id = manifest.run_id
     scanner = OpportunityScanner(gateway)
     terms_service = TradeTermsService(gateway, config.trade_terms)
     risk = RiskService(gateway, config.risk, config.execution)
@@ -196,6 +221,24 @@ def run_scanner_only(
                     admitted.append(opportunity)
             for opportunity in admitted:
                 oid = opportunity.opportunity_id
+                at = gateway.now
+                selection = yield opportunity
+                if gateway.now != at:
+                    raise ValueError(
+                        "authoritative replay clock moved during selection"
+                    )
+                if isinstance(manifest, ResearchReplayManifest):
+                    if selection is None:
+                        raise ValueError(
+                            "research selection requires validated research"
+                        )
+                    selection = ReplayResearchRecord.model_validate(selection)
+                    validate_research_record(selection, opportunity, manifest)
+                    record(selection, oid)
+                    if selection.outcome != DecisionOutcome.TRADE:
+                        continue
+                elif selection is not None:
+                    raise ValueError("baseline cannot consume research selection")
                 generated = terms_service.generate(pair=opportunity.pair)
                 terms = type(generated).model_validate(generated.model_dump())
                 if (
@@ -211,7 +254,12 @@ def run_scanner_only(
                     continue
                 assert isinstance(terms, TradeTerms)
                 proposal = proposal_from_terms(terms, run_id, oid)
-                record(proposal, oid)
+                record(
+                    ResearchSelection(proposal=proposal)
+                    if isinstance(manifest, ResearchReplayManifest)
+                    else proposal,
+                    oid,
+                )
                 authorization = risk.authorize(proposal, broker.snapshot)
                 record(authorization, oid)
                 if isinstance(authorization, RiskAuthorization):
@@ -235,4 +283,7 @@ def run_scanner_only(
         records=tuple(records),
         final_portfolio=broker.snapshot,
         metrics=calculate_metrics(config, broker.snapshot, tuple(observations)),
+        research_metrics=calculate_research_metrics(tuple(records))
+        if isinstance(manifest, ResearchReplayManifest)
+        else None,
     )
