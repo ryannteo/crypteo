@@ -25,7 +25,7 @@ class RiskService:
 
     The caller owns clock advancement and submission. Authorization neither
     reserves cash nor consumes IDs. Actual next-open affordability and gapped
-    exit losses remain Slice 8 execution outcomes, without resizing.
+    exit losses remain execution outcomes, without resizing.
     """
 
     def __init__(

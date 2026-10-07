@@ -1,4 +1,4 @@
-"""Coinbase raw capture identity; format and bytes preserved from Stabilization A."""
+"""Coinbase raw capture identity."""
 
 import json
 from datetime import datetime

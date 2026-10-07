@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from crypteo._execution_costs import _aligned, _execution_estimate
 from crypteo.domain._execution_arithmetic import _add, _multiply, _subtract
-from crypteo.domain.execution import ExecutionConfig, OrderIntent
+from crypteo.domain.execution import ExecutionConfig, OrderIntent, _require_order_id
 from crypteo.domain.market import (
     ExactDecimal,
     PositiveDecimal,
@@ -15,7 +15,7 @@ from crypteo.domain.market import (
     TradingPair,
     Venue,
 )
-from crypteo.domain.time import UtcDatetime
+from crypteo.domain.time import UtcDatetime, _require_hourly_decision
 
 
 class TradeProposal(BaseModel):
@@ -40,16 +40,12 @@ class TradeProposal(BaseModel):
     @field_validator("order_id")
     @classmethod
     def validate_id(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("order_id must be non-empty")
-        return value
+        return _require_order_id(value)
 
     @field_validator("decision_at")
     @classmethod
     def validate_boundary(cls, value: datetime) -> datetime:
-        if value.minute or value.second or value.microsecond:
-            raise ValueError("decision_at must be an hourly completed-bar boundary")
-        return value
+        return _require_hourly_decision(value)
 
 
 class RiskConfig(BaseModel):

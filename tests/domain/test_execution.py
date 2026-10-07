@@ -3,9 +3,17 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from crypteo.domain.execution import ExecutionConfig, OrderIntent, PortfolioSnapshot
+from crypteo.domain.execution import (
+    DataGap,
+    EntryRejection,
+    ExecutionConfig,
+    Fill,
+    OrderIntent,
+    PortfolioSnapshot,
+)
+from crypteo.domain.risk import TradeProposal
 
 ORDER: dict[str, Any] = {
     "order_id": "authorized-1",
@@ -100,6 +108,17 @@ def test_order_id_must_be_nonblank(value: str) -> None:
 def test_decision_time_requires_strict_utc_hourly_boundary(value: Any) -> None:
     with pytest.raises(ValidationError):
         OrderIntent.model_validate(ORDER | {"decision_at": value})
+    with pytest.raises(ValidationError):
+        OrderIntent.model_validate(
+            OrderIntent.model_validate(ORDER).model_copy(update={"decision_at": value})
+        )
+
+
+def test_decision_boundary_accepts_zero_offset_and_round_trips_json() -> None:
+    at = ORDER["decision_at"].replace(tzinfo=timezone(timedelta(0), "zero"))
+    order = OrderIntent.model_validate(ORDER | {"decision_at": at})
+    assert order.decision_at == at
+    assert OrderIntent.model_validate_json(order.model_dump_json()) == order
 
 
 @pytest.mark.parametrize("stop", ["120", "121"])
@@ -218,6 +237,60 @@ def execution_records() -> dict[str, Any]:
         "opened": opened,
         "closed": closed,
     }
+
+
+@pytest.fixture(
+    params=[
+        (OrderIntent, "order"),
+        (Fill, "entry"),
+        (EntryRejection, "rejection"),
+        (DataGap, "gap"),
+        (TradeProposal, "order"),
+    ]
+)
+def identified_record(request: pytest.FixtureRequest) -> BaseModel:
+    model: type[BaseModel] = request.param[0]
+    data = execution_records()[request.param[1]]
+    return model.model_validate(
+        {k: v for k, v in data.items() if k in model.model_fields}
+    )
+
+
+@pytest.mark.parametrize("value", ["order", " order \t", b"order", bytearray(b"order")])
+def test_order_identifier_preserves_whitespace_and_string_coercion(
+    identified_record: BaseModel, value: str | bytes | bytearray
+) -> None:
+    model = type(identified_record)
+    data = identified_record.model_dump() | {"order_id": value}
+    expected = value if isinstance(value, str) else value.decode()
+    for result in (
+        model(**data),
+        model.model_validate(data),
+        model.model_validate(identified_record.model_copy(update={"order_id": value})),
+    ):
+        assert result.model_dump()["order_id"] == expected
+        assert model.model_validate_json(result.model_dump_json()) == result
+
+
+@pytest.mark.parametrize(
+    "value", ["", " \t\n", "\u00a0", 1, 1.5, True, None, [], b"\xff"]
+)
+def test_order_identifier_rejects_invalid_values_on_reconstruction(
+    identified_record: BaseModel, value: Any
+) -> None:
+    model = type(identified_record)
+    data = identified_record.model_dump() | {"order_id": value}
+    with pytest.raises(ValidationError) as error:
+        model(**data)
+    assert error.value.errors()[0]["loc"] == ("order_id",)
+    if isinstance(value, str):
+        assert (
+            error.value.errors()[0]["msg"] == "Value error, order_id must be non-empty"
+        )
+    with pytest.raises(ValidationError):
+        model.model_validate(data)
+    with pytest.raises(ValidationError):
+        model.model_validate(identified_record.model_copy(update={"order_id": value}))
 
 
 @pytest.mark.parametrize(

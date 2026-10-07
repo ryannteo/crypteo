@@ -1,6 +1,5 @@
 """Narrow model tool authority and explicit deterministic dispatch."""
 
-from collections.abc import Callable
 from typing import Any
 
 from crypteo.domain.market import TradingPair
@@ -110,23 +109,4 @@ def dispatch_tool(
     service: MarketResearchService,
     query: MarketResearchQuery,
 ) -> ResearchToolSuccess | ResearchToolUnavailable:
-    def relative_strength(
-        pair: TradingPair,
-    ) -> ResearchToolSuccess | ResearchToolUnavailable:
-        if query.benchmark is None:
-            raise ValueError("bound relative query lacks benchmark")
-        return service.relative_strength(pair, query.benchmark)
-
-    dispatch: dict[
-        MarketResearchCapability,
-        Callable[[TradingPair], ResearchToolSuccess | ResearchToolUnavailable],
-    ] = {
-        MarketResearchCapability.TREND: service.trend,
-        MarketResearchCapability.MOMENTUM: service.momentum,
-        MarketResearchCapability.VOLATILITY: service.volatility,
-        MarketResearchCapability.BOLLINGER_POSITION: service.bollinger_position,
-        MarketResearchCapability.LEVELS: service.levels,
-        MarketResearchCapability.VOLUME_CONTEXT: service.volume_context,
-        MarketResearchCapability.RELATIVE_STRENGTH: relative_strength,
-    }
-    return dispatch[query.capability](query.pair)
+    return service._research(MarketResearchQuery.model_validate(query))

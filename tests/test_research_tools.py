@@ -2,9 +2,15 @@
 
 import pytest
 from pydantic import ValidationError
-from research_support import BTC, ETH, T, service
+from research_support import BTC, ETH, T, service, tool
 
-from crypteo.research_tools import tool_definitions
+from crypteo.domain.market_research import (
+    MarketResearchCapability,
+    MarketResearchQuery,
+    ResearchToolSuccess,
+    ResearchToolUnavailable,
+)
+from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
 
 
 def test_v1_tool_identity_snapshots() -> None:
@@ -39,3 +45,32 @@ def test_service_accessors_are_read_only_and_canonically_ordered() -> None:
             setattr(svc, attribute, T)
     with pytest.raises(ValidationError):
         svc.source_bindings[0].dataset_version = "changed"
+
+
+@pytest.mark.parametrize("capability", MarketResearchCapability)
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_bound_query_dispatch_preserves_capability_output(
+    capability: MarketResearchCapability, unavailable: bool
+) -> None:
+    svc = service(delayed=59 if unavailable else None)
+    relative = capability is MarketResearchCapability.RELATIVE_STRENGTH
+    request = tool(capability.value, {"benchmark": ETH.value} if relative else {})
+    query = bind_tool_request(request.requests, BTC)
+    assert isinstance(query, MarketResearchQuery)
+    expected = (
+        svc.relative_strength(BTC, ETH)
+        if relative
+        else {
+            MarketResearchCapability.TREND: svc.trend,
+            MarketResearchCapability.MOMENTUM: svc.momentum,
+            MarketResearchCapability.VOLATILITY: svc.volatility,
+            MarketResearchCapability.BOLLINGER_POSITION: svc.bollinger_position,
+            MarketResearchCapability.LEVELS: svc.levels,
+            MarketResearchCapability.VOLUME_CONTEXT: svc.volume_context,
+        }[capability](BTC)
+    )
+    actual = dispatch_tool(svc, query)
+    assert isinstance(
+        actual, ResearchToolUnavailable if unavailable else ResearchToolSuccess
+    )
+    assert actual.model_dump_json() == expected.model_dump_json()

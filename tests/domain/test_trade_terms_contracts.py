@@ -91,6 +91,17 @@ def test_config_requires_tick_and_defaults_only_the_locked_multiple() -> None:
 def test_identity_and_time_validation(field: str, value: Any) -> None:
     with pytest.raises(ValidationError):
         TradeTerms.model_validate(TERMS | {field: value})
+    with pytest.raises(ValidationError):
+        TradeTerms.model_validate(
+            TradeTerms.model_validate(TERMS).model_copy(update={field: value})
+        )
+
+
+def test_terms_boundary_accepts_zero_offset_and_round_trips_json() -> None:
+    at = TERMS["decision_at"].replace(tzinfo=timezone(timedelta(0), "zero"))
+    terms = TradeTerms.model_validate(TERMS | {"decision_at": at})
+    assert terms.decision_at == at
+    assert TradeTerms.model_validate_json(terms.model_dump_json()) == terms
 
 
 @pytest.mark.parametrize(

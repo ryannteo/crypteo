@@ -14,8 +14,8 @@ from crypteo.domain.market_research import (
     ResearchToolSuccess,
     ResearchToolUnavailable,
 )
+from crypteo.domain.research import AbstentionReason as AbstentionReason
 from crypteo.domain.research import (
-    AbstentionReason,
     Critique,
     DecisionOutcome,
     ResearchThesis,
@@ -57,6 +57,7 @@ from crypteo.domain.research_workflow import (
     ToolRecord,
     ToolRejection,
     TraceRecord,
+    _abstention_reason,
 )
 from crypteo.experiment import CodeIdentity, current_code_identity
 from crypteo.market_research import MarketResearchService
@@ -120,12 +121,14 @@ def _models(state: ResearchState) -> tuple[ModelCallRecord, ...]:
 def _failure(
     state: ResearchState,
     code: ResearchFailureCode,
-    reason: AbstentionReason,
     message: str,
     call_id: str | None = None,
 ) -> ResearchState:
     failure = ResearchFailure(
-        code=code, abstention_reason=reason, message=message, call_id=call_id
+        code=code,
+        abstention_reason=_abstention_reason(code),
+        message=message,
+        call_id=call_id,
     )
     return {
         **state,
@@ -134,7 +137,7 @@ def _failure(
         "assessment": TradeDecision(
             outcome=DecisionOutcome.ABSTAIN,
             rationale=message,
-            abstention_reasons=(reason,),
+            abstention_reasons=(failure.abstention_reason,),
         ),
     }
 
@@ -167,7 +170,6 @@ class _ResearchRuntime:
             return _failure(
                 state,
                 ResearchFailureCode.WORKFLOW_TIMEOUT,
-                AbstentionReason.RESEARCH_FAILURE,
                 "overall workflow deadline exceeded",
             )
         return state
@@ -209,7 +211,6 @@ class _ResearchRuntime:
             return _failure(
                 state,
                 ResearchFailureCode.MODEL_BUDGET_EXHAUSTED,
-                AbstentionReason.BUDGET_EXHAUSTED,
                 "model call budget exhausted",
             ), None
         call_id = (
@@ -238,7 +239,6 @@ class _ResearchRuntime:
             state = _failure(
                 state,
                 ResearchFailureCode.INPUT_BUDGET_EXHAUSTED,
-                AbstentionReason.BUDGET_EXHAUSTED,
                 "serialized model input exceeds 128 KiB",
                 call_id,
             )
@@ -384,7 +384,6 @@ class _ResearchRuntime:
             return _failure(
                 state,
                 ResearchFailureCode.WORKFLOW_TIMEOUT,
-                AbstentionReason.RESEARCH_FAILURE,
                 "overall workflow deadline exceeded",
                 call_id,
             ), None
@@ -392,19 +391,9 @@ class _ResearchRuntime:
         if state["failure"] is not None:
             return state, None
         if isinstance(reply, FailureReply):
-            reason = (
-                AbstentionReason.VALIDATION_FAILURE
-                if reply.code
-                in (
-                    ProviderFailureCode.INVALID_ENVELOPE,
-                    ProviderFailureCode.INVALID_OUTPUT,
-                )
-                else AbstentionReason.RESEARCH_FAILURE
-            )
             return _failure(
                 state,
                 ResearchFailureCode(reply.code.value),
-                reason,
                 reply.message,
                 call_id,
             ), None
@@ -412,7 +401,6 @@ class _ResearchRuntime:
             return _failure(
                 state,
                 ResearchFailureCode.REFUSAL,
-                AbstentionReason.RESEARCH_FAILURE,
                 "provider refused research output",
                 call_id,
             ), None
@@ -450,7 +438,6 @@ class _ResearchRuntime:
         return _failure(
             state,
             code,
-            AbstentionReason.VALIDATION_FAILURE,
             "model output failed structured validation or evidence grounding",
             _models(state)[-1].request.call_id,
         )
@@ -499,7 +486,6 @@ class _ResearchRuntime:
                 return _failure(
                     state,
                     ResearchFailureCode.TOOL_BUDGET_EXHAUSTED,
-                    AbstentionReason.BUDGET_EXHAUSTED,
                     query_or_rejection.message,
                     call_id,
                 )
@@ -511,7 +497,6 @@ class _ResearchRuntime:
                 return _failure(
                     state,
                     ResearchFailureCode.INVALID_TOOL_REQUEST,
-                    AbstentionReason.VALIDATION_FAILURE,
                     "second invalid tool request",
                     call_id,
                 )

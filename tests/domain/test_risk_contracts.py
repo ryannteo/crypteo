@@ -77,6 +77,17 @@ def test_levels_require_exact_finite_values(field: str, value: Any) -> None:
 def test_proposal_rejects_malformed_identity_and_time(field: str, value: Any) -> None:
     with pytest.raises(ValidationError):
         TradeProposal.model_validate(PROPOSAL | {field: value})
+    with pytest.raises(ValidationError):
+        TradeProposal.model_validate(
+            TradeProposal.model_validate(PROPOSAL).model_copy(update={field: value})
+        )
+
+
+def test_proposal_boundary_accepts_zero_offset_and_round_trips_json() -> None:
+    at = PROPOSAL["decision_at"].replace(tzinfo=timezone(timedelta(0), "zero"))
+    proposal = TradeProposal.model_validate(PROPOSAL | {"decision_at": at})
+    assert proposal.decision_at == at
+    assert TradeProposal.model_validate_json(proposal.model_dump_json()) == proposal
 
 
 @pytest.mark.parametrize(

@@ -194,10 +194,14 @@ def test_context_enforces_fixed_window_even_when_geometry_is_consistent() -> Non
         "input",
         "payload",
         "provenance",
+        "provenance_query",
+        "provenance_window",
+        "provenance_source",
+        "evidence_id",
         "evidence",
     ],
 )
-@pytest.mark.parametrize("mode", ["instance", "dict", "json"])
+@pytest.mark.parametrize("mode", ["construction", "instance", "dict", "dump", "json"])
 def test_forged_nested_models_are_revalidated(case: str, mode: str) -> None:
     original = result()
     context = original.context
@@ -245,6 +249,30 @@ def test_forged_nested_models_are_revalidated(case: str, mode: str) -> None:
                 )
             }
         )
+    elif case.startswith("provenance_"):
+        params = _canonical(original.evidence.provenance.query_params)
+        if case == "provenance_query":
+            params["query"]["pair"] = ETH.value
+        elif case == "provenance_window":
+            params["window"]["bar_count"] = 49
+        else:
+            params["inputs"][0]["source"]["dataset_version"] = "sha256:" + "b" * 64
+        provenance = original.evidence.provenance.model_copy(
+            update={"query_params": params}
+        )
+        original = original.model_copy(
+            update={
+                "evidence": original.evidence.model_copy(
+                    update={"provenance": provenance}
+                )
+            }
+        )
+    elif case == "evidence_id":
+        original = original.model_copy(
+            update={
+                "evidence": original.evidence.model_copy(update={"evidence_id": " "})
+            }
+        )
     else:
         original = original.model_copy(
             update={
@@ -255,7 +283,13 @@ def test_forged_nested_models_are_revalidated(case: str, mode: str) -> None:
         )
     forged = original.model_copy(update={"context": context})
     with pytest.raises(ValidationError):
-        if mode == "json":
+        if mode == "construction":
+            ResearchToolSuccess(
+                context=forged.context, payload=forged.payload, evidence=forged.evidence
+            )
+        elif mode == "dump":
+            ResearchToolSuccess.model_validate(forged.model_dump())
+        elif mode == "json":
             ResearchToolSuccess.model_validate_json(forged.model_dump_json())
         elif mode == "dict":
             # Retain unchecked nested instances, not only a fully dumped tree.

@@ -8,15 +8,18 @@ import pytest
 from pydantic import ValidationError
 from research_support import ScriptedModel, T, assessment, opportunity, run, tool
 
+from crypteo.domain.research import AbstentionReason, DecisionOutcome
 from crypteo.domain.research_workflow import (
     OpportunityResearchRequest,
     ResearchBudgetPolicy,
     ResearchFailure,
+    ResearchFailureCode,
     ResearchRunResult,
     ResearchWorkflowConfig,
     ToolRecord,
 )
 from crypteo.research_model import ModelConfiguration, RefusalReply
+from crypteo.research_workflow import ResearchState, _failure
 
 
 @pytest.mark.parametrize(
@@ -121,6 +124,55 @@ def test_failure_cannot_change_semantic_category(code: str, reason: str) -> None
         ResearchFailure.model_validate(
             dict(code=code, abstention_reason=reason, message="failure")
         )
+
+
+@pytest.mark.parametrize("code", ResearchFailureCode)
+def test_runtime_failure_derives_category_and_retained_mismatches_reject(
+    code: ResearchFailureCode, cached_result: ResearchRunResult
+) -> None:
+    expected = {
+        "PROVIDER_NETWORK": "RESEARCH_FAILURE",
+        "PROVIDER_ERROR": "RESEARCH_FAILURE",
+        "MODEL_TIMEOUT": "RESEARCH_FAILURE",
+        "WORKFLOW_TIMEOUT": "RESEARCH_FAILURE",
+        "REFUSAL": "RESEARCH_FAILURE",
+        "INCOMPLETE_OUTPUT": "RESEARCH_FAILURE",
+        "INVALID_PROVIDER_ENVELOPE": "VALIDATION_FAILURE",
+        "INVALID_MODEL_OUTPUT": "VALIDATION_FAILURE",
+        "UNKNOWN_EVIDENCE_REFERENCE": "VALIDATION_FAILURE",
+        "INVALID_TOOL_REQUEST": "VALIDATION_FAILURE",
+        "TOOL_BUDGET_EXHAUSTED": "BUDGET_EXHAUSTED",
+        "MODEL_BUDGET_EXHAUSTED": "BUDGET_EXHAUSTED",
+        "INPUT_BUDGET_EXHAUSTED": "BUDGET_EXHAUSTED",
+    }[code.value]
+    state = ResearchState(
+        context=cached_result.context,
+        trace=(),
+        action=None,
+        investigation=None,
+        thesis=None,
+        critique=None,
+        assessment=None,
+        failure=None,
+    )
+    result = _failure(state, code, "failure", "call-1")
+    failure, decision = result["failure"], result["assessment"]
+    assert failure is not None and decision is not None
+    assert failure.code is code
+    assert failure.abstention_reason == expected
+    assert failure.call_id == "call-1"
+    assert decision.outcome is DecisionOutcome.ABSTAIN
+    assert decision.abstention_reasons == (expected,)
+    assert ResearchFailure.model_validate_json(failure.model_dump_json()) == failure
+    for wrong in AbstentionReason:
+        if wrong.value == expected:
+            continue
+        forged = failure.model_copy(update={"abstention_reason": wrong})
+        for value in (forged, forged.model_dump()):
+            with pytest.raises(ValidationError, match="precise abstention category"):
+                ResearchFailure.model_validate(value)
+        with pytest.raises(ValidationError, match="precise abstention category"):
+            ResearchFailure.model_validate_json(forged.model_dump_json())
 
 
 @pytest.fixture(scope="module")

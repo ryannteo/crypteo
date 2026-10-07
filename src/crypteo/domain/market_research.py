@@ -434,13 +434,6 @@ class ResearchToolSuccess(_Contract):
     payload: MarketResearchPayload
     evidence: EvidenceItem
 
-    @field_validator("evidence")
-    @classmethod
-    def revalidate_envelope(cls, value: EvidenceItem) -> EvidenceItem:
-        # Preserve the original envelope's policy while deliberately revalidating
-        # every nested model here, including unchecked copies inside dictionaries.
-        return EvidenceItem.model_validate(value.model_dump(mode="python"))
-
     @model_validator(mode="after")
     def validate_evidence(self) -> Self:
         context, evidence = self.context, self.evidence

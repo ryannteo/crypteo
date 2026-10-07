@@ -137,6 +137,27 @@ class ResearchFailureCode(StrEnum):
     INPUT_BUDGET_EXHAUSTED = "INPUT_BUDGET_EXHAUSTED"
 
 
+def _abstention_reason(code: ResearchFailureCode) -> AbstentionReason:
+    validation_codes = {
+        ResearchFailureCode.INVALID_PROVIDER_ENVELOPE,
+        ResearchFailureCode.INVALID_MODEL_OUTPUT,
+        ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE,
+        ResearchFailureCode.INVALID_TOOL_REQUEST,
+    }
+    budget_codes = {
+        ResearchFailureCode.TOOL_BUDGET_EXHAUSTED,
+        ResearchFailureCode.MODEL_BUDGET_EXHAUSTED,
+        ResearchFailureCode.INPUT_BUDGET_EXHAUSTED,
+    }
+    return (
+        AbstentionReason.VALIDATION_FAILURE
+        if code in validation_codes
+        else AbstentionReason.BUDGET_EXHAUSTED
+        if code in budget_codes
+        else AbstentionReason.RESEARCH_FAILURE
+    )
+
+
 class ResearchFailure(ModelContract):
     code: ResearchFailureCode
     abstention_reason: AbstentionReason
@@ -145,25 +166,7 @@ class ResearchFailure(ModelContract):
 
     @model_validator(mode="after")
     def validate_reason(self) -> Self:
-        validation_codes = {
-            ResearchFailureCode.INVALID_PROVIDER_ENVELOPE,
-            ResearchFailureCode.INVALID_MODEL_OUTPUT,
-            ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE,
-            ResearchFailureCode.INVALID_TOOL_REQUEST,
-        }
-        budget_codes = {
-            ResearchFailureCode.TOOL_BUDGET_EXHAUSTED,
-            ResearchFailureCode.MODEL_BUDGET_EXHAUSTED,
-            ResearchFailureCode.INPUT_BUDGET_EXHAUSTED,
-        }
-        expected = (
-            AbstentionReason.VALIDATION_FAILURE
-            if self.code in validation_codes
-            else AbstentionReason.BUDGET_EXHAUSTED
-            if self.code in budget_codes
-            else AbstentionReason.RESEARCH_FAILURE
-        )
-        if self.abstention_reason is not expected:
+        if self.abstention_reason is not _abstention_reason(self.code):
             raise ValueError("failure code must retain its precise abstention category")
         return self
 

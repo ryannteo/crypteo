@@ -23,3 +23,9 @@ UtcDatetime = Annotated[
 Python validation does not coerce strings or epoch numbers. Pydantic's JSON
 datetime parsing remains available so serialized RFC 3339 UTC values round-trip.
 """
+
+
+def _require_hourly_decision(value: datetime) -> datetime:
+    if value.minute or value.second or value.microsecond:
+        raise ValueError("decision_at must be an hourly completed-bar boundary")
+    return value

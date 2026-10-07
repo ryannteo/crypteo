@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from crypteo._execution_costs import _floor_increment
 from crypteo.domain._execution_arithmetic import _multiply, _subtract
 from crypteo.domain.market import PositiveDecimal, Timeframe, TradingPair, Venue
-from crypteo.domain.time import UtcDatetime
+from crypteo.domain.time import UtcDatetime, _require_hourly_decision
 
 
 class TradeTermsConfig(BaseModel):
@@ -50,9 +50,7 @@ class TradeTerms(BaseModel):
     @field_validator("decision_at")
     @classmethod
     def validate_boundary(cls, value: datetime) -> datetime:
-        if value.minute or value.second or value.microsecond:
-            raise ValueError("decision_at must be an hourly completed-bar boundary")
-        return value
+        return _require_hourly_decision(value)
 
     @model_validator(mode="after")
     def validate_levels(self) -> Self:
