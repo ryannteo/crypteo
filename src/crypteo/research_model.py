@@ -1,6 +1,7 @@
 """Project-owned async model boundary; no vendor objects cross this module."""
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -63,6 +64,40 @@ def validate_unicode(value: Any) -> None:
             pending.extend(item)
 
 
+MAX_JSON_DEPTH = 256
+_JSON_STRUCTURE = re.compile(r'["\\\[\]{}]')
+
+
+def _exceeds_json_depth(content: str) -> bool:
+    """Iteratively count array/object nesting outside strings, before decoding.
+
+    The parser's recursion limit differs between interpreters, so this fixed bound
+    decides depth instead. For any prefix the parser can descend through, this
+    count is at least the parser's own depth.
+    """
+    depth = 0
+    in_string = False
+    escaped = -1  # Index of the character following a backslash inside a string.
+    for match in _JSON_STRUCTURE.finditer(content):
+        index, char = match.start(), match.group()
+        if in_string:
+            if index == escaped:
+                continue
+            if char == "\\":
+                escaped = index + 1
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return True
+        elif char in "]}":
+            depth -= 1
+    return False
+
+
 def parse_json(content: str, *, validate_decoded_unicode: bool = True) -> Any:
     """Strict decoding, with optional field-specific decoded Unicode validation."""
 
@@ -78,13 +113,16 @@ def parse_json(content: str, *, validate_decoded_unicode: bool = True) -> Any:
         raise ModelOutputError(f"nonfinite JSON constant: {value}")
 
     validate_unicode(content)
+    if _exceeds_json_depth(content):
+        raise ModelOutputError("invalid JSON")
     try:
         parsed = json.loads(content, object_pairs_hook=pairs, parse_constant=constant)
     except ModelOutputError:
         raise
     except (ValueError, RecursionError) as error:
         # This catch is confined to the JSON parser: integer conversion limits,
-        # nesting limits and syntax errors are all untrusted input failures.
+        # syntax errors and (as a backstop to MAX_JSON_DEPTH) recursion limits are
+        # all untrusted input failures.
         raise ModelOutputError("invalid JSON") from error
     if validate_decoded_unicode:
         validate_unicode(parsed)

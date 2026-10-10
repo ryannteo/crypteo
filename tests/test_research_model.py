@@ -1,5 +1,6 @@
 """Project-owned model contracts, lossless serialization and strict JSON parsing."""
 
+import json
 from typing import Any
 
 import pytest
@@ -7,6 +8,7 @@ from pydantic import ValidationError
 from research_support import ScriptedModel, run, tool
 
 from crypteo.research_model import (
+    MAX_JSON_DEPTH,
     ModelConfiguration,
     ModelOutputError,
     ModelParameters,
@@ -26,6 +28,77 @@ def test_json_parser_never_repairs_duplicates_nonfinite_or_malformed(
 ) -> None:
     with pytest.raises(ModelOutputError):
         parse_json(content)
+
+
+def nested(depth: int, inner: str = "0") -> str:
+    """Alternate arrays and objects so both container kinds count toward depth."""
+    content = inner
+    for level in range(depth):
+        content = f"[{content}]" if level % 2 else f'{{"k":{content}}}'
+    return content
+
+
+def test_json_depth_limit_is_fixed_at_256() -> None:
+    assert MAX_JSON_DEPTH == 256
+
+
+@pytest.mark.parametrize("wrap", ["[{}]", '{{"k":{}}}'])
+def test_json_nesting_at_the_limit_parses(wrap: str) -> None:
+    content = nested(MAX_JSON_DEPTH - 1)
+    parsed = parse_json(wrap.format(content))
+    for _ in range(MAX_JSON_DEPTH):
+        parsed = parsed[0] if isinstance(parsed, list) else parsed["k"]
+    assert parsed == 0
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        nested(MAX_JSON_DEPTH + 1),
+        "[" * (MAX_JSON_DEPTH + 1) + "]" * (MAX_JSON_DEPTH + 1),
+        "{" + '"k":{' * MAX_JSON_DEPTH + "}" * (MAX_JSON_DEPTH + 1),
+        "[" * 2000 + "0" + "]" * 2000,
+    ],
+)
+def test_json_nesting_beyond_the_limit_is_invalid_before_decoding(
+    content: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_decoding(*args: object, **kwargs: object) -> None:
+        raise AssertionError("depth must be rejected before json.loads")
+
+    monkeypatch.setattr("crypteo.research_model.json.loads", no_decoding)
+    with pytest.raises(ModelOutputError, match="^invalid JSON$"):
+        parse_json(content)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[" * 300,
+        "{" * 300 + "]" * 5,
+        '\\"' + "[" * 300,
+        "\\\\" + "{[" * 200,
+        '\\"[\\"' * 300,
+    ],
+)
+def test_json_brackets_inside_strings_do_not_count_toward_depth(text: str) -> None:
+    content = nested(MAX_JSON_DEPTH - 1, '"' + text + '"')
+    parsed = parse_json(f"[{content}]")
+    for _ in range(MAX_JSON_DEPTH):
+        parsed = parsed[0] if isinstance(parsed, list) else parsed["k"]
+    assert parsed == json.loads('"' + text + '"')
+
+
+def test_json_string_end_after_escaped_backslash_restores_depth_counting() -> None:
+    content = '["\\\\", ' + "[" * MAX_JSON_DEPTH + "]" * MAX_JSON_DEPTH + "]"
+    with pytest.raises(ModelOutputError, match="^invalid JSON$"):
+        parse_json(content)
+
+
+def test_json_object_keys_containing_brackets_do_not_count_toward_depth() -> None:
+    key = json.dumps("[{" * 300 + '"')
+    content = nested(MAX_JSON_DEPTH - 1)
+    assert parse_json(f"{{{key}:{content}}}") == {json.loads(key): parse_json(content)}
 
 
 @pytest.mark.parametrize(

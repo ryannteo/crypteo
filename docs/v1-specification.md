@@ -1099,6 +1099,9 @@ framing. Network failures/timeouts do not invent a body when none was observed.
 Project decoding is strict UTF-8, independent of a conflicting charset header.
 Malformed UTF-8 remains opaque retained bytes and cannot become replacement-character
 model content; a malformed success entity normalizes to an invalid-envelope failure.
+Project JSON decoding rejects array/object nesting deeper than a fixed maximum of
+256 as invalid JSON before parsing, so provider bodies, tool arguments, structured
+output, and stored bodies decode identically on every supported Python version.
 Normalized project-owned `ModelReply` and metadata remain distinct from the raw
 observation. Neither layer claims to capture hidden model reasoning, credentials,
 arbitrary headers, or SDK objects.

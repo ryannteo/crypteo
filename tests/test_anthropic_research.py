@@ -561,7 +561,7 @@ def test_unknown_stop_reason_is_invalid_envelope(stop_reason: str) -> None:
         json.dumps(envelope([text("ok")], model="\ud800")).encode(),
         json.dumps(envelope([text("ok")], usage={"nested": ["\udfff"]})).encode(),
         json.dumps(tool_envelope(tool_use(input={"n": 0})))
-        .replace('"n": 0', '"n": ' + "[" * 1500 + "0" + "]" * 1500)
+        .replace('"n": 0', '"n": ' + "[" * 300 + "0" + "]" * 300)
         .encode(),
         json.dumps(tool_envelope(tool_use(input={"n": 0})))
         .replace('"n": 0', '"n": ' + "9" * 5000)
@@ -635,7 +635,7 @@ def test_tool_input_is_rendered_canonically() -> None:
 
 
 def test_deep_but_decodable_tool_input_is_an_invalid_attempt() -> None:
-    nested = "[" * 900 + "0" + "]" * 900
+    nested = "[" * 200 + "0" + "]" * 200
     body = json.dumps(tool_envelope(tool_use("relative_strength", {"benchmark": 0})))
     body = body.replace('"benchmark": 0', '"benchmark": ' + nested)
     reply = invoke(lambda request: httpx2.Response(200, text=body))
