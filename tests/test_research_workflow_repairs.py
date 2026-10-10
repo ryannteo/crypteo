@@ -20,6 +20,7 @@ from research_support import (
     structured,
     thesis,
     tool,
+    workflow_config,
 )
 
 import crypteo.openai_research as openai_adapter
@@ -29,12 +30,10 @@ from crypteo.domain.research_workflow import (
     ModelRequestRejection,
     OpportunityResearchRequest,
     ResearchRunResult,
-    ResearchWorkflowConfig,
     ToolRecord,
 )
 from crypteo.openai_research import OpenAIResearchModel, render_openai_request
 from crypteo.research_model import (
-    ModelConfiguration,
     ModelReply,
     ModelRequest,
     StructuredReply,
@@ -72,9 +71,7 @@ async def execute(model: ScriptedModel) -> ResearchRunResult:
         ),
         service(),
         model,
-        ResearchWorkflowConfig(
-            model=ModelConfiguration(provider="fake", model="explicit-test-model")
-        ),
+        workflow_config(),
         code=CODE,
     )
 
@@ -354,11 +351,7 @@ def test_exact_provider_facing_utf8_size_limit_and_transmitted_bytes(
                 ),
                 service(),
                 model,
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
+                workflow_config("openai"),
                 code=CODE,
             )
             assert len(model.prepared) == 1
@@ -441,11 +434,7 @@ def test_internal_metadata_does_not_count_as_provider_input_and_body_is_prepared
                 ),
                 service(),
                 MetadataHeavyModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
+                workflow_config("openai"),
                 code=CODE,
             )
         assert result.failure and result.failure.code == "REFUSAL"

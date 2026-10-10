@@ -4,13 +4,16 @@ import asyncio
 import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, overload
 
+import httpx
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from crypteo.domain.market import Candle, TradingPair
 from crypteo.domain.market_research import MarketSourceBinding
 from crypteo.domain.research import Critique, Opportunity, ResearchThesis, TradeDecision
+from crypteo.domain.research_journal import ResearchArtifact
 from crypteo.domain.research_workflow import (
     InvestigationCompletion,
     OpportunityResearchRequest,
@@ -19,6 +22,7 @@ from crypteo.domain.research_workflow import (
 )
 from crypteo.experiment import CodeIdentity
 from crypteo.market_research import MarketResearchService
+from crypteo.openai_research import OpenAIResearchModel
 from crypteo.research_model import (
     ModelConfiguration,
     ModelReply,
@@ -29,7 +33,11 @@ from crypteo.research_model import (
     ToolRequest,
     render_json,
 )
-from crypteo.research_workflow import run_opportunity_research
+from crypteo.research_persistence import ResearchStore
+from crypteo.research_workflow import (
+    run_durable_opportunity_research,
+    run_opportunity_research,
+)
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
 T = datetime(2022, 1, 4, tzinfo=UTC)
@@ -224,12 +232,52 @@ def run(
             ),
             svc or service(),
             model,
-            config
-            or ResearchWorkflowConfig(
-                model=ModelConfiguration(
-                    provider=model.provider, model="explicit-test-model"
-                )
-            ),
+            config or workflow_config(model.provider),
             code=CODE,
         )
     )
+
+
+def workflow_config(provider: str = "fake") -> ResearchWorkflowConfig:
+    return ResearchWorkflowConfig(
+        model=ModelConfiguration(provider=provider, model="explicit-test-model")
+    )
+
+
+type Handler = Callable[[httpx.Request], httpx.Response]
+
+
+@overload
+def openai_research(
+    handler: Handler, request: OpportunityResearchRequest
+) -> ResearchRunResult: ...
+
+
+@overload
+def openai_research(
+    handler: Handler, request: OpportunityResearchRequest, store: ResearchStore
+) -> ResearchArtifact: ...
+
+
+def openai_research(
+    handler: Handler,
+    request: OpportunityResearchRequest,
+    store: ResearchStore | None = None,
+) -> ResearchRunResult | ResearchArtifact:
+    """Run the workflow through the real OpenAI adapter over a mocked transport."""
+
+    async def execute() -> ResearchRunResult | ResearchArtifact:
+        async with (
+            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
+            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
+        ):
+            model, config = OpenAIResearchModel(client), workflow_config("openai")
+            if store is None:
+                return await run_opportunity_research(
+                    request, service(), model, config, code=CODE
+                )
+            return await run_durable_opportunity_research(
+                request, service(), model, config, store=store, code=CODE
+            )
+
+    return asyncio.run(execute())

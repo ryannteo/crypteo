@@ -640,7 +640,8 @@ neither eligibility nor simulated chronology. Existing missing-entry, gap,
 affordability, stop/target/time-exit and final-boundary semantics are unchanged.
 
 The gateway excludes future market DATA from deterministic tools. Crypteo cannot
-prove historical purity of an LLM's parametric knowledge. Fresh historical replay
+prove historical purity of an LLM's parametric knowledge; a frozen data boundary
+does not establish it, in standalone or replayed research. Fresh historical replay
 is auditable and point-in-time data-controlled, but must not be assigned the same
 historical-purity guarantee as a purely deterministic strategy. Frozen artifacts
 reproduce retained conclusions; they do not solve that knowledge limitation.
@@ -706,9 +707,10 @@ inference can differ even with identical market inputs. Frozen replay performs z
 new research inference and can be deterministic/byte-stable for identical mapping,
 validated artifacts, deterministic replay inputs, and implementation/provenance
 assumptions. Frozen reproduction consumes terminal research artifacts rather than
-rerunning stored model responses through the graph. Neither mode establishes
-historical purity of parametric knowledge. Shared economics/configuration support
-later comparisons; comparison artifacts and experiment management are future work.
+rerunning stored model responses through the graph. Neither mode resolves the
+[parametric-knowledge limitation](#temporal-ownership-and-execution). Shared
+economics/configuration support later comparisons; comparison artifacts and
+experiment management are future work.
 [ADR-011](decisions/ADR-011-model-research-historical-replay.md) records the rationale.
 
 ## Simulation and Risk
@@ -803,9 +805,8 @@ Time is checked around model, tool, and cache boundaries and before return.
 Moving the authoritative clock raises an invariant error, including movement
 while awaiting inference. Deterministic evidence remains subject to
 `PointInTimeDataGateway` visibility and the fixed-window research service.
-Model parametric knowledge is not guaranteed to be historically pure; a frozen
-data boundary does not establish historical purity of model inference. This
-limitation also applies to historical research replay and frozen artifacts.
+Model inference remains subject to the
+[parametric-knowledge limitation](#temporal-ownership-and-execution).
 
 ### Investigation policy and graph
 
@@ -1194,21 +1195,8 @@ no financial authority or baseline/model comparison framework.
 
 ## Validation Coverage
 
-Current tests exercise market/schema validation, planted future and delayed data,
-scanner crossover and gap recovery, formula goldens, exact financial accounting,
-risk sizing against independent arithmetic, research identity/provenance,
-immutable instance revalidation, artifact containment, and deterministic replay.
-Research coverage includes graph routing, runtime budgets/deadlines, grounded
-references, critic context, provider envelopes, and retained-artifact relationships.
-Durable coverage includes lifecycle ordering, immutable closure, exact opaque
-observations, commit/lock failures, cancellation, concurrent distinct runs,
-transactional prefix recovery, and relational corruption rejected on load.
-Research replay coverage includes sequential outcome admission, strict run budgets,
-future/delayed data exclusion, frozen origin/configuration compatibility, canonical
-context association, nested instance revalidation, external durable links, and
-research metrics. Replay artifact checks cover retained lifecycle and financial
-consistency and recompute metrics on deserialization. They cannot reconstruct unretained market
-paths or prove that externally supplied statistics came from visible candles.
+Replay artifact checks cannot reconstruct unretained market paths or prove that
+externally supplied statistics came from visible candles.
 
 The [local quality commands](../README.md#local-development) run Ruff formatting
 and lint, strict mypy, and pytest. Model-backed evaluation remains separate from
@@ -1216,10 +1204,11 @@ normal CI; normal workflow/provider tests use mocked model responses and transpo
 
 ## Unimplemented Research and Evaluation Boundaries
 
-Trader-led interactive research/chat, live mode, UI, web/news/social/on-chain/
-derivatives/macro/fundamental evidence, sentiment/tokenomics capabilities, and
-long-term memory/RAG remain future work. Real exchange submission, trading
-credentials, private keys, and withdrawal capabilities are out of scope.
+Trader-led interactive research/chat, live mode, UI, specialist agents,
+web/news/social/on-chain/derivatives/macro/fundamental evidence,
+sentiment/tokenomics capabilities, and long-term memory/RAG remain future work.
+Real exchange submission, trading credentials, private keys, and withdrawal
+capabilities are out of scope.
 Architecture and future entry modes are described in
 [the extension boundary](architecture.md#research-extension-boundary).
 
@@ -1231,13 +1220,14 @@ standalone research does not extend the schema-1 baseline manifest.
 The evaluation question is whether bounded research improves selection among the
 same opportunities under identical risk and execution assumptions. The implemented
 modes preserve common deterministic configuration, but a first-class baseline/model
-comparison artifact, generalized experiment management, additional baselines,
-process/performance graders, and statistical model-performance evaluation remain
-unimplemented. There is no alpha attribution, confidence calibration, significance
-analysis, profitability probability, or inference-cost estimator. Distributed
-replay, automatic replay crash resumption, concurrent candidate research, tolerant
-continuation after research infrastructure failure, and unrestricted frozen reuse
-across changed configurations are also unimplemented.
+comparison artifact, an integrated evaluation/reporting harness, generalized
+experiment management, additional baselines, process/performance graders, and
+statistical model-performance evaluation remain unimplemented. There is no alpha
+attribution, confidence calibration, significance analysis, profitability
+probability, or inference-cost estimator. Distributed replay, automatic replay
+crash resumption, concurrent candidate research, tolerant continuation after
+research infrastructure failure, and unrestricted frozen reuse across changed
+configurations are also unimplemented.
 
 The planned chronological split policy is:
 

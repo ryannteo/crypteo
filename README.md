@@ -34,10 +34,6 @@ The repository implements deterministic foundations and bounded AI research:
 - Mandatory durable research journaling and an explicit positive research-run cap
   for fresh replay; strict provenance-compatible frozen reproduction.
 
-Trader-led interactive research, live mode, UI, and an integrated evaluation/reporting
-harness remain unimplemented. There is no first-class baseline/model comparison
-framework, statistical model-performance evaluation, or automatic replay crash resume.
-
 ## Architecture
 
 Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authoritative
@@ -64,11 +60,18 @@ artifacts improve reproducibility without resolving that limitation.
 - Coinbase Exchange spot: `BTC-USD`, `ETH-USD`, and `SOL-USD`; completed 1-hour
   OHLCV candles in UTC; LONG positions only.
 - Market-derived research and one shared deterministic scanner and financial
-  lifecycle across replay modes; comparison artifacts remain future work.
-- One bounded opportunity-led research workflow is implemented. Trader-led chat,
-  live mode, non-market research, specialist agents, memory/RAG, and UI are deferred.
+  lifecycle across replay modes.
+- One bounded opportunity-led research workflow is implemented. Trader-led
+  interactive research/chat, live mode, UI, non-market research, specialist agents,
+  and memory/RAG are deferred.
+- No integrated evaluation/reporting harness, first-class baseline/model comparison
+  framework, statistical model-performance evaluation, or automatic replay crash
+  resume.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
+
+The specification keeps the full list of
+[unimplemented boundaries](docs/v1-specification.md#unimplemented-research-and-evaluation-boundaries).
 
 ## Scanner-only replay API
 

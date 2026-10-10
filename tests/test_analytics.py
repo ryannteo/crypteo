@@ -13,6 +13,7 @@ from decimal import (
 )
 
 import pytest
+from decimal_support import hostile_decimal_context
 
 from crypteo.analytics import (
     BollingerStatistics,
@@ -81,10 +82,7 @@ def test_mean_true_range_is_exact_beyond_fifty_digits_under_hostile_context() ->
     low = "0.000000000000000000000000000000000000000001"
     candles = [range_candle(i, "100", high, low) for i in range(21)]
     oracle = Fraction(high) - Fraction(low)
-    with localcontext() as hostile:
-        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
+    with hostile_decimal_context() as hostile:
         before = repr(hostile)
         assert Fraction(mean_true_range(candles)) == oracle
         assert repr(hostile) == before

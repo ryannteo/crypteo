@@ -9,6 +9,7 @@ from itertools import permutations
 from typing import Any
 
 import pytest
+from decimal_support import hostile_decimal_context
 
 from crypteo.analytics import rolling_bollinger_statistics
 from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
@@ -473,10 +474,7 @@ def test_repeated_outputs_and_hostile_decimal_contexts(
     expected = success(svc, capability)
     for _ in range(2):
         assert success(svc, capability).model_dump_json() == expected.model_dump_json()
-    with localcontext() as hostile:
-        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
+    with hostile_decimal_context() as hostile:
         before = repr(hostile)
         actual = success(svc, capability)
         assert actual == expected

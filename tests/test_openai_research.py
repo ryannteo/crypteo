@@ -11,11 +11,11 @@ import pytest
 from openai import AsyncOpenAI
 from research_support import (
     BTC,
-    CODE,
     ScriptedModel,
     assessment,
     completion,
     critique,
+    openai_research,
     opportunity,
     run,
     service,
@@ -28,7 +28,6 @@ import crypteo.research_workflow as workflow
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     OpportunityResearchRequest,
-    ResearchWorkflowConfig,
     ToolRecord,
 )
 from crypteo.openai_research import OpenAIResearchModel, render_openai_request
@@ -52,7 +51,6 @@ from crypteo.research_prompts import (
     structured_schema,
 )
 from crypteo.research_tools import tool_definitions
-from crypteo.research_workflow import run_opportunity_research
 
 
 def model_request() -> ModelRequest:
@@ -320,26 +318,10 @@ def test_native_surrogate_arguments_have_identical_invalid_attempt_accounting(
         sent.append(json.loads(request.content))
         return httpx.Response(200, text=responses.pop(0))
 
-    async def execute() -> Any:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
-            AsyncOpenAI(api_key="test-key", http_client=http_client) as client,
-        ):
-            return await run_opportunity_research(
-                OpportunityResearchRequest(
-                    research_run_id="f2-run", opportunity=opportunity()
-                ),
-                service(),
-                OpenAIResearchModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
-                code=CODE,
-            )
-
-    result = asyncio.run(execute())
+    result = openai_research(
+        handler,
+        OpportunityResearchRequest(research_run_id="f2-run", opportunity=opportunity()),
+    )
     attempts = [r for r in result.trace if isinstance(r, ToolRecord)]
     assert len(attempts) == occurrences
     assert all(r.admitted and r.result is None and r.query is None for r in attempts)
@@ -547,26 +529,12 @@ def test_complete_graph_with_mocked_openai_transport() -> None:
             headers={"x-request-id": f"request-{len(bodies)}"},
         )
 
-    async def execute() -> Any:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
-            AsyncOpenAI(api_key="test-key", http_client=http_client) as client,
-        ):
-            return await run_opportunity_research(
-                OpportunityResearchRequest(
-                    research_run_id="openai-mocked", opportunity=opportunity()
-                ),
-                svc,
-                OpenAIResearchModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
-                code=CODE,
-            )
-
-    research = asyncio.run(execute())
+    research = openai_research(
+        handler,
+        OpportunityResearchRequest(
+            research_run_id="openai-mocked", opportunity=opportunity()
+        ),
+    )
     assert (
         research.status == "COMPLETED" and research.assessment.outcome.value == "TRADE"
     )

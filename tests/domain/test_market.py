@@ -105,31 +105,37 @@ def test_candle_rejects_float_financial_inputs(field: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "value", [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")]
+    "field,value",
+    [
+        (field, value)
+        for value in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity"))
+        for field in ("open", "high", "low", "close", "volume")
+    ]
+    + [
+        (field, value)
+        for value in (1767261600, "2026-01-01T10:00:00Z")
+        for field in ("open_time", "close_time", "available_at")
+    ],
 )
-@pytest.mark.parametrize("field", ["open", "high", "low", "close", "volume"])
-def test_candle_rejects_non_finite_financial_values(field: str, value: Decimal) -> None:
+def test_candle_rejects_non_finite_financial_values_and_coercive_timestamps(
+    field: str, value: object
+) -> None:
     with pytest.raises(ValidationError):
         Candle.model_validate(candle_data(**{field: value}))
 
 
 @pytest.mark.parametrize("field", ["open_time", "close_time", "available_at"])
-def test_candle_rejects_naive_timestamps(field: str) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        OPEN_TIME.replace(tzinfo=None),
+        OPEN_TIME.astimezone(timezone(timedelta(hours=8))),
+    ],
+)
+def test_candle_rejects_naive_and_non_utc_timestamps(
+    field: str, value: datetime
+) -> None:
     with pytest.raises(ValidationError, match="timezone-aware UTC"):
-        Candle.model_validate(candle_data(**{field: OPEN_TIME.replace(tzinfo=None)}))
-
-
-@pytest.mark.parametrize("field", ["open_time", "close_time", "available_at"])
-def test_candle_rejects_non_utc_timestamps(field: str) -> None:
-    non_utc = OPEN_TIME.astimezone(timezone(timedelta(hours=8)))
-    with pytest.raises(ValidationError, match="timezone-aware UTC"):
-        Candle.model_validate(candle_data(**{field: non_utc}))
-
-
-@pytest.mark.parametrize("field", ["open_time", "close_time", "available_at"])
-@pytest.mark.parametrize("value", [1767261600, "2026-01-01T10:00:00Z"])
-def test_candle_rejects_coercive_python_timestamps(field: str, value: object) -> None:
-    with pytest.raises(ValidationError):
         Candle.model_validate(candle_data(**{field: value}))
 
 

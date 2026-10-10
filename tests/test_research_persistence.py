@@ -11,17 +11,18 @@ from typing import Any
 
 import httpx
 import pytest
-from openai import AsyncOpenAI
 from research_support import (
     CODE,
     ScriptedModel,
     completion,
     critique,
+    openai_research,
     opportunity,
     service,
     structured,
     thesis,
     tool,
+    workflow_config,
 )
 
 import crypteo.research_workflow as workflow
@@ -37,9 +38,7 @@ from crypteo.domain.research_workflow import (
     BENCHMARK_ORDER,
     OpportunityResearchContext,
     OpportunityResearchRequest,
-    ResearchWorkflowConfig,
 )
-from crypteo.openai_research import OpenAIResearchModel
 from crypteo.research_journal import (
     ResearchStorageError,
     canonical_bytes,
@@ -47,7 +46,6 @@ from crypteo.research_journal import (
 )
 from crypteo.research_model import (
     FailureReply,
-    ModelConfiguration,
     ModelReply,
     ModelRequest,
     ProviderFailureCode,
@@ -73,11 +71,7 @@ async def execute(
         OpportunityResearchRequest(research_run_id=run_id, opportunity=opportunity()),
         service(),
         model,
-        ResearchWorkflowConfig(
-            model=ModelConfiguration(
-                provider=model.provider, model="explicit-test-model"
-            )
-        ),
+        workflow_config(model.provider),
         store=store,
         code=CODE,
     )
@@ -127,9 +121,7 @@ def header(run_id: str = "run-1") -> ResearchRunHeader:
             benchmarks=BENCHMARK_ORDER[1:],
             source_bindings=svc.source_bindings,
         ),
-        configuration=ResearchWorkflowConfig(
-            model=ModelConfiguration(provider="fake", model="explicit-test-model")
-        ),
+        configuration=workflow_config(),
         code=CODE,
         provider=ObservedModel().identity,
         langgraph_version=version("langgraph"),
@@ -407,29 +399,11 @@ def test_exact_raw_body_commits_before_decoder(
 
     monkeypatch.setattr(adapter, "decode_response_entity", decode)
 
-    async def scenario() -> ResearchArtifact:
-        async with (
-            httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    lambda request: httpx.Response(status, content=body)
-                )
-            ) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
-            return await run_durable_opportunity_research(
-                header().context.request,
-                service(),
-                OpenAIResearchModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
-                store=store,
-                code=CODE,
-            )
-
-    artifact = asyncio.run(scenario())
+    artifact = openai_research(
+        lambda request: httpx.Response(status, content=body),
+        header().context.request,
+        store,
+    )
     monkeypatch.setattr(adapter, "decode_response_entity", original)
     assert saw_raw == (status == 200)
     inspection = store.inspect_run("run-1")
@@ -590,30 +564,12 @@ def test_observation_storage_error_stops_decoder(
     monkeypatch.setattr(store, "_insert", insert)
     monkeypatch.setattr(adapter, "_decode_response", forbidden)
 
-    async def scenario() -> None:
-        async with (
-            httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    lambda request: httpx.Response(200, content=b"{}")
-                )
-            ) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
-            with pytest.raises(ResearchStorageError):
-                await run_durable_opportunity_research(
-                    header().context.request,
-                    service(),
-                    OpenAIResearchModel(client),
-                    ResearchWorkflowConfig(
-                        model=ModelConfiguration(
-                            provider="openai", model="explicit-test-model"
-                        )
-                    ),
-                    store=store,
-                    code=CODE,
-                )
-
-    asyncio.run(scenario())
+    with pytest.raises(ResearchStorageError):
+        openai_research(
+            lambda request: httpx.Response(200, content=b"{}"),
+            header().context.request,
+            store,
+        )
     inspection = store.inspect_run("run-1")
     assert inspection.state == "INCOMPLETE"
     assert any(p.startswith("CALL_STARTED:") for p in inspection.pending_boundaries)
@@ -852,29 +808,11 @@ def test_openai_completed_observed_body_reconciliation(tmp_path: Path) -> None:
     ]
     remaining = list(raw)
 
-    async def scenario() -> ResearchArtifact:
-        async with (
-            httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    lambda request: httpx.Response(200, content=remaining.pop(0))
-                )
-            ) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
-            return await run_durable_opportunity_research(
-                header().context.request,
-                svc,
-                OpenAIResearchModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
-                store=store,
-                code=CODE,
-            )
-
-    artifact = asyncio.run(scenario())
+    artifact = openai_research(
+        lambda request: httpx.Response(200, content=remaining.pop(0)),
+        header().context.request,
+        store,
+    )
     history = store.inspect_run("run-1")
     assert [
         e.event.body

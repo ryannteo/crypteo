@@ -16,9 +16,11 @@ from research_support import (
     assessment,
     completion,
     critique,
+    openai_research,
     service,
     structured,
     thesis,
+    workflow_config,
 )
 from test_openai_research import envelope, invoke, message
 from test_research_persistence import ObservedModel, execute, header
@@ -29,14 +31,12 @@ from crypteo.domain.research_journal import ModelResponseObserved, NodeTransitio
 from crypteo.domain.research_workflow import (
     NodeTransition,
     ResearchRunResult,
-    ResearchWorkflowConfig,
 )
 from crypteo.openai_research import OpenAIResearchModel
 from crypteo.research_journal import ResearchStorageError
 from crypteo.research_journal import project as project_journal
 from crypteo.research_model import (
     FailureReply,
-    ModelConfiguration,
     ModelReply,
     ModelRequest,
     ProviderObservation,
@@ -136,27 +136,9 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
         calls += 1
         return response
 
-    async def scenario() -> ResearchRunResult:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(transport)) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
-            artifact = await workflow.run_durable_opportunity_research(
-                header().context.request,
-                service(),
-                OpenAIResearchModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
-                store=store,
-                code=CODE,
-            )
-        assert ResearchStore(store.path).load_terminal("run-1") == artifact
-        return artifact.result
-
-    result = asyncio.run(scenario())
+    artifact = openai_research(transport, header().context.request, store)
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    result = artifact.result
     if valid:
         assert calls == 4 and result.status == "COMPLETED"
         assert result.investigation and result.investigation.summary == "市場 café 😀"
@@ -279,11 +261,7 @@ def test_f3_scheduled_provider_checks_deadline_before_invocation(
                 header().context.request,
                 service(),
                 CountingOpenAIModel(client),
-                ResearchWorkflowConfig(
-                    model=ModelConfiguration(
-                        provider="openai", model="explicit-test-model"
-                    )
-                ),
+                workflow_config("openai"),
                 store=store,
                 code=CODE,
             )

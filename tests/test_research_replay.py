@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from research_support import ScriptedModel, tool
+from research_support import ScriptedModel, tool, workflow_config
 from test_replay import (
     BTC,
     CODE,
@@ -39,7 +39,6 @@ from crypteo.domain.replay_research import (
     research_run_id,
 )
 from crypteo.domain.research import Opportunity
-from crypteo.domain.research_workflow import ResearchWorkflowConfig
 from crypteo.domain.risk import RiskRejection, TradeProposal
 from crypteo.domain.trade_terms import TradeTerms
 from crypteo.execution import SimulatedBroker
@@ -48,7 +47,6 @@ from crypteo.market_research import MarketResearchService
 from crypteo.replay import run_scanner_only
 from crypteo.research_journal import ResearchStorageError
 from crypteo.research_model import (
-    ModelConfiguration,
     ModelReply,
     ModelRequest,
     ResponseObserver,
@@ -65,9 +63,7 @@ from crypteo.scanner import OpportunityScanner
 from crypteo.temporal import PointInTimeDataGateway
 from crypteo.trade_terms import TradeTermsService
 
-WORKFLOW = ResearchWorkflowConfig(
-    model=ModelConfiguration(provider="fake", model="explicit-test-model")
-)
+WORKFLOW = workflow_config()
 
 
 class ReplayModel(ScriptedModel):

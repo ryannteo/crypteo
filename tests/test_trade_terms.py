@@ -1,10 +1,11 @@
 import inspect
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_UP, Decimal, localcontext
+from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
 import pytest
+from decimal_support import hostile_decimal_context
 from pydantic import ValidationError
 
 from crypteo.analytics import mean_true_range, rolling_bollinger_statistics
@@ -245,12 +246,7 @@ def test_terms_rejection_precedence() -> None:
 
 def test_hostile_context_repeatability_and_contract_revalidation() -> None:
     expected = terms(service(tick="0.3").generate(pair=TradingPair.BTC_USD))
-    with localcontext() as hostile:
-        hostile.prec = 1
-        hostile.rounding = ROUND_UP
-        hostile.Emax, hostile.Emin, hostile.clamp = 1, -1, 1
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
+    with hostile_decimal_context() as hostile:
         before = repr(hostile)
         gate = service(tick="0.3")
         for _ in range(3):

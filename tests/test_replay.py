@@ -3,12 +3,13 @@
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_UP, Decimal, localcontext
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import pytest
+from decimal_support import hostile_decimal_context
 from pydantic import ValidationError
 
 from crypteo.coinbase_dataset import (
@@ -601,11 +602,7 @@ def test_hostile_decimal_context_isolated_for_entire_replay() -> None:
     )
     data = dataset(candles)
     expected = run_scanner_only(cfg, [data], code=CODE)
-    with localcontext() as hostile:
-        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
-        hostile.rounding = ROUND_UP
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
+    with hostile_decimal_context() as hostile:
         before = repr(hostile)
         result = run_scanner_only(cfg, [data], code=CODE)
         assert result.canonical_bytes() == expected.canonical_bytes()

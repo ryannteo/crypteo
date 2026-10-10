@@ -67,30 +67,40 @@ def test_configuration_rejects_invalid_financial_values(field: str, value: Any) 
         ExecutionConfig.model_validate(CONFIG | {field: value})
 
 
-@pytest.mark.parametrize("field", ["price_increment", "quantity_increment"])
-def test_increments_must_be_positive(field: str) -> None:
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("price_increment", "0"),
+        ("quantity_increment", "0"),
+        ("entry_fee_rate", "1"),
+        ("exit_fee_rate", "1"),
+        ("adverse_slippage", "1"),
+    ],
+)
+def test_increments_must_be_positive_and_rates_less_than_one(
+    field: str, value: str
+) -> None:
     with pytest.raises(ValidationError):
-        ExecutionConfig.model_validate(CONFIG | {field: "0"})
+        ExecutionConfig.model_validate(CONFIG | {field: value})
 
 
 @pytest.mark.parametrize(
-    "field", ["entry_fee_rate", "exit_fee_rate", "adverse_slippage"]
+    "field,value",
+    [
+        ("max_holding_bars", 0),
+        ("max_holding_bars", -1),
+        ("max_holding_bars", True),
+        ("max_holding_bars", "3"),
+        ("max_holding_bars", 1.5),
+        ("order_id", ""),
+        ("order_id", "   "),
+    ],
 )
-def test_rates_must_be_less_than_one(field: str) -> None:
+def test_holding_bars_require_a_positive_strict_integer_and_order_id_nonblank(
+    field: str, value: Any
+) -> None:
     with pytest.raises(ValidationError):
-        ExecutionConfig.model_validate(CONFIG | {field: "1"})
-
-
-@pytest.mark.parametrize("value", [0, -1, True, "3", 1.5])
-def test_holding_bars_require_a_positive_strict_integer(value: Any) -> None:
-    with pytest.raises(ValidationError):
-        OrderIntent.model_validate(ORDER | {"max_holding_bars": value})
-
-
-@pytest.mark.parametrize("value", ["", "   "])
-def test_order_id_must_be_nonblank(value: str) -> None:
-    with pytest.raises(ValidationError):
-        OrderIntent.model_validate(ORDER | {"order_id": value})
+        OrderIntent.model_validate(ORDER | {field: value})
 
 
 @pytest.mark.parametrize(
@@ -294,46 +304,34 @@ def test_order_identifier_rejects_invalid_values_on_reconstruction(
 
 
 @pytest.mark.parametrize(
-    "change",
+    "record,change",
     [
-        {"order_id": " "},
-        {"side": "SELL"},
-        {"phase": "INTRABAR"},
-        {"reason": "STOP"},
-        {"reason": "TARGET"},
-        {"reason": "TIME"},
-        {"execution_price": "0"},
-        {"cash_delta": "-202"},
-        {"candle_close_time": datetime(2026, 1, 1, tzinfo=UTC)},
-        {"candle_close_time": datetime(2025, 12, 31, 23, tzinfo=UTC)},
-        {"available_at": datetime(2026, 1, 1, tzinfo=UTC)},
-        {"recorded_at": datetime(2026, 1, 1, tzinfo=UTC)},
+        ("entry", {"order_id": " "}),
+        ("entry", {"side": "SELL"}),
+        ("entry", {"phase": "INTRABAR"}),
+        ("entry", {"reason": "STOP"}),
+        ("entry", {"reason": "TARGET"}),
+        ("entry", {"reason": "TIME"}),
+        ("entry", {"execution_price": "0"}),
+        ("entry", {"cash_delta": "-202"}),
+        ("entry", {"candle_close_time": datetime(2026, 1, 1, tzinfo=UTC)}),
+        ("entry", {"candle_close_time": datetime(2025, 12, 31, 23, tzinfo=UTC)}),
+        ("entry", {"available_at": datetime(2026, 1, 1, tzinfo=UTC)}),
+        ("entry", {"recorded_at": datetime(2026, 1, 1, tzinfo=UTC)}),
+        ("exit", {"reason": "TIME"}),
+        ("exit", {"phase": "CLOSE"}),
+        ("exit", {"side": "BUY"}),
+        ("exit", {"cash_delta": "237.6"}),
+        ("exit", {"cash_delta": "-232.848"}),
     ],
 )
-def test_fill_rejects_contradictory_direct_construction(change: dict[str, Any]) -> None:
-    from crypteo.domain.execution import Fill
-
-    with pytest.raises(ValidationError):
-        Fill(**(execution_records()["entry"] | change))
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"reason": "TIME"},
-        {"phase": "CLOSE"},
-        {"side": "BUY"},
-        {"cash_delta": "237.6"},
-        {"cash_delta": "-232.848"},
-    ],
-)
-def test_exit_fill_rejects_inconsistent_phase_side_or_cash(
-    change: dict[str, Any],
+def test_entry_and_exit_fills_reject_contradictory_direct_construction(
+    record: str, change: dict[str, Any]
 ) -> None:
     from crypteo.domain.execution import Fill
 
     with pytest.raises(ValidationError):
-        Fill(**(execution_records()["exit"] | change))
+        Fill(**(execution_records()[record] | change))
 
 
 @pytest.mark.parametrize("model_name", ["rejection", "gap"])

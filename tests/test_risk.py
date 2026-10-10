@@ -1,10 +1,11 @@
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_UP, Decimal, getcontext, localcontext
+from decimal import Decimal, getcontext
 from fractions import Fraction
 from typing import Any
 
 import pytest
+from decimal_support import hostile_decimal_context
 from pydantic import ValidationError
 
 from crypteo.domain.execution import ExecutionConfig, OrderIntent, PortfolioSnapshot
@@ -616,15 +617,7 @@ def test_hostile_decimal_context_preserves_results_and_caller_context() -> None:
     )
     cash = "1" + "0" * 100
     expected = service(settings=settings).authorize(proposal(), flat(cash))
-    with localcontext() as hostile:
-        hostile.prec = 1
-        hostile.rounding = ROUND_UP
-        hostile.Emax = 1
-        hostile.Emin = -1
-        hostile.clamp = 1
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
-        hostile.clear_flags()
+    with hostile_decimal_context() as hostile:
         before = hostile.copy()
         result = service(settings=settings).authorize(proposal(), flat(cash))
         assert result == expected
@@ -810,11 +803,7 @@ def test_tiny_positive_net_reward_is_authorized_without_epsilon_or_rr_threshold(
     assert expected.estimated_net_target_reward_per_unit == D(tiny)
     assert expected.estimated_loss_per_unit == D(11)
     assert expected.authorized_quantity == D("1.5")
-    with localcontext() as hostile:
-        hostile.prec, hostile.Emax, hostile.Emin, hostile.clamp = 1, 1, -1, 1
-        hostile.rounding = ROUND_UP
-        for signal in hostile.traps:
-            hostile.traps[signal] = True
+    with hostile_decimal_context() as hostile:
         before = repr(hostile)
         actual = approved(service(settings=settings).authorize(candidate, flat()))
         assert actual.model_dump_json() == expected.model_dump_json()

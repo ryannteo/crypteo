@@ -255,9 +255,10 @@ external validation for imported results used in evaluation.
 Marked equity uses visible completed closes; a holding gap leaves valid-prefix
 valuation and known realized results available. Replay results remain in-memory
 with canonical JSON output; durable research persistence does not persist the
-financial replay lifecycle. Automatic replay resumption, distributed replay,
-walk-forward enforcement, and a first-class baseline/model comparison framework
-are unimplemented. Exact contracts live in the
+financial replay lifecycle. Unimplemented replay and evaluation capabilities are
+listed in the
+[specification](v1-specification.md#unimplemented-research-and-evaluation-boundaries).
+Exact contracts live in the
 [baseline specification](v1-specification.md#scanner-only-replay) and
 [research replay specification](v1-specification.md#historical-research-replay).
 
@@ -273,6 +274,5 @@ historical availability to be replay safe; live-only sources cannot enter histor
 evaluation. A bounded coordinator and relevant specialist capabilities are a
 long-term direction, not current components or V1 orchestration. Recursive
 delegation, unrestricted loops, and independently trading agents remain excluded.
-Trader-led chat, live mode, UI, web/news/social/on-chain/derivatives research,
-and long-term memory/RAG are unimplemented. Real order routing,
-trading credentials, private keys, and withdrawal capabilities are out of scope.
+Unimplemented and out-of-scope capabilities are listed in the
+[specification](v1-specification.md#unimplemented-research-and-evaluation-boundaries).

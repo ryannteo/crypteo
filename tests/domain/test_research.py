@@ -111,18 +111,26 @@ def test_opportunity_rejects_coercive_python_timestamps(
         Opportunity.model_validate(opportunity_data(**{field: value}))
 
 
-@pytest.mark.parametrize("field", ["observed_at", "available_at"])
 @pytest.mark.parametrize(
-    "value",
+    "field,value,match",
     [
-        OBSERVED_AT.replace(tzinfo=None),
-        OBSERVED_AT.astimezone(timezone(timedelta(hours=8))),
+        (field, value, "timezone-aware UTC")
+        for field in ("observed_at", "available_at")
+        for value in (
+            OBSERVED_AT.replace(tzinfo=None),
+            OBSERVED_AT.astimezone(timezone(timedelta(hours=8))),
+        )
+    ]
+    + [
+        (field, value, "nonblank")
+        for field in ("opportunity_id", "trigger_type", "summary")
+        for value in ("", "   ")
     ],
 )
-def test_opportunity_rejects_naive_and_non_utc_timestamps(
-    field: str, value: datetime
+def test_opportunity_rejects_naive_non_utc_timestamps_and_blank_text(
+    field: str, value: object, match: str
 ) -> None:
-    with pytest.raises(ValidationError, match="timezone-aware UTC"):
+    with pytest.raises(ValidationError, match=match):
         Opportunity.model_validate(opportunity_data(**{field: value}))
 
 
@@ -139,13 +147,6 @@ def test_opportunity_rejects_availability_before_observation() -> None:
         Opportunity.model_validate(
             opportunity_data(available_at=OBSERVED_AT - timedelta(microseconds=1))
         )
-
-
-@pytest.mark.parametrize("field", ["opportunity_id", "trigger_type", "summary"])
-@pytest.mark.parametrize("value", ["", "   "])
-def test_opportunity_rejects_blank_meaningful_text(field: str, value: str) -> None:
-    with pytest.raises(ValidationError, match="nonblank"):
-        Opportunity.model_validate(opportunity_data(**{field: value}))
 
 
 @pytest.mark.parametrize(
