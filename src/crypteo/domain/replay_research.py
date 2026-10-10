@@ -24,6 +24,8 @@ from crypteo.experiment import (
 )
 from crypteo.research_model import ContentIdentity, ModelContract
 
+_SCANNER_POLICY = SCANNER_POLICY.removesuffix("; valid terms always selected.")
+
 
 class SubjectToolIdentity(ModelContract):
     pair: TradingPair
@@ -56,6 +58,19 @@ def research_policy(configuration: ResearchWorkflowConfig) -> ResearchPolicyIden
             )
             for pair in TradingPair
         ),
+    )
+
+
+def dataset_source_bindings(
+    datasets: tuple[DatasetIdentity, ...],
+) -> tuple[MarketSourceBinding, ...]:
+    return tuple(
+        MarketSourceBinding(
+            pair=item.pair,
+            dataset_version=item.dataset_version,
+            acquisition_id=item.acquisition_id,
+        )
+        for item in datasets
     )
 
 
@@ -148,7 +163,7 @@ class ResearchReplayManifest(ModelContract):
     source_bindings: tuple[MarketSourceBinding, ...]
     research: ResearchSettings
     policy: ResearchPolicyIdentity
-    scanner_policy: str = SCANNER_POLICY.removesuffix("; valid terms always selected.")
+    scanner_policy: str = _SCANNER_POLICY
     trade_terms_policy: Literal["mean_true_range20_stop2_sma20_target_floor_v1"] = (
         "mean_true_range20_stop2_sma20_target_floor_v1"
     )
@@ -167,19 +182,9 @@ class ResearchReplayManifest(ModelContract):
     def validate_inputs(self) -> Self:
         if tuple(item.pair for item in self.datasets) != self.replay.assets:
             raise ValueError("dataset identities must match canonical ordered assets")
-        expected = tuple(
-            MarketSourceBinding(
-                pair=item.pair,
-                dataset_version=item.dataset_version,
-                acquisition_id=item.acquisition_id,
-            )
-            for item in self.datasets
-        )
-        if self.source_bindings != expected:
+        if self.source_bindings != dataset_source_bindings(self.datasets):
             raise ValueError("research sources must match replay datasets exactly")
-        if self.scanner_policy != SCANNER_POLICY.removesuffix(
-            "; valid terms always selected."
-        ):
+        if self.scanner_policy != _SCANNER_POLICY:
             raise ValueError("unsupported scanner policy")
         if self.policy != research_policy(self.research.configuration):
             raise ValueError("unsupported research policy/configuration identities")

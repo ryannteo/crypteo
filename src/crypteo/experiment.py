@@ -212,8 +212,11 @@ def build_research_manifest(
     research: ResearchSettings,
 ) -> ResearchReplayManifest:
     # Local imports avoid coupling baseline identity to research implementation.
-    from crypteo.domain.market_research import MarketSourceBinding
-    from crypteo.domain.replay_research import ResearchReplayManifest, research_policy
+    from crypteo.domain.replay_research import (
+        ResearchReplayManifest,
+        dataset_source_bindings,
+        research_policy,
+    )
 
     return ResearchReplayManifest(
         code=code,
@@ -221,14 +224,7 @@ def build_research_manifest(
         pydantic_version=pydantic.__version__,
         replay=config,
         datasets=datasets,
-        source_bindings=tuple(
-            MarketSourceBinding(
-                pair=item.pair,
-                dataset_version=item.dataset_version,
-                acquisition_id=item.acquisition_id,
-            )
-            for item in datasets
-        ),
+        source_bindings=dataset_source_bindings(datasets),
         research=research,
         policy=research_policy(research.configuration),
     )

@@ -256,6 +256,14 @@ class JournalProjection:
             pending.append(f"NODE:{self.node}")
         return tuple(pending)
 
+    @property
+    def work(self) -> list[ModelCallRecord | ModelRequestRejection | ToolRecord]:
+        return [
+            r
+            for r in self.trace
+            if isinstance(r, (ModelCallRecord, ModelRequestRejection, ToolRecord))
+        ]
+
     def validate_request(self, request: ModelRequest) -> None:
         config, context = self.header.configuration, self.header.context
         if request.stage != self.node or self.node_work:
@@ -300,11 +308,7 @@ class JournalProjection:
 
     def forced_failure(self) -> str | None:
         """Failure implied by retained work, independent of wall-clock timing."""
-        records = [
-            r
-            for r in self.trace
-            if isinstance(r, (ModelCallRecord, ModelRequestRejection, ToolRecord))
-        ]
+        records = self.work
         if not records:
             return None
         record = records[-1]
@@ -611,13 +615,7 @@ class JournalProjection:
                     raise ResearchValidationError(
                         "runtime assessment differs from failure"
                     )
-                records = [
-                    r
-                    for r in self.trace
-                    if isinstance(
-                        r, (ModelCallRecord, ModelRequestRejection, ToolRecord)
-                    )
-                ]
+                records = self.work
                 if failure.code != "WORKFLOW_TIMEOUT":
                     producing = records[-1] if records else None
                     call_id = (

@@ -8,13 +8,12 @@ from time import monotonic
 from typing import Any, Literal, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from crypteo.domain.market_research import (
     ResearchToolSuccess,
     ResearchToolUnavailable,
 )
-from crypteo.domain.research import AbstentionReason as AbstentionReason
 from crypteo.domain.research import (
     Critique,
     DecisionOutcome,
@@ -245,31 +244,11 @@ class _ResearchRuntime:
             failure = state["failure"]
             if failure is None:
                 raise ResearchInvariantError("input budget rejection lacks failure")
-            self.emit(
-                ModelRequestRejected(
-                    record=ModelRequestRejection(request=request, failure=failure)
-                )
-            )
-            return {
-                **state,
-                "trace": state["trace"]
-                + (ModelRequestRejection(request=request, failure=failure),),
-            }, None
+            return self.reject(state, request, failure), None
         state = self.guard_deadline(state)
         pending_failure = state["failure"]
         if pending_failure is not None:
-            self.emit(
-                ModelRequestRejected(
-                    record=ModelRequestRejection(
-                        request=request, failure=pending_failure
-                    )
-                )
-            )
-            return {
-                **state,
-                "trace": state["trace"]
-                + (ModelRequestRejection(request=request, failure=pending_failure),),
-            }, None
+            return self.reject(state, request, pending_failure), None
         started = monotonic()
         call_deadline = min(
             started + self.config.model_call_deadline_seconds,
@@ -373,13 +352,9 @@ class _ResearchRuntime:
                     metadata=metadata,
                 )
             )
-        self.emit(
-            ModelCallFinished(record=ModelCallRecord(request=request, reply=reply))
-        )
-        state = {
-            **state,
-            "trace": state["trace"] + (ModelCallRecord(request=request, reply=reply),),
-        }
+        record = ModelCallRecord(request=request, reply=reply)
+        self.emit(ModelCallFinished(record=record))
+        state = {**state, "trace": state["trace"] + (record,)}
         if overdue and overall_limited:
             return _failure(
                 state,
@@ -406,10 +381,12 @@ class _ResearchRuntime:
             ), None
         return state, reply
 
-    def validate_output(
-        self, state: ResearchState, reply: StructuredReply, schema: type[BaseModel]
-    ) -> BaseModel | ResearchFailureCode:
-        return validate_stage_output(state["trace"], reply, schema)
+    def reject(
+        self, state: ResearchState, request: ModelRequest, failure: ResearchFailure
+    ) -> ResearchState:
+        record = ModelRequestRejection(request=request, failure=failure)
+        self.emit(ModelRequestRejected(record=record))
+        return {**state, "trace": state["trace"] + (record,)}
 
     async def investigate(self, state: ResearchState) -> ResearchState:
         state, reply = await self.call(state, "investigate")
@@ -419,7 +396,7 @@ class _ResearchRuntime:
             return {**state, "action": reply}
         if not isinstance(reply, StructuredReply):
             raise ResearchInvariantError("unexpected model reply variant")
-        output = self.validate_output(state, reply, InvestigationCompletion)
+        output = validate_stage_output(state["trace"], reply, InvestigationCompletion)
         if isinstance(output, ResearchFailureCode):
             return self.invalid_output(state, output)
         if not isinstance(output, InvestigationCompletion):
@@ -562,7 +539,7 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = self.validate_output(state, reply, ResearchThesis)
+        output = validate_stage_output(state["trace"], reply, ResearchThesis)
         if isinstance(output, ResearchFailureCode):
             return self.invalid_output(state, output)
         if not isinstance(output, ResearchThesis):
@@ -581,7 +558,7 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = self.validate_output(state, reply, Critique)
+        output = validate_stage_output(state["trace"], reply, Critique)
         if isinstance(output, ResearchFailureCode):
             return self.invalid_output(state, output)
         if not isinstance(output, Critique):
@@ -600,7 +577,7 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = self.validate_output(state, reply, TradeDecision)
+        output = validate_stage_output(state["trace"], reply, TradeDecision)
         if isinstance(output, ResearchFailureCode):
             return self.invalid_output(state, output)
         if not isinstance(output, TradeDecision):
@@ -628,16 +605,17 @@ class _ResearchRuntime:
         return {**state, "trace": state["trace"] + (record,)}
 
 
-async def _run_opportunity_research(
+def _research_inputs(
     request: OpportunityResearchRequest,
     service: MarketResearchService,
     model: ResearchModel,
     configuration: ResearchWorkflowConfig,
-    *,
-    code: CodeIdentity | None = None,
-    journal: ResearchJournal | None = None,
-) -> ResearchRunResult:
-    """Fresh inference at one frozen simulation boundary; no persistence/retries."""
+) -> tuple[
+    OpportunityResearchRequest,
+    ResearchWorkflowConfig,
+    ProviderIdentity,
+    OpportunityResearchContext,
+]:
     request = OpportunityResearchRequest.model_validate(request)
     configuration = ResearchWorkflowConfig.model_validate(configuration)
     provider = ProviderIdentity.model_validate(model.identity)
@@ -649,12 +627,22 @@ async def _run_opportunity_research(
         benchmarks=tuple(p for p in BENCHMARK_ORDER if p != request.opportunity.pair),
         source_bindings=service.source_bindings,
     )
+    return request, configuration, provider, context
+
+
+async def _run_opportunity_research(
+    context: OpportunityResearchContext,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    provider: ProviderIdentity,
+    *,
+    code: CodeIdentity | None = None,
+    journal: ResearchJournal | None = None,
+) -> ResearchRunResult:
+    """Fresh inference at one frozen simulation boundary; no persistence/retries."""
     code = CodeIdentity.model_validate(code) if code else current_code_identity()
-    runtime = (
-        _ResearchRuntime(service, model, configuration, journal)
-        if journal
-        else _ResearchRuntime(service, model, configuration)
-    )
+    runtime = _ResearchRuntime(service, model, configuration, journal)
     state: ResearchState = {
         "context": context,
         "trace": (),
@@ -789,8 +777,11 @@ async def run_opportunity_research(
     code: CodeIdentity | None = None,
 ) -> ResearchRunResult:
     """Existing in-memory research entrypoint; no persistence is implied."""
+    _, configuration, provider, context = _research_inputs(
+        request, service, model, configuration
+    )
     return await _run_opportunity_research(
-        request, service, model, configuration, code=code
+        context, service, model, configuration, provider, code=code
     )
 
 
@@ -806,20 +797,11 @@ async def run_durable_opportunity_research(
     """Commit lifecycle boundaries and atomically publish; never resume or retry."""
     if not isinstance(model, ObservableResearchModel):
         raise ValueError("durable research requires a provider observation boundary")
-    request = OpportunityResearchRequest.model_validate(request)
-    configuration = ResearchWorkflowConfig.model_validate(configuration)
-    provider = ProviderIdentity.model_validate(model.identity)
-    if provider.provider != configuration.model.provider:
-        raise ValueError("configured provider differs from model adapter")
+    _, configuration, provider, context = _research_inputs(
+        request, service, model, configuration
+    )
     header = ResearchRunHeader(
-        context=OpportunityResearchContext(
-            request=request,
-            research_at=service.now,
-            benchmarks=tuple(
-                p for p in BENCHMARK_ORDER if p != request.opportunity.pair
-            ),
-            source_bindings=service.source_bindings,
-        ),
+        context=context,
         configuration=configuration,
         code=CodeIdentity.model_validate(code) if code else current_code_identity(),
         provider=provider,
@@ -828,10 +810,11 @@ async def run_durable_opportunity_research(
     journal = store.create_run(header)
     try:
         result = await _run_opportunity_research(
-            request,
+            context,
             service,
             model,
             configuration,
+            provider,
             code=header.code,
             journal=journal,
         )

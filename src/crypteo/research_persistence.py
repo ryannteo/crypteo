@@ -139,6 +139,17 @@ def _load_contract[Contract: BaseModel](
     raise AssertionError("unreachable contract decoding")
 
 
+def _event_row(envelope: EventEnvelope) -> tuple[int, str, bytes, bytes | None, str]:
+    event = envelope.event
+    return (
+        envelope.sequence,
+        event.kind,
+        canonical_bytes(envelope),
+        event.body if isinstance(event, ModelResponseObserved) else None,
+        event_checksum(envelope),
+    )
+
+
 class ResearchStore:
     """A caller-owned database path; each transaction owns a connection."""
 
@@ -257,17 +268,9 @@ class ResearchStore:
 
     @staticmethod
     def _insert(connection: sqlite3.Connection, envelope: EventEnvelope) -> None:
-        event = envelope.event
         connection.execute(
             "INSERT INTO research_events_v1 VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                envelope.research_run_id,
-                envelope.sequence,
-                event.kind,
-                canonical_bytes(envelope),
-                event.body if isinstance(event, ModelResponseObserved) else None,
-                event_checksum(envelope),
-            ),
+            (envelope.research_run_id, *_event_row(envelope)),
         )
 
     def inspect_run(self, research_run_id: str) -> ResearchRunInspection:
@@ -426,18 +429,7 @@ class ResearchJournal:
                 artifact = artifact.model_copy(
                     update={"artifact_checksum": artifact_checksum(artifact)}
                 )
-            expected = [
-                (
-                    e.sequence,
-                    e.event.kind,
-                    canonical_bytes(e),
-                    e.event.body
-                    if isinstance(e.event, ModelResponseObserved)
-                    else None,
-                    event_checksum(e),
-                )
-                for e in self._events
-            ]
+            expected = [_event_row(e) for e in self._events]
             with self._store._transaction(write=True) as connection:
                 registration = connection.execute(
                     "SELECT schema_version, header_json FROM research_runs_v1 "

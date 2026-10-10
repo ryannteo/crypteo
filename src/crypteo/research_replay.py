@@ -14,6 +14,7 @@ from crypteo.coinbase_dataset import CoinbaseCanonicalDataset, CoinbaseHistorica
 from crypteo.domain.replay import Delivery, ReplayResult
 from crypteo.domain.replay_research import (
     FreshResearchSettings,
+    FrozenResearchMapping,
     FrozenResearchSettings,
     ReplayResearchRecord,
     ResearchReplayManifest,
@@ -98,13 +99,22 @@ class _FreshSource:
         return loaded
 
 
+def _frozen_mapping(
+    settings: FrozenResearchSettings, opportunity_id: str
+) -> FrozenResearchMapping | None:
+    return next(
+        (item for item in settings.mapping if item.opportunity_id == opportunity_id),
+        None,
+    )
+
+
 class _FrozenSource:
     def __init__(self, settings: FrozenResearchSettings, store: ResearchStore) -> None:
-        self.mapping = {item.opportunity_id: item for item in settings.mapping}
+        self.settings = settings
         self.store = store
 
     async def evaluate(self, opportunity: Opportunity) -> ResearchArtifact:
-        mapped = self.mapping.get(opportunity.opportunity_id)
+        mapped = _frozen_mapping(self.settings, opportunity.opportunity_id)
         if mapped is None:
             raise ResearchAdmissionError("missing frozen opportunity mapping")
         return self.store.load_terminal(mapped.research_run_id)
@@ -143,14 +153,7 @@ def _admit_artifact(
     if isinstance(settings, FreshResearchSettings):
         origin = fresh_replay_origin(manifest)
     else:
-        mapped = next(
-            (
-                item
-                for item in settings.mapping
-                if item.opportunity_id == opportunity.opportunity_id
-            ),
-            None,
-        )
+        mapped = _frozen_mapping(settings, opportunity.opportunity_id)
         if mapped is None or mapped.context_digest != retained_digest:
             raise ResearchAdmissionError("frozen mapping context digest mismatch")
         origin = mapped.origin
@@ -242,18 +245,11 @@ async def run_research_replay(
                 if gateway.now != at:
                     raise ResearchInvariantError("replay clock moved during research")
             except BaseException as error:
-                run_id = (
-                    research_run_id(manifest.run_id, opportunity)
-                    if isinstance(settings, FreshResearchSettings)
-                    else next(
-                        (
-                            item.research_run_id
-                            for item in settings.mapping
-                            if item.opportunity_id == opportunity.opportunity_id
-                        ),
-                        "unmapped",
-                    )
-                )
+                if isinstance(settings, FreshResearchSettings):
+                    run_id = research_run_id(manifest.run_id, opportunity)
+                else:
+                    mapped = _frozen_mapping(settings, opportunity.opportunity_id)
+                    run_id = mapped.research_run_id if mapped else "unmapped"
                 error.add_note(
                     f"replay={manifest.run_id}; "
                     f"opportunity={opportunity.opportunity_id}; "
