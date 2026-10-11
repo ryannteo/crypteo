@@ -7,32 +7,32 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
-from openai import AsyncOpenAI
 from pydantic import ValidationError
 from research_support import (
     CODE,
+    anthropic_client,
+    anthropic_research,
     assessment,
     completion,
     critique,
-    openai_research,
     service,
     structured,
     thesis,
     workflow_config,
 )
-from test_openai_research import envelope, invoke, message
+from test_anthropic_research import envelope, invoke, text
 from test_research_persistence import ObservedModel, execute, header
 
 import crypteo.research_persistence as persistence
 import crypteo.research_workflow as workflow
+from crypteo.anthropic_research import AnthropicResearchModel
 from crypteo.domain.research_journal import ModelResponseObserved, NodeTransitioned
 from crypteo.domain.research_workflow import (
     NodeTransition,
     ResearchRunResult,
 )
-from crypteo.openai_research import OpenAIResearchModel
 from crypteo.research_journal import ResearchStorageError
 from crypteo.research_journal import project as project_journal
 from crypteo.research_model import (
@@ -82,20 +82,20 @@ def invalid_utf8_entity() -> bytes:
     output = json.loads(completion().content)
     output["summary"] = "BYTE_MARKER"
     body = (
-        json.dumps(envelope([message(json.dumps(output))]))
+        json.dumps(envelope([text(json.dumps(output))]))
         .encode()
         .replace(b"BYTE_MARKER", b"\xff")
     )
     # The JSON and structured completion are otherwise valid.
     restored = json.loads(body.replace(b"\xff", b"x").decode("utf-8"))
-    assert json.loads(restored["output"][0]["content"][0]["text"])["summary"] == "x"
+    assert json.loads(restored["content"][0]["text"])["summary"] == "x"
     with pytest.raises(UnicodeDecodeError):
         body.decode("utf-8")
     return body
 
 
 def test_f2_invalid_utf8_fails_in_memory_without_repaired_content() -> None:
-    reply = invoke(lambda request: httpx.Response(200, content=invalid_utf8_entity()))
+    reply = invoke(lambda request: httpx2.Response(200, content=invalid_utf8_entity()))
     assert isinstance(reply, FailureReply) and reply.code == "INVALID_PROVIDER_ENVELOPE"
     assert reply.metadata.response_json is None
     assert "\ufffd" not in reply.model_dump_json()
@@ -110,14 +110,14 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
     output["summary"] = "市場 café 😀"
     body = (
         json.dumps(
-            envelope([message(json.dumps(output, ensure_ascii=False))]),
+            envelope([text(json.dumps(output, ensure_ascii=False))]),
             ensure_ascii=False,
         ).encode()
         if valid
         else invalid_utf8_entity()
     )
     bodies = [body] + [
-        json.dumps(envelope([message(reply.content)])).encode()
+        json.dumps(envelope([text(reply.content)])).encode()
         for reply in (
             structured(thesis()),
             structured(critique()),
@@ -126,9 +126,9 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
     ]
     calls = 0
 
-    def transport(request: httpx.Request) -> httpx.Response:
+    def transport(request: httpx2.Request) -> httpx2.Response:
         nonlocal calls
-        response = httpx.Response(
+        response = httpx2.Response(
             200,
             content=bodies[calls],
             headers={"content-type": "application/json; charset=iso-8859-1"},
@@ -136,7 +136,7 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
         calls += 1
         return response
 
-    artifact = openai_research(transport, header().context.request, store)
+    artifact = anthropic_research(transport, header().context.request, store)
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
     result = artifact.result
     if valid:
@@ -161,7 +161,7 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
 
 
 @pytest.mark.parametrize(
-    "after,code", [(601.0, "WORKFLOW_TIMEOUT"), (61.0, "MODEL_TIMEOUT")]
+    "after,code", [(901.0, "WORKFLOW_TIMEOUT"), (181.0, "MODEL_TIMEOUT")]
 )
 def test_f3_start_commit_cannot_authorize_expired_inference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after: float, code: str
@@ -201,7 +201,7 @@ def test_f3_start_commit_cannot_authorize_expired_inference(
 
 @pytest.mark.parametrize(
     "after,code,expected_calls",
-    [(61.0, "MODEL_TIMEOUT", 0), (601.0, "WORKFLOW_TIMEOUT", 0), (1.0, "REFUSAL", 1)],
+    [(181.0, "MODEL_TIMEOUT", 0), (901.0, "WORKFLOW_TIMEOUT", 0), (1.0, "REFUSAL", 1)],
 )
 def test_f3_scheduled_provider_checks_deadline_before_invocation(
     tmp_path: Path,
@@ -239,7 +239,7 @@ def test_f3_scheduled_provider_checks_deadline_before_invocation(
 
     monkeypatch.setattr(store, "_commit", commit)
 
-    class CountingOpenAIModel(OpenAIResearchModel):
+    class CountingClaudeModel(AnthropicResearchModel):
         async def invoke_observed(
             self, request: ModelRequest, observe: ResponseObserver
         ) -> ModelReply:
@@ -247,21 +247,18 @@ def test_f3_scheduled_provider_checks_deadline_before_invocation(
             model_calls += 1
             return await super().invoke_observed(request, observe)
 
-    def transport(request: httpx.Request) -> httpx.Response:
+    def transport(request: httpx2.Request) -> httpx2.Response:
         nonlocal http_calls
         http_calls += 1
-        return httpx.Response(200, json=envelope([message("refused", refusal=True)]))
+        return httpx2.Response(200, json=envelope([], stop_reason="refusal"))
 
     async def scenario() -> ResearchRunResult:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(transport)) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
+        async with anthropic_client(transport) as client:
             artifact = await workflow.run_durable_opportunity_research(
                 header().context.request,
                 service(),
-                CountingOpenAIModel(client),
-                workflow_config("openai"),
+                CountingClaudeModel(client),
+                workflow_config("anthropic"),
                 store=store,
                 code=CODE,
             )

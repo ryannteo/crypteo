@@ -21,7 +21,7 @@ The repository implements deterministic foundations and bounded AI research:
   and relative strength.
 - Bounded opportunity-led model research: the model chooses deterministic tools,
   then produces a structured thesis, a separate critique, and a final research
-  assessment. An OpenAI adapter implements the provider boundary; see the
+  assessment. A Claude adapter implements the provider boundary; see the
   [workflow specification](docs/v1-specification.md#bounded-model-backed-research).
 - Durable research lifecycle persistence in SQLite, retaining provider observations,
   tool resolutions, and stage outputs with immutable terminal research artifacts.
@@ -124,7 +124,7 @@ observation time. It returns a validated in-memory `ResearchRunResult`.
 uses the same bounded workflow with lifecycle events committed to SQLite. Supply
 `crypteo.research_persistence.ResearchStore(path)` with a caller-owned database path
 in an existing writable directory and an adapter supporting provider observation,
-such as `OpenAIResearchModel`. Completed or operationally interrupted runs publish
+such as `AnthropicResearchModel`. Completed or operationally interrupted runs publish
 a validated immutable `ResearchArtifact`. `store.inspect_run(research_run_id)`
 inspects committed history, including incomplete/aborted runs;
 `store.load_terminal(research_run_id)` loads validated terminal artifacts. Neither
@@ -132,13 +132,37 @@ re-runs models, tools, or market-data queries. Storage failures stop work and ra
 without returning an artifact or becoming research conclusions. Automatic crash
 resume is unimplemented.
 
-After installing the package, supply `OPENAI_API_KEY` securely in the local process
-environment for `openai.AsyncOpenAI()` and wrap that caller-owned client in
-`crypteo.openai_research.OpenAIResearchModel`. Configure `ResearchWorkflowConfig`
-with an explicit `ModelConfiguration(provider="openai", model=...)` and supported
-parameters for your chosen model. The package includes the OpenAI SDK; no model is
-selected by default and no `.env` file is automatically loaded. Keep keys out of
-Git and documentation. This is a Python API; no research CLI or chat UI exists.
+After installing the package, supply `ANTHROPIC_API_KEY` securely in the local
+process environment for `anthropic.AsyncAnthropic()` and wrap that caller-owned
+client in `crypteo.anthropic_research.AnthropicResearchModel`. Configure
+`ResearchWorkflowConfig` with an explicit model and effort:
+
+```python
+from anthropic import AsyncAnthropic
+
+from crypteo.anthropic_research import AnthropicResearchModel
+from crypteo.domain.research_workflow import ResearchWorkflowConfig
+from crypteo.research_model import ModelConfiguration, ModelParameters
+
+config = ResearchWorkflowConfig(
+    model=ModelConfiguration(
+        provider="anthropic",
+        model="claude-opus-5-5",
+        parameters=ModelParameters(reasoning_effort="high"),
+    )
+)
+
+
+async def research() -> None:
+    async with AsyncAnthropic() as client:  # reads ANTHROPIC_API_KEY
+        model = AnthropicResearchModel(client)
+        ...  # run_durable_opportunity_research(request, service, model, config, ...)
+```
+
+No model is selected by default and no `.env` file is automatically loaded. Never
+put a key in a file: keep keys out of Git, configuration, and documentation. The
+OpenAI adapter (`OpenAIResearchModel`, `OPENAI_API_KEY`) remains available. This
+is a Python API; no research CLI or chat UI exists.
 
 See the [architecture](docs/architecture.md#model-backed-research),
 [behavioral specification](docs/v1-specification.md#bounded-model-backed-research),

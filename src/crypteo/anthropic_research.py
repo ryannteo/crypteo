@@ -33,6 +33,8 @@ from crypteo.research_model import (
 )
 
 ADAPTER_VERSION = "anthropic_messages_research_v1"
+# Sent per request, so client default headers and the environment cannot change it.
+ANTHROPIC_VERSION = "2023-06-01"
 
 # Claude structured outputs reject these keywords. Project validation still
 # enforces them; the wire schema only states them in descriptions. Fixed order.
@@ -235,7 +237,12 @@ class AnthropicResearchModel:
                 "/v1/messages",
                 cast_to=httpx2.Response,
                 content=encoded.encode("utf-8"),
-                options={"headers": {"anthropic-beta": omit}},
+                options={
+                    "headers": {
+                        "anthropic-beta": omit,
+                        "anthropic-version": ANTHROPIC_VERSION,
+                    }
+                },
             )
         except APITimeoutError:
             return FailureReply(
@@ -330,6 +337,17 @@ def decode_http_error(
     )
 
 
+def _requested_model(request_json: str | None) -> str | None:
+    if request_json is None:
+        return None
+    try:
+        request = parse_json(request_json)
+    except ModelOutputError:
+        return None
+    model = request.get("model") if isinstance(request, dict) else None
+    return model if isinstance(model, str) else None
+
+
 def _decode_response(metadata: ProviderMetadata) -> ModelReply:
     """Validate only documented observable output kinds; retain the whole body."""
     try:
@@ -382,6 +400,20 @@ def _decode_response(metadata: ProviderMetadata) -> ModelReply:
             or not isinstance(body.get("content"), list)
         ):
             raise ModelOutputError("malformed message envelope")
+        # Applies to every stop reason: no other model's reply becomes output.
+        requested = _requested_model(metadata.request_json)
+        if requested is None:
+            return FailureReply(
+                code=ProviderFailureCode.INVALID_ENVELOPE,
+                message="Claude reply lacks its request",
+                metadata=metadata,
+            )
+        if body["model"] != requested:
+            return FailureReply(
+                code=ProviderFailureCode.INVALID_ENVELOPE,
+                message="Claude returned a different model",
+                metadata=metadata,
+            )
         stop_reason = body["stop_reason"]
         if stop_reason == "max_tokens":
             return FailureReply(

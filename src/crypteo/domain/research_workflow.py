@@ -71,10 +71,10 @@ class ResearchBudgetPolicy(ModelContract):
 class ResearchWorkflowConfig(ModelContract):
     model: ModelConfiguration
     budget: ResearchBudgetPolicy = ResearchBudgetPolicy()
-    investigation_output_cap: Literal[1024] = 1024
-    synthesis_output_cap: Literal[2048] = 2048
-    model_call_deadline_seconds: Literal[60] = 60
-    workflow_deadline_seconds: Literal[600] = 600
+    investigation_output_cap: Literal[8192] = 8192
+    synthesis_output_cap: Literal[16384] = 16384
+    model_call_deadline_seconds: Literal[180] = 180
+    workflow_deadline_seconds: Literal[900] = 900
     max_model_input_bytes: Literal[131072] = 131072
 
     @field_validator(

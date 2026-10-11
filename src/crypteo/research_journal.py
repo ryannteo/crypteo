@@ -1,5 +1,6 @@
 """Pure lifecycle grammar, canonical encoding and materialized projection."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
@@ -47,6 +48,7 @@ from crypteo.domain.research_workflow import (
 )
 from crypteo.research_model import (
     FailureReply,
+    ModelReply,
     ModelRequest,
     ProviderMetadata,
     RefusalReply,
@@ -135,13 +137,53 @@ def decode_envelope(raw: bytes, body: bytes | None) -> EventEnvelope:
     return envelope
 
 
+@dataclass(frozen=True)
+class ProviderCodec:
+    """Pure wire functions an adapter module shares with journal reconstruction."""
+
+    render_request: Callable[[ModelRequest], dict[str, Any]]
+    decode_response_entity: Callable[[bytes, ProviderMetadata], ModelReply]
+    decode_http_error: Callable[[bytes, int, str | None, str], FailureReply]
+
+
+def _openai_codec() -> ProviderCodec:
+    from crypteo import openai_research
+
+    return ProviderCodec(
+        openai_research.render_openai_request,
+        openai_research.decode_response_entity,
+        openai_research.decode_http_error,
+    )
+
+
+def _anthropic_codec() -> ProviderCodec:
+    from crypteo import anthropic_research
+
+    return ProviderCodec(
+        anthropic_research.render_anthropic_request,
+        anthropic_research.decode_response_entity,
+        anthropic_research.decode_http_error,
+    )
+
+
+# Adapter modules import provider SDKs, so each loads only when its runs are read.
+PROVIDER_CODECS: dict[str, Callable[[], ProviderCodec]] = {
+    "openai": _openai_codec,
+    "anthropic": _anthropic_codec,
+}
+
+
+def provider_codec(header: ResearchRunHeader) -> ProviderCodec | None:
+    load = PROVIDER_CODECS.get(header.provider.provider)
+    return None if load is None else load()
+
+
 def validate_prepared(request: ModelRequest, header: ResearchRunHeader) -> None:
     if request.prepared_input_json is None:
         raise ResearchValidationError("prepared request lacks provider body")
-    if header.provider.provider == "openai":
-        from crypteo.openai_research import render_openai_request
-
-        expected = render_openai_request(request)
+    codec = provider_codec(header)
+    if codec is not None:
+        expected = codec.render_request(request)
     else:
         # Provider-neutral adapters can use the normalized project request encoding.
         expected = request.model_dump(mode="json") | {"prepared_input_json": None}
@@ -162,12 +204,13 @@ def validate_observation(
         raise ResearchValidationError(
             "reply request body differs from prepared request"
         )
+    codec = provider_codec(header)
     if observed is None:
-        if header.provider.provider == "openai" and not (
+        if codec is not None and not (
             isinstance(reply, FailureReply)
             and reply.code in ("PROVIDER_NETWORK", "MODEL_TIMEOUT")
         ):
-            raise ResearchValidationError("OpenAI reply requires an observed entity")
+            raise ResearchValidationError("provider reply requires an observed entity")
         if (
             reply.metadata.response_json is not None
             or reply.metadata.http_status is not None
@@ -185,40 +228,34 @@ def validate_observation(
                 "observed entity can only be superseded by software timeout"
             )
         return
-    if header.provider.provider == "openai":
-        from crypteo.openai_research import decode_http_error, decode_response_entity
-
-        if observed.text_encoding != "utf-8":
-            raise ResearchValidationError("OpenAI response encoding must be UTF-8")
-
-        if observed.http_status >= 400:
-            if (
-                request.prepared_input_json is None
-                or decode_http_error(
-                    observed.body,
-                    observed.http_status,
-                    observed.request_id,
-                    request.prepared_input_json,
-                )
-                != reply
-            ):
-                raise ResearchValidationError(
-                    "HTTP error differs from normalized reply"
-                )
-            return
-        metadata = ProviderMetadata(
-            request_json=request.prepared_input_json,
-            request_id=observed.request_id,
-            http_status=observed.http_status,
-        )
-        if decode_response_entity(observed.body, metadata) != reply:
-            raise ResearchValidationError(
-                "observable provider body differs from normalized reply"
-            )
-    else:
-        # No other HTTP provider codec is implemented. A byte/string comparison
-        # cannot establish that a normalized reply was decoded from that entity.
+    if codec is None:
+        # A byte/string comparison cannot establish that a normalized reply was
+        # decoded from that entity, so providers without a codec cannot observe.
         raise ResearchValidationError("unsupported observable provider encoding")
+    if observed.text_encoding != "utf-8":
+        raise ResearchValidationError("provider response encoding must be UTF-8")
+    if observed.http_status >= 400:
+        if (
+            request.prepared_input_json is None
+            or codec.decode_http_error(
+                observed.body,
+                observed.http_status,
+                observed.request_id,
+                request.prepared_input_json,
+            )
+            != reply
+        ):
+            raise ResearchValidationError("HTTP error differs from normalized reply")
+        return
+    metadata = ProviderMetadata(
+        request_json=request.prepared_input_json,
+        request_id=observed.request_id,
+        http_status=observed.http_status,
+    )
+    if codec.decode_response_entity(observed.body, metadata) != reply:
+        raise ResearchValidationError(
+            "observable provider body differs from normalized reply"
+        )
 
 
 @dataclass

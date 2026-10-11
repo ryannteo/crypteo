@@ -9,14 +9,15 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 from research_support import (
     CODE,
+    MODEL,
     ScriptedModel,
+    anthropic_research,
     completion,
     critique,
-    openai_research,
     opportunity,
     service,
     structured,
@@ -372,14 +373,19 @@ def test_external_cancellation_and_late_observer_sealed(tmp_path: Path) -> None:
     "body,status",
     [
         (b"{ broken \xff", 200),
-        (b'  {"id":"r","model":"m","status":"completed","output":[]}\n', 200),
-        (b'{"error":{"message":"failure"}}', 503),
+        (
+            b'  {"id":"r","type":"message","role":"assistant","model":"'
+            + MODEL.encode()
+            + b'","content":[],"stop_reason":"end_turn"}\n',
+            200,
+        ),
+        (b'{"type":"error","error":{"type":"api_error"}}', 503),
     ],
 )
 def test_exact_raw_body_commits_before_decoder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes, status: int
 ) -> None:
-    import crypteo.openai_research as adapter
+    import crypteo.anthropic_research as adapter
 
     store = ResearchStore(tmp_path / "r.sqlite")
     original = adapter.decode_response_entity
@@ -399,8 +405,8 @@ def test_exact_raw_body_commits_before_decoder(
 
     monkeypatch.setattr(adapter, "decode_response_entity", decode)
 
-    artifact = openai_research(
-        lambda request: httpx.Response(status, content=body),
+    artifact = anthropic_research(
+        lambda request: httpx2.Response(status, content=body),
         header().context.request,
         store,
     )
@@ -547,7 +553,7 @@ def test_timeout_late_response_never_appends(
 def test_observation_storage_error_stops_decoder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import crypteo.openai_research as adapter
+    import crypteo.anthropic_research as adapter
     from crypteo.research_model import ProviderMetadata
 
     store = ResearchStore(tmp_path / "r.sqlite")
@@ -565,8 +571,8 @@ def test_observation_storage_error_stops_decoder(
     monkeypatch.setattr(adapter, "_decode_response", forbidden)
 
     with pytest.raises(ResearchStorageError):
-        openai_research(
-            lambda request: httpx.Response(200, content=b"{}"),
+        anthropic_research(
+            lambda request: httpx2.Response(200, content=b"{}"),
             header().context.request,
             store,
         )
@@ -785,20 +791,26 @@ def test_corrupt_project_json_fails_closed(tmp_path: Path, raw: bytes) -> None:
         store.inspect_run("run-1")
 
 
-def test_openai_completed_observed_body_reconciliation(tmp_path: Path) -> None:
+def test_claude_completed_observed_body_reconciliation(tmp_path: Path) -> None:
     from research_support import assessment
-    from test_openai_research import envelope, function, message
+    from test_anthropic_research import (
+        THINKING,
+        envelope,
+        text,
+        tool_envelope,
+        tool_use,
+    )
 
     store = ResearchStore(tmp_path / "r.sqlite")
     svc = service()
     evidence = svc.trend(opportunity().pair)
     evidence_id = evidence.model_dump()["evidence"]["evidence_id"]
     bodies = [
-        envelope([function()]),
-        envelope([message(completion((evidence_id,)).content)]),
-        envelope([message(structured(thesis((evidence_id,))).content)]),
-        envelope([message(structured(critique()).content)]),
-        envelope([message(structured(assessment("TRADE", (evidence_id,))).content)]),
+        tool_envelope(THINKING, tool_use()),
+        envelope([text(completion((evidence_id,)).content)]),
+        envelope([text(structured(thesis((evidence_id,))).content)]),
+        envelope([text(structured(critique()).content)]),
+        envelope([text(structured(assessment("TRADE", (evidence_id,))).content)]),
     ]
     import json
 
@@ -808,11 +820,12 @@ def test_openai_completed_observed_body_reconciliation(tmp_path: Path) -> None:
     ]
     remaining = list(raw)
 
-    artifact = openai_research(
-        lambda request: httpx.Response(200, content=remaining.pop(0)),
+    artifact = anthropic_research(
+        lambda request: httpx2.Response(200, content=remaining.pop(0)),
         header().context.request,
         store,
     )
+    assert artifact.result.status == "COMPLETED"
     history = store.inspect_run("run-1")
     assert [
         e.event.body
@@ -925,7 +938,7 @@ def test_preparation_timeout_never_invokes(
         def prepare(self, request: ModelRequest) -> ModelRequest:
             nonlocal now
             result = original(self, request)
-            now = 601.0
+            now = 901.0
             return result
 
     monkeypatch.setattr(workflow, "monotonic", lambda: now)
@@ -1288,7 +1301,7 @@ def test_committed_response_can_precede_software_timeout(
             observe(
                 ProviderObservation(body=b"committed before deadline", http_status=200)
             )
-            now = 61.0
+            now = 181.0
             return completion()
 
     monkeypatch.setattr(workflow, "monotonic", lambda: now)

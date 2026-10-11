@@ -6,12 +6,14 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
 from research_support import (
     CODE,
+    MODEL,
     ScriptedModel,
+    anthropic_client,
     completion,
     critique,
     opportunity,
@@ -23,8 +25,9 @@ from research_support import (
     workflow_config,
 )
 
-import crypteo.openai_research as openai_adapter
+import crypteo.anthropic_research as anthropic_adapter
 import crypteo.research_workflow as workflow
+from crypteo.anthropic_research import AnthropicResearchModel, render_anthropic_request
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     ModelRequestRejection,
@@ -32,7 +35,6 @@ from crypteo.domain.research_workflow import (
     ResearchRunResult,
     ToolRecord,
 )
-from crypteo.openai_research import OpenAIResearchModel, render_openai_request
 from crypteo.research_model import (
     ModelReply,
     ModelRequest,
@@ -52,7 +54,7 @@ def short_deadlines(monkeypatch: pytest.MonkeyPatch) -> Callable[[float, float],
         def initialize(self: workflow._ResearchRuntime, *args: Any) -> None:
             original(self, *args)
             # Runtime-only test injection; the public locked configuration remains
-            # validated and unchanged. No test waits for the production 60 seconds.
+            # validated and unchanged. No test waits for the production 180 seconds.
             self.config = self.config.model_copy(
                 update={"model_call_deadline_seconds": per_call}
             )
@@ -295,17 +297,28 @@ def test_valid_unicode_is_preserved() -> None:
     assert "市場" in result.model_dump_json()
 
 
-class SizedOpenAIModel(OpenAIResearchModel):
-    def __init__(self, client: AsyncOpenAI, size: int, marker: str) -> None:
+REFUSAL = {
+    "id": "response-1",
+    "type": "message",
+    "role": "assistant",
+    "model": MODEL,
+    "content": [],
+    "stop_reason": "refusal",
+    "stop_details": {"explanation": "test refusal"},
+}
+
+
+class SizedClaudeModel(AnthropicResearchModel):
+    def __init__(self, client: AsyncAnthropic, size: int, marker: str) -> None:
         super().__init__(client)
         self.size, self.marker = size, marker
         self.prepared: list[ModelRequest] = []
 
     def prepare(self, request: ModelRequest) -> ModelRequest:
-        body = render_openai_request(request)
+        body = render_anthropic_request(request)
         room = self.size - len(render_json(body).encode("utf-8"))
         count, remainder = divmod(room, len(self.marker.encode("utf-8")))
-        body["input"][-1]["content"] += self.marker * count + "x" * remainder
+        body["messages"][-1]["content"] += self.marker * count + "x" * remainder
         prepared = ModelRequest.model_validate(
             request.model_copy(update={"prepared_input_json": render_json(body)})
         )
@@ -320,38 +333,20 @@ def test_exact_provider_facing_utf8_size_limit_and_transmitted_bytes(
 ) -> None:
     received: list[bytes] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         received.append(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "test-model",
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{"type": "refusal", "refusal": "test refusal"}],
-                    }
-                ],
-            },
-        )
+        return httpx2.Response(200, json=REFUSAL)
 
     async def scenario() -> None:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
-            AsyncOpenAI(api_key="test-key", http_client=http_client) as client,
-        ):
-            model = SizedOpenAIModel(client, size, marker)
+        async with anthropic_client(handler) as client:
+            model = SizedClaudeModel(client, size, marker)
             result = await run_opportunity_research(
                 OpportunityResearchRequest(
                     research_run_id="size-run", opportunity=opportunity()
                 ),
                 service(),
                 model,
-                workflow_config("openai"),
+                workflow_config("anthropic"),
                 code=CODE,
             )
             assert len(model.prepared) == 1
@@ -381,7 +376,7 @@ def test_internal_metadata_does_not_count_as_provider_input_and_body_is_prepared
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rendered = 0
-    original = render_openai_request
+    original = render_anthropic_request
 
     def render_once(request: ModelRequest) -> dict[str, Any]:
         nonlocal rendered
@@ -389,9 +384,9 @@ def test_internal_metadata_does_not_count_as_provider_input_and_body_is_prepared
         assert rendered == 1, "invoke must not independently render the prepared body"
         return original(request)
 
-    monkeypatch.setattr(openai_adapter, "render_openai_request", render_once)
+    monkeypatch.setattr(anthropic_adapter, "render_anthropic_request", render_once)
 
-    class MetadataHeavyModel(OpenAIResearchModel):
+    class MetadataHeavyModel(AnthropicResearchModel):
         def prepare(self, request: ModelRequest) -> ModelRequest:
             request = request.model_copy(
                 update={
@@ -404,37 +399,19 @@ def test_internal_metadata_does_not_count_as_provider_input_and_body_is_prepared
 
     received: list[bytes] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         received.append(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "id": "response-1",
-                "model": "test-model",
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{"type": "refusal", "refusal": "test refusal"}],
-                    }
-                ],
-            },
-        )
+        return httpx2.Response(200, json=REFUSAL)
 
     async def scenario() -> None:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
-            AsyncOpenAI(api_key="test-key", http_client=http_client) as client,
-        ):
+        async with anthropic_client(handler) as client:
             result = await run_opportunity_research(
                 OpportunityResearchRequest(
                     research_run_id="metadata-run", opportunity=opportunity()
                 ),
                 service(),
                 MetadataHeavyModel(client),
-                workflow_config("openai"),
+                workflow_config("anthropic"),
                 code=CODE,
             )
         assert result.failure and result.failure.code == "REFUSAL"

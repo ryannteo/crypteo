@@ -11,23 +11,25 @@ import pytest
 from openai import AsyncOpenAI
 from research_support import (
     BTC,
+    CODE,
     ScriptedModel,
     assessment,
     completion,
     critique,
-    openai_research,
     opportunity,
     run,
     service,
     structured,
     thesis,
     tool,
+    workflow_config,
 )
 
 import crypteo.research_workflow as workflow
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     OpportunityResearchRequest,
+    ResearchRunResult,
     ToolRecord,
 )
 from crypteo.openai_research import OpenAIResearchModel, render_openai_request
@@ -51,6 +53,29 @@ from crypteo.research_prompts import (
     structured_schema,
 )
 from crypteo.research_tools import tool_definitions
+from crypteo.research_workflow import run_opportunity_research
+
+
+def openai_research(
+    handler: Callable[[httpx.Request], httpx.Response],
+    request: OpportunityResearchRequest,
+) -> ResearchRunResult:
+    """Run the workflow through the real OpenAI adapter over a mocked transport."""
+
+    async def execute() -> ResearchRunResult:
+        async with (
+            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
+            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
+        ):
+            return await run_opportunity_research(
+                request,
+                service(),
+                OpenAIResearchModel(client),
+                workflow_config("openai"),
+                code=CODE,
+            )
+
+    return asyncio.run(execute())
 
 
 def model_request() -> ModelRequest:
@@ -153,7 +178,7 @@ def test_valid_native_function_call_and_exact_wire_metadata() -> None:
     assert wire["store"] is False and wire["parallel_tool_calls"] is False
     assert len(wire["tools"]) == 7
     assert all(t["strict"] is True for t in wire["tools"])
-    assert wire["max_output_tokens"] == 1024
+    assert wire["max_output_tokens"] == 8192
     assert wire["text"]["format"]["strict"] is True
 
 
@@ -502,7 +527,7 @@ def test_synthesis_wire_has_no_tools_and_explicit_parameters() -> None:
         )
         wire = render_openai_request(request)
         assert "tools" not in wire and "tool_choice" not in wire
-        assert wire["max_output_tokens"] == 2048
+        assert wire["max_output_tokens"] == 16384
         assert wire["temperature"] == 0.5 and wire["reasoning"] == {"effort": "low"}
         assert wire["model"] == "chosen-test-model"
         assert wire["text"]["format"]["strict"] is True

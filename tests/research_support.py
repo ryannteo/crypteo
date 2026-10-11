@@ -6,10 +6,11 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, overload
 
-import httpx
-from openai import AsyncOpenAI
+import httpx2
+from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 from pydantic import BaseModel
 
+from crypteo.anthropic_research import AnthropicResearchModel
 from crypteo.domain.market import Candle, TradingPair
 from crypteo.domain.market_research import MarketSourceBinding
 from crypteo.domain.research import Critique, Opportunity, ResearchThesis, TradeDecision
@@ -22,7 +23,6 @@ from crypteo.domain.research_workflow import (
 )
 from crypteo.experiment import CodeIdentity
 from crypteo.market_research import MarketResearchService
-from crypteo.openai_research import OpenAIResearchModel
 from crypteo.research_model import (
     ModelConfiguration,
     ModelReply,
@@ -43,6 +43,7 @@ from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 T = datetime(2022, 1, 4, tzinfo=UTC)
 BTC, ETH, SOL = TradingPair
 CODE = CodeIdentity(git_commit="a" * 40, source_digest="sha256:" + "b" * 64)
+MODEL = "explicit-test-model"
 
 
 def opportunity(pair: TradingPair = BTC) -> Opportunity:
@@ -240,38 +241,46 @@ def run(
 
 def workflow_config(provider: str = "fake") -> ResearchWorkflowConfig:
     return ResearchWorkflowConfig(
-        model=ModelConfiguration(provider=provider, model="explicit-test-model")
+        model=ModelConfiguration(provider=provider, model=MODEL)
     )
 
 
-type Handler = Callable[[httpx.Request], httpx.Response]
+type Handler = Callable[[httpx2.Request], httpx2.Response]
+
+
+def anthropic_client(handler: Handler, **options: Any) -> AsyncAnthropic:
+    """Real Claude SDK over a mocked transport; SDK retries are left enabled."""
+    return AsyncAnthropic(
+        api_key="test-only-not-a-secret",
+        http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler)),
+        max_retries=5,
+        **options,
+    )
 
 
 @overload
-def openai_research(
+def anthropic_research(
     handler: Handler, request: OpportunityResearchRequest
 ) -> ResearchRunResult: ...
 
 
 @overload
-def openai_research(
+def anthropic_research(
     handler: Handler, request: OpportunityResearchRequest, store: ResearchStore
 ) -> ResearchArtifact: ...
 
 
-def openai_research(
+def anthropic_research(
     handler: Handler,
     request: OpportunityResearchRequest,
     store: ResearchStore | None = None,
 ) -> ResearchRunResult | ResearchArtifact:
-    """Run the workflow through the real OpenAI adapter over a mocked transport."""
+    """Run the workflow through the real Claude adapter over a mocked transport."""
 
     async def execute() -> ResearchRunResult | ResearchArtifact:
-        async with (
-            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client,
-            AsyncOpenAI(api_key="test-only", http_client=http_client) as client,
-        ):
-            model, config = OpenAIResearchModel(client), workflow_config("openai")
+        async with anthropic_client(handler) as client:
+            model = AnthropicResearchModel(client)
+            config = workflow_config("anthropic")
             if store is None:
                 return await run_opportunity_research(
                     request, service(), model, config, code=CODE

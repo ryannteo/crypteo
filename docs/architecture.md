@@ -113,11 +113,14 @@ secondary guard. Exact limits live in the
 
 `ResearchModel` is the project-owned async provider abstraction: it prepares the
 provider-facing request and returns typed replies and observable metadata.
-`OpenAIResearchModel` currently implements it with the OpenAI Responses API,
-strict structured schemas, no automatic retries, and no provider conversation
-state. The caller owns client lifetime and chooses the model and supported
-parameters. Prompts, schemas, and tool definitions carry versions and digests.
-Its observable invocation boundary exposes client-visible HTTP entity bytes
+`AnthropicResearchModel` implements it with the Claude Messages API: exact
+prepared bytes, structured JSON-schema output, no automatic retries, client
+middleware and beta headers dropped, a pinned API version, a returned model that
+must equal the requested one, and no provider conversation state.
+`OpenAIResearchModel` (OpenAI Responses API) still implements the same boundary.
+The caller owns client lifetime and chooses the model and supported parameters.
+Prompts, schemas, and tool definitions carry versions and digests.
+Each adapter's observable invocation boundary exposes client-visible HTTP entity bytes
 before project decoding; durable hooks persist those observations separately
 from normalized project-owned replies.
 

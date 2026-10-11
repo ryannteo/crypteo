@@ -7,11 +7,13 @@ from typing import Any, Literal
 
 import httpx2
 import pytest
-from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 from research_support import (
     BTC,
-    CODE,
+    MODEL,
+    Handler,
     ScriptedModel,
+    anthropic_client,
+    anthropic_research,
     assessment,
     completion,
     critique,
@@ -21,13 +23,13 @@ from research_support import (
     structured,
     thesis,
     tool,
-    workflow_config,
 )
 
 import crypteo.anthropic_research as adapter_module
 import crypteo.research_workflow as workflow
 from crypteo.anthropic_research import (
     ADAPTER_VERSION,
+    ANTHROPIC_VERSION,
     UNSUPPORTED_SCHEMA_CONSTRAINTS,
     AnthropicResearchModel,
     render_anthropic_request,
@@ -37,7 +39,6 @@ from crypteo.domain.market import TradingPair
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     OpportunityResearchRequest,
-    ResearchRunResult,
     ToolRecord,
 )
 from crypteo.research_model import (
@@ -47,6 +48,7 @@ from crypteo.research_model import (
     ModelParameters,
     ModelReply,
     ModelRequest,
+    ProviderMetadata,
     ProviderObservation,
     RefusalReply,
     StructuredReply,
@@ -55,7 +57,6 @@ from crypteo.research_model import (
 )
 from crypteo.research_prompts import structured_schema
 from crypteo.research_tools import tool_definitions
-from crypteo.research_workflow import run_opportunity_research
 
 KEY = "test-only-not-a-secret"
 FORBIDDEN_WIRE_KEYS = {
@@ -69,8 +70,6 @@ FORBIDDEN_WIRE_KEYS = {
     "top_k",
 }
 
-type Handler = Callable[[httpx2.Request], httpx2.Response]
-
 
 @pytest.fixture(autouse=True)
 def no_ambient_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,15 +82,6 @@ def no_ambient_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
         "ANTHROPIC_PROFILE",
     ):
         monkeypatch.delenv(name, raising=False)
-
-
-def client(handler: Handler, **options: Any) -> AsyncAnthropic:
-    return AsyncAnthropic(
-        api_key=KEY,
-        http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler)),
-        max_retries=5,
-        **options,
-    )
 
 
 def model_request(**parameters: Any) -> ModelRequest:
@@ -113,7 +103,7 @@ def configured(request: ModelRequest, **parameters: Any) -> ModelRequest:
             update={
                 "configuration": ModelConfiguration(
                     provider=parameters.pop("provider", "anthropic"),
-                    model="chosen-test-model",
+                    model=MODEL,
                     parameters=ModelParameters(**parameters),
                 ),
                 "prepared_input_json": None,
@@ -128,7 +118,7 @@ def envelope(content: list[Any], **changes: Any) -> dict[str, Any]:
             id="msg-observable-1",
             type="message",
             role="assistant",
-            model="returned-model-snapshot",
+            model=MODEL,
             content=content,
             stop_reason="end_turn",
             stop_sequence=None,
@@ -170,7 +160,7 @@ def invoke(
     request = request or model_request()
 
     async def call() -> ModelReply:
-        async with client(handler) as sdk:
+        async with anthropic_client(handler) as sdk:
             adapter = AnthropicResearchModel(sdk)
             assert adapter._client.max_retries == 0
             assert adapter._client.timeout == 180.0
@@ -184,28 +174,11 @@ def invoke(
     return asyncio.run(call())
 
 
-def anthropic_research(
-    handler: Handler, request: OpportunityResearchRequest
-) -> ResearchRunResult:
-    """Run the workflow through the real Claude adapter over a mocked transport."""
-
-    async def execute() -> ResearchRunResult:
-        async with client(handler) as sdk:
-            return await run_opportunity_research(
-                request,
-                service(),
-                AnthropicResearchModel(sdk),
-                workflow_config("anthropic"),
-                code=CODE,
-            )
-
-    return asyncio.run(execute())
-
-
 def assert_clean_wire(request: httpx2.Request) -> dict[str, Any]:
     wire: dict[str, Any] = json.loads(request.content)
     assert not FORBIDDEN_WIRE_KEYS & set(wire)
     assert "anthropic-beta" not in request.headers
+    assert request.headers["anthropic-version"] == ANTHROPIC_VERSION
     assert request.headers["x-api-key"] == KEY
     assert "ambient-key-must-not-be-read" not in str(request.headers)
     return wire
@@ -232,7 +205,7 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
     assert reply.metadata.response_json == body
     assert reply.metadata.response_id == "msg-observable-1"
     assert reply.metadata.request_id == "req-claude-1"
-    assert reply.metadata.returned_model == "returned-model-snapshot"
+    assert reply.metadata.returned_model == MODEL
     assert reply.metadata.status == "tool_use"
     assert reply.metadata.http_status == 200
     assert reply.metadata.model_dump(mode="json")["usage"] == {
@@ -254,8 +227,8 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
         "tools",
         "tool_choice",
     }
-    assert wire["model"] == "chosen-test-model"
-    assert wire["max_tokens"] == 1024
+    assert wire["model"] == MODEL
+    assert wire["max_tokens"] == 8192
     assert wire["system"] == request.messages[0].content
     assert wire["messages"] == [
         {"role": "user", "content": request.messages[1].content}
@@ -287,7 +260,7 @@ def test_prepared_input_json_round_trips_and_is_sent_verbatim() -> None:
     sent: list[bytes] = []
 
     async def prepare() -> ModelRequest:
-        async with client(lambda r: httpx2.Response(500)) as sdk:
+        async with anthropic_client(lambda r: httpx2.Response(500)) as sdk:
             return AnthropicResearchModel(sdk).prepare(request)
 
     prepared = asyncio.run(prepare())
@@ -329,8 +302,8 @@ def test_synthesis_wire_has_no_tools_and_maps_effort(effort: str) -> None:
         wire = render_anthropic_request(request)
         assert "tools" not in wire and "tool_choice" not in wire
         assert not FORBIDDEN_WIRE_KEYS & set(wire)
-        assert wire["max_tokens"] == 2048
-        assert wire["model"] == "chosen-test-model"
+        assert wire["max_tokens"] == 16384
+        assert wire["model"] == MODEL
         assert wire["output_config"] == {
             "format": {
                 "type": "json_schema",
@@ -365,7 +338,7 @@ def test_unsupported_configuration_is_rejected(parameters: dict[str, Any]) -> No
         render_anthropic_request(request)
 
     async def prepare() -> None:
-        async with client(lambda r: httpx2.Response(500)) as sdk:
+        async with anthropic_client(lambda r: httpx2.Response(500)) as sdk:
             AnthropicResearchModel(sdk).prepare(request)
 
     with pytest.raises(ValueError):
@@ -479,6 +452,59 @@ def test_text_alongside_tool_use_is_not_interpreted() -> None:
     assert isinstance(reply, ToolReply)
     assert [r.name for r in reply.requests] == ["trend"]
     assert "I will call a tool." in (reply.metadata.response_json or "")
+
+
+MISMATCH_REPLIES = {
+    "end_turn": envelope([text(completion().content)]),
+    "tool_use": tool_envelope(tool_use()),
+    "refusal": envelope([], stop_reason="refusal"),
+    "max_tokens": envelope([text("{")], stop_reason="max_tokens"),
+    "pause_turn": envelope([text("{}")], stop_reason="pause_turn"),
+}
+
+
+@pytest.mark.parametrize("stop_reason", list(MISMATCH_REPLIES))
+@pytest.mark.parametrize("returned", ["other-model", MODEL + "-snapshot", " " + MODEL])
+def test_returned_model_must_equal_requested_model(
+    stop_reason: str, returned: str
+) -> None:
+    value = MISMATCH_REPLIES[stop_reason] | {"model": returned}
+    body = json.dumps(value)
+    reply = invoke(lambda request: httpx2.Response(200, text=body))
+    assert isinstance(reply, FailureReply) and reply.code == "INVALID_PROVIDER_ENVELOPE"
+    assert reply.message == "Claude returned a different model"
+    assert reply.metadata.returned_model == returned
+    assert reply.metadata.status == stop_reason
+    assert reply.metadata.response_json == body
+    result = run(ScriptedModel([reply]))
+    assert result.failure and result.failure.code == "INVALID_PROVIDER_ENVELOPE"
+    assert result.investigation is None
+
+
+@pytest.mark.parametrize("stop_reason", list(MISMATCH_REPLIES))
+@pytest.mark.parametrize(
+    "request_json",
+    [None, "{broken", "[]", '"text"', "{}", '{"model":1}', '{"model":null}'],
+)
+def test_reply_without_parseable_request_model_is_invalid(
+    stop_reason: str, request_json: str | None
+) -> None:
+    body = json.dumps(MISMATCH_REPLIES[stop_reason]).encode()
+    metadata = ProviderMetadata(request_json=request_json, http_status=200)
+    reply = adapter_module.decode_response_entity(body, metadata)
+    assert isinstance(reply, FailureReply) and reply.code == "INVALID_PROVIDER_ENVELOPE"
+    assert reply.message == "Claude reply lacks its request"
+    assert reply.metadata.request_json == request_json
+    assert reply.metadata.returned_model == MODEL
+    # The same entity decodes normally once its prepared request is present.
+    prepared = render_json(render_anthropic_request(model_request()))
+    decoded = adapter_module.decode_response_entity(
+        body, metadata.model_copy(update={"request_json": prepared})
+    )
+    assert getattr(decoded, "message", None) not in (
+        "Claude reply lacks its request",
+        "Claude returned a different model",
+    )
 
 
 @pytest.mark.parametrize(
@@ -871,12 +897,15 @@ def test_client_and_environment_beta_headers_never_reach_transport(
     if "env" in sources:
         monkeypatch.setenv(
             "ANTHROPIC_CUSTOM_HEADERS",
-            "anthropic-beta: env-fallback-beta\nx-env-header: kept",
+            "anthropic-beta: env-fallback-beta\n"
+            "anthropic-version: 2099-01-01\n"
+            "x-env-header: kept",
         )
     options: dict[str, Any] = {}
     if "client" in sources:
         options["default_headers"] = {
             "anthropic-beta": "client-fallback-beta",
+            "anthropic-version": "2098-01-01",
             "x-client-header": "kept",
         }
     sent: list[httpx2.Request] = []
@@ -887,7 +916,7 @@ def test_client_and_environment_beta_headers_never_reach_transport(
         return httpx2.Response(200, json=envelope([text(completion().content)]))
 
     async def call() -> ModelReply:
-        async with client(handler, **options) as sdk:
+        async with anthropic_client(handler, **options) as sdk:
             return await AnthropicResearchModel(sdk).invoke(request)
 
     reply = asyncio.run(call())
@@ -895,7 +924,10 @@ def test_client_and_environment_beta_headers_never_reach_transport(
     assert len(sent) == 1
     assert_clean_wire(sent[0])
     assert "fallback-beta" not in str(sent[0].headers)
-    # Only the beta header is dropped; other caller headers still apply.
+    # The pinned API version replaces every caller-supplied version.
+    assert sent[0].headers.get_list("anthropic-version") == [ANTHROPIC_VERSION]
+    assert ANTHROPIC_VERSION == "2023-06-01"
+    # Only beta and version headers are fixed; other caller headers still apply.
     if "env" in sources:
         assert sent[0].headers["x-env-header"] == "kept"
     if "client" in sources:
@@ -911,7 +943,7 @@ def test_injected_client_middleware_never_runs() -> None:
         return await call_next(request)
 
     async def call() -> ModelReply:
-        async with client(
+        async with anthropic_client(
             lambda request: httpx2.Response(
                 200, json=envelope([text(completion().content)])
             ),

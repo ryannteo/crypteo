@@ -854,32 +854,57 @@ schema fields; the runtime does not repair malformed output or fill missing fiel
 ### Model boundary and operational limits
 
 `ResearchModel` owns provider identity, preparation of the provider-facing JSON,
-and async invocation returning typed replies. `OpenAIResearchModel` is the current
-implementation, using the OpenAI Responses API with strict structured output,
-parallel tool calls disabled, `store=False`, and no retained provider conversation.
-The caller supplies an async client, owns its lifetime, and explicitly selects
-model and supported parameters. The adapter enforces zero SDK retries even for
-an injected client; there are no workflow retries.
-The Claude adapter removes constraint keywords that Claude structured outputs
-reject (`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`,
-`multipleOf`, `minLength`, `maxLength`, `minItems`, `maxItems`, `uniqueItems`)
-from its wire output and tool schemas, noting each in that subschema's
-description, while project validation still enforces them and project schema
-identities are unchanged.
+and async invocation returning typed replies. `AnthropicResearchModel` is the
+research implementation, using the Claude Messages API with structured JSON-schema
+output, strict tools, and parallel tool use disabled. The caller supplies an
+`AsyncAnthropic` client, owns its lifetime, and explicitly selects the model and
+supported parameters (`reasoning_effort` maps to `output_config.effort`;
+`temperature` and the `none`/`minimal` efforts are rejected). The
+`OpenAIResearchModel` Responses API adapter remains present with the same
+contracts.
+
+The Claude adapter:
+
+- Sends the exact prepared UTF-8 bytes rather than independently rendering
+  another body.
+- Enforces zero SDK retries and a 180-second client timeout even for an injected
+  client; there are no workflow retries.
+- Drops any client middleware, which runs inside the SDK retry loop and could
+  rewrite, resend, or substitute a reply.
+- Omits every client- and environment-supplied `anthropic-beta` header, so no
+  beta feature such as server-side model fallback applies. Only the SDK's own
+  authentication marker for OAuth or workload-identity credentials, added at
+  authentication time, can still carry that header.
+- Pins `anthropic-version: 2023-06-01` per request, overriding client default
+  headers and `ANTHROPIC_CUSTOM_HEADERS`.
+- Requires the reply's `model` to equal the requested `model` from the retained
+  request body. A mismatch is an invalid-envelope failure ("Claude returned a
+  different model") for every stop reason, including refusal and `max_tokens`; a
+  reply whose request body is missing or unparseable is an invalid-envelope
+  failure ("Claude reply lacks its request"). Another model's reply never becomes
+  research output.
+- Is stateless: each request carries the full accumulated context, and returned
+  thinking blocks are neither interpreted nor replayed to later calls. Claude's
+  thinking tokens count against the output caps below.
+- Removes constraint keywords that Claude structured outputs reject (`minimum`,
+  `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`,
+  `maxLength`, `minItems`, `maxItems`, `uniqueItems`) from its wire output and
+  tool schemas, noting each in that subschema's description, while project
+  validation still enforces them and project schema identities are unchanged.
 
 | Limit | Current value |
 | --- | --- |
-| Per-model-call deadline | 60 seconds |
-| Overall workflow deadline | 600 seconds |
-| Investigation output cap | 1,024 output tokens per call |
-| Thesis/critic/assessment output cap | 2,048 output tokens per call |
+| Per-model-call deadline | 180 seconds |
+| Overall workflow deadline | 900 seconds |
+| Investigation output cap | 8,192 output tokens per call |
+| Thesis/critic/assessment output cap | 16,384 output tokens per call |
 | Provider-facing request | At most 128 KiB (131,072 UTF-8 bytes) per call |
 
 The input limit applies to the exact prepared credential-free provider request
 body, including messages, schemas, tool definitions, and provider parameters;
 internal audit-only fields do not count. A body above the limit is retained as a
-request rejection and is not transmitted. The OpenAI adapter sends those same
-prepared UTF-8 bytes rather than independently rendering another body.
+request rejection and is not transmitted. Both adapters send those same prepared
+UTF-8 bytes rather than independently rendering another body.
 
 Software uses monotonic deadlines; each inference wait is bounded by the earlier
 of its per-call deadline and the remaining workflow deadline. Late model replies
@@ -987,7 +1012,8 @@ market data or regeneration of model inference from an artifact.
 [research_workflow.py](../src/crypteo/research_workflow.py) is
 `run_durable_opportunity_research(request, service, model, configuration, *, store, code=None)`.
 It requires a `ResearchStore` and an `ObservableResearchModel` supporting observation
-before project decoding; `OpenAIResearchModel` implements this boundary. It uses
+before project decoding; `AnthropicResearchModel` and `OpenAIResearchModel`
+implement this boundary. It uses
 the same bounded opportunity-led workflow, temporal bindings, and research policy.
 The caller/runtime explicitly supplies `research_run_id`. Registration commits
 the header and `RUN_STARTED` together; duplicate run IDs reject before inference,
@@ -1096,11 +1122,12 @@ a normalized timeout if the call finishes too late.
 
 ### Exact provider observation
 
-The OpenAI adapter's observable invocation exposes both successful and HTTP-error
-response entities before project decoding. `MODEL_RESPONSE_OBSERVED` retains the
-exact bytes separately as a SQLite BLOB, including malformed content. Here
-"exact" means HTTP entity bytes observable by the client, not TLS records or wire
-framing. Network failures/timeouts do not invent a body when none was observed.
+The Claude and OpenAI adapters' observable invocations expose both successful and
+HTTP-error response entities before project decoding. `MODEL_RESPONSE_OBSERVED`
+retains the exact bytes separately as a SQLite BLOB, including malformed content.
+Here "exact" means HTTP entity bytes observable by the client, not TLS records or
+wire framing. Network failures/timeouts do not invent a body when none was
+observed.
 
 Project decoding is strict UTF-8, independent of a conflicting charset header.
 Malformed UTF-8 remains opaque retained bytes and cannot become replacement-character
@@ -1172,8 +1199,17 @@ Loading validates relationships as well as schemas and checksums:
   source bindings; evidence identity/content consistency and grounded references.
 - Prepared provider JSON versus normalized request, and requests versus accumulated
   context, evidence, request history, prompts, schemas, and tool definitions.
-- Provider observation versus normalized reply using the pure provider decoder,
-  including strict UTF-8/error handling and the permitted software-timeout case.
+  Providers `anthropic` and `openai` have registered journal codecs: their
+  prepared body must equal the adapter's pure request renderer output (for
+  Claude, including stripped wire schemas). Other providers compare against the
+  normalized project request encoding.
+- Provider observation versus normalized reply using the registered provider's
+  pure decoders: every reply except a network failure or timeout requires an
+  observed entity, its text encoding must be `utf-8`, an HTTP status of 400 or
+  more must re-derive the normalized error, and a success entity must re-derive
+  the normalized reply, including Claude's returned-model check. The permitted
+  software-timeout case may supersede an observation. Providers without a codec
+  cannot carry observations.
 - Validated stage output versus producing reply, final `ResearchRunResult` versus
   journal projection, and terminal artifact/run/sequence/digest/checksum consistency.
 

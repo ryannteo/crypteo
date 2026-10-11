@@ -753,7 +753,7 @@ def test_call_deadline_cancels_model_without_retry(
     model = HangingModel()
     result = run(model)
     assert result.failure and result.failure.code == "MODEL_TIMEOUT"
-    assert len(limits) == 1 and limits[0] is not None and 59.9 < limits[0] <= 60
+    assert len(limits) == 1 and limits[0] is not None and 179.9 < limits[0] <= 180
     assert model.cancelled and len(model.requests) == 1
 
 
@@ -765,7 +765,7 @@ def test_overall_deadline_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def jump(request: ModelRequest) -> ModelReply:
         nonlocal now
-        now = 601
+        now = 901
         return completion()
 
     monkeypatch.setattr(workflow, "monotonic", time)
@@ -800,7 +800,7 @@ def test_deadline_crossed_while_rendering_never_invokes_model(
     def prepare(model: ScriptedModel, request: ModelRequest) -> ModelRequest:
         nonlocal now
         prepared = original(model, request)
-        now = 601
+        now = 901
         return prepared
 
     monkeypatch.setattr(workflow, "monotonic", lambda: now)
@@ -819,7 +819,7 @@ def test_deadline_crossed_while_constructing_result_interrupts(
 
     def version(name: str) -> str:
         nonlocal now
-        now = 601
+        now = 901
         return package_version(name)
 
     monkeypatch.setattr(workflow, "monotonic", lambda: now)
@@ -1017,11 +1017,11 @@ def test_exact_audit_metadata_request_and_id_retention() -> None:
         and result.context.request.research_run_id == "run-1"
     )
     assert [r.max_output_tokens for r in model.requests] == [
-        1024,
-        1024,
-        2048,
-        2048,
-        2048,
+        8192,
+        8192,
+        16384,
+        16384,
+        16384,
     ]
     assert model.requests[0].configuration.model == "explicit-test-model"
 

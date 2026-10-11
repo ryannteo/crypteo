@@ -55,3 +55,4 @@ durable decision actually changes.
 | [009](ADR-009-bounded-model-directed-research.md) | Bounded model-directed research | Accepted |
 | [010](ADR-010-durable-research-lifecycle.md) | Durable append-only research lifecycle and transactional terminal publication | Accepted |
 | [011](ADR-011-model-research-historical-replay.md) | Model research admission into deterministic historical replay | Accepted |
+| [012](ADR-012-claude-research-provider.md) | Claude as the durable research provider | Accepted |
