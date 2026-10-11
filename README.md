@@ -86,6 +86,12 @@ produces byte-stable JSON. This is the in-memory deterministic baseline. See the
 [replay specification](docs/v1-specification.md#scanner-only-replay)
 for configuration, boundary behavior, and reproducibility.
 
+With `code=None`, the replay and research entry points derive code identity from
+the executing git source checkout. An installed package, such as a wheel outside
+a checkout, has none and raises `ValueError`; pass an explicit
+`code=crypteo.experiment.CodeIdentity(git_commit=..., source_digest=...)` that
+identifies the installed build.
+
 ## Historical research replay API
 
 `await crypteo.research_replay.run_research_replay(config, datasets, *, research, store, model=None, code=None)`

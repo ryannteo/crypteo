@@ -2,17 +2,22 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
+from email.message import Message
 from typing import Any, cast
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 from pydantic import ValidationError
 
+from crypteo import coinbase
 from crypteo.coinbase import (
     COINBASE_EXCHANGE_API,
     COINBASE_HOURLY_GRANULARITY_SECONDS,
     COINBASE_MAX_CANDLES_PER_REQUEST,
     CoinbaseCandleRequest,
     CoinbaseCandleRetriever,
+    CoinbasePublicHttpTransport,
     build_candle_requests,
 )
 from crypteo.domain.market import Timeframe, TradingPair
@@ -354,3 +359,80 @@ def test_raw_capture_requires_strict_utc_acquisition_provenance(boundary: Any) -
             body=b"[]",
             acquisition_started_at=boundary,
         )
+
+
+class FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.closed = False
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.closed = True
+
+    def read(self) -> bytes:
+        return self.body
+
+
+@pytest.mark.parametrize(
+    ("params", "query"),
+    [
+        (
+            build_candle_requests(
+                pair=TradingPair.BTC_USD,
+                start=START,
+                end=START + timedelta(hours=1),
+            )[0].params,
+            "start=2026-01-01T00%3A00%3A00Z&end=2026-01-01T01%3A00%3A00Z"
+            "&granularity=3600",
+        ),
+        ({"a b": "c+d/e", "n": 0, "é": "&="}, "a+b=c%2Bd%2Fe&n=0&%C3%A9=%26%3D"),
+    ],
+)
+def test_public_http_transport_sends_exact_get_and_returns_body_unchanged(
+    monkeypatch: pytest.MonkeyPatch, params: Mapping[str, str | int], query: str
+) -> None:
+    body = b"[[1767225600, 1.0, 2, 1.5, 1.25, 10]]\n\x00\xff"
+    response = FakeResponse(body)
+    requests: list[Request] = []
+
+    def urlopen(request: Request) -> FakeResponse:
+        requests.append(request)
+        return response
+
+    monkeypatch.setattr(coinbase, "urlopen", urlopen)
+    url = f"{COINBASE_EXCHANGE_API}/products/BTC-USD/candles"
+
+    result = CoinbasePublicHttpTransport().get(url, params)
+
+    assert result is body
+    assert response.closed
+    [sent] = requests
+    assert sent.full_url == f"{url}?{query}"
+    assert sent.get_method() == "GET"
+    assert sent.data is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HTTPError("https://example.invalid", 429, "Too Many Requests", Message(), None),
+        URLError("unreachable"),
+        TimeoutError("timed out"),
+        RuntimeError("unexpected"),
+    ],
+)
+def test_public_http_transport_propagates_urlopen_errors_unchanged(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def urlopen(request: Request) -> FakeResponse:
+        raise error
+
+    monkeypatch.setattr(coinbase, "urlopen", urlopen)
+
+    with pytest.raises(type(error)) as raised:
+        CoinbasePublicHttpTransport().get(COINBASE_EXCHANGE_API, {"granularity": 1})
+
+    assert raised.value is error

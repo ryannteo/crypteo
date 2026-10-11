@@ -28,3 +28,33 @@ jobs:
         run: python -m mypy
       - name: Test
         run: python -m pytest
+
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+        install: ["wheel", "editable"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheel and install it into a fresh environment
+        if: matrix.install == 'wheel'
+        run: |
+          python -m pip wheel . --no-deps -w dist
+          python -m venv "$RUNNER_TEMP/smoke-venv"
+          "$RUNNER_TEMP/smoke-venv/bin/python" -m pip install dist/*.whl
+      - name: Smoke test the installed wheel outside the checkout
+        if: matrix.install == 'wheel'
+        working-directory: ${{ runner.temp }}
+        run: >-
+          "$RUNNER_TEMP/smoke-venv/bin/python"
+          "$GITHUB_WORKSPACE/tests/release_smoke.py" --expect-installed
+      - name: Install the project in editable mode
+        if: matrix.install == 'editable'
+        run: python -m pip install -e .
+      - name: Smoke test the editable install
+        if: matrix.install == 'editable'
+        run: python tests/release_smoke.py
