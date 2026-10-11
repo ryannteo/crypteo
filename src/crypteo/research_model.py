@@ -137,10 +137,7 @@ class ContentIdentity(ModelContract):
 class ModelParameters(ModelContract):
     """Explicit supported parameters only; no arbitrary provider kwargs."""
 
-    temperature: Annotated[float, Field(strict=True, ge=0, le=2)] | None = None
-    reasoning_effort: (
-        Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None
-    ) = None
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
 
 class ModelConfiguration(ModelContract):

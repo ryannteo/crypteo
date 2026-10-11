@@ -146,16 +146,6 @@ class ProviderCodec:
     decode_http_error: Callable[[bytes, int, str | None, str], FailureReply]
 
 
-def _openai_codec() -> ProviderCodec:
-    from crypteo import openai_research
-
-    return ProviderCodec(
-        openai_research.render_openai_request,
-        openai_research.decode_response_entity,
-        openai_research.decode_http_error,
-    )
-
-
 def _anthropic_codec() -> ProviderCodec:
     from crypteo import anthropic_research
 
@@ -168,7 +158,6 @@ def _anthropic_codec() -> ProviderCodec:
 
 # Adapter modules import provider SDKs, so each loads only when its runs are read.
 PROVIDER_CODECS: dict[str, Callable[[], ProviderCodec]] = {
-    "openai": _openai_codec,
     "anthropic": _anthropic_codec,
 }
 

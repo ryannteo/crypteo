@@ -48,12 +48,12 @@ defines the current contracts; sources include the
 
 ## Decision
 
-Claude is the research provider. The OpenAI adapter stays until it is removed
-separately.
+Claude is the only research provider: the Claude Messages adapter is the only
+provider adapter.
 
 - The journal maps each provider name to a codec: the adapter's pure request
   renderer, response decoder, and HTTP error decoder, imported lazily.
-  `anthropic` and `openai` are registered. A registered provider's prepared body
+  `anthropic` is the only registered provider. Its prepared body
   and every observed entity must re-derive the stored normalized request and
   reply. Unregistered providers keep normalized-request comparison and cannot
   carry observations.
@@ -100,6 +100,9 @@ and over the slowest call. The workflow deadline still bounds a run.
 
 ## Consequences
 
+- Claude is the only provider adapter and the only registered codec, so real
+  research requires Anthropic API access. Adding a provider means adding an
+  adapter and registering its codec.
 - Any change to a registered adapter's renderer or decoders changes how stored
   runs re-derive. A change that alters output makes earlier runs fail to load,
   in the same way as a prompt or schema change.

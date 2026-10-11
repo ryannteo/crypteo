@@ -104,9 +104,12 @@ def test_json_object_keys_containing_brackets_do_not_count_toward_depth() -> Non
 @pytest.mark.parametrize(
     "parameters",
     [
-        {"temperature": True},
-        {"temperature": "1"},
-        {"reasoning_effort": "arbitrary"},
+        {"temperature": 0.5},
+        {"reasoning_effort": "high"},
+        {"effort": "minimal"},
+        {"effort": "none"},
+        {"effort": "HIGH"},
+        {"effort": None, "temperature": None},
         {"max_retries": 3},
         {"cutoff": "later"},
     ],
@@ -118,8 +121,16 @@ def test_explicit_model_parameters_reject_unknown_or_invalid_values(
         ModelParameters.model_validate(parameters)
 
 
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max", None])
+def test_model_parameters_accept_only_claude_effort_levels(effort: str | None) -> None:
+    parameters = ModelParameters.model_validate({"effort": effort})
+    assert parameters.effort == effort
+    assert parameters.model_dump() == {"effort": effort}
+    assert ModelParameters() == ModelParameters(effort=None)
+
+
 def test_model_identity_must_be_explicit() -> None:
-    for values in ({"provider": "openai"}, {"provider": "openai", "model": " "}):
+    for values in ({"provider": "anthropic"}, {"provider": "anthropic", "model": " "}):
         with pytest.raises(ValidationError):
             ModelConfiguration.model_validate(values)
 

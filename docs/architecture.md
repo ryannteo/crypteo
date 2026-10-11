@@ -117,12 +117,12 @@ provider-facing request and returns typed replies and observable metadata.
 prepared bytes, structured JSON-schema output, no automatic retries, client
 middleware and beta headers dropped, a pinned API version, a returned model that
 must equal the requested one, and no provider conversation state.
-`OpenAIResearchModel` (OpenAI Responses API) still implements the same boundary.
-The caller owns client lifetime and chooses the model and supported parameters.
-Prompts, schemas, and tool definitions carry versions and digests.
-Each adapter's observable invocation boundary exposes client-visible HTTP entity bytes
-before project decoding; durable hooks persist those observations separately
-from normalized project-owned replies.
+The caller owns client lifetime and chooses the model and its only tunable
+parameter, `effort` (`low`, `medium`, `high`, `xhigh`, or `max`; omitted from the
+request when unset). Prompts, schemas, and tool definitions carry versions and
+digests. The adapter's observable invocation boundary exposes client-visible
+HTTP entity bytes before project decoding; durable hooks persist those
+observations separately from normalized project-owned replies.
 
 The runtime captures one research time from the executing `MarketResearchService`
 and requires the opportunity's observation time to match it. The service binds

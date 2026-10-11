@@ -148,7 +148,7 @@ config = ResearchWorkflowConfig(
     model=ModelConfiguration(
         provider="anthropic",
         model="claude-opus-5-5",
-        parameters=ModelParameters(reasoning_effort="high"),
+        parameters=ModelParameters(effort="high"),
     )
 )
 
@@ -160,8 +160,7 @@ async def research() -> None:
 ```
 
 No model is selected by default and no `.env` file is automatically loaded. Never
-put a key in a file: keep keys out of Git, configuration, and documentation. The
-OpenAI adapter (`OpenAIResearchModel`, `OPENAI_API_KEY`) remains available. This
+put a key in a file: keep keys out of Git, configuration, and documentation. This
 is a Python API; no research CLI or chat UI exists.
 
 See the [architecture](docs/architecture.md#model-backed-research),

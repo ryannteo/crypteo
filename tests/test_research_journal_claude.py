@@ -26,6 +26,7 @@ from crypteo.domain.research_journal import (
 )
 from crypteo.domain.research_workflow import ModelCallRecord, OpportunityResearchRequest
 from crypteo.research_journal import (
+    PROVIDER_CODECS,
     ResearchStorageError,
     canonical_bytes,
     decode_envelope,
@@ -287,8 +288,9 @@ def test_returned_model_mismatch_is_reproduced_on_reload(tmp_path: Path) -> None
     assert_load_rejects(store, "observable provider body differs from normalized reply")
 
 
+@pytest.mark.parametrize("provider", ["fake", "openai"])
 def test_unregistered_provider_keeps_normalized_prepared_body_and_cannot_observe(
-    tmp_path: Path,
+    tmp_path: Path, provider: str
 ) -> None:
     from test_research_persistence import ObservedModel, execute
 
@@ -300,8 +302,11 @@ def test_unregistered_provider_keeps_normalized_prepared_body_and_cannot_observe
     )
 
     store = ResearchStore(tmp_path / "fake.sqlite")
-    artifact = asyncio.run(execute(store, ObservedModel(outcome="ABSTAIN")))
-    assert artifact.result.provider.provider == "fake"
+    artifact = asyncio.run(
+        execute(store, ObservedModel(outcome="ABSTAIN", provider=provider))
+    )
+    assert artifact.result.provider.provider == provider
+    assert set(PROVIDER_CODECS) == {"anthropic"}
     assert store.load_terminal("run-1") == artifact
 
     class Observing(ObservedModel):
@@ -315,5 +320,5 @@ def test_unregistered_provider_keeps_normalized_prepared_body_and_cannot_observe
     with pytest.raises(
         ResearchValidationError, match="^unsupported observable provider encoding"
     ):
-        asyncio.run(execute(store, Observing()))
+        asyncio.run(execute(store, Observing(provider=provider)))
     assert store.inspect_run("run-1").state == "INCOMPLETE"

@@ -256,7 +256,7 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
 
 
 def test_prepared_input_json_round_trips_and_is_sent_verbatim() -> None:
-    request = model_request(reasoning_effort="high")
+    request = model_request(effort="high")
     sent: list[bytes] = []
 
     async def prepare() -> ModelRequest:
@@ -296,9 +296,9 @@ def test_structured_completion_uses_json_schema_output_config() -> None:
     assert "effort" not in sent[0]["output_config"]
 
 
-@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_synthesis_wire_has_no_tools_and_maps_effort(effort: str) -> None:
-    for request in synthesis_requests(reasoning_effort=effort):
+    for request in synthesis_requests(effort=effort):
         wire = render_anthropic_request(request)
         assert "tools" not in wire and "tool_choice" not in wire
         assert not FORBIDDEN_WIRE_KEYS & set(wire)
@@ -322,18 +322,8 @@ def test_omitted_effort_is_not_sent() -> None:
         assert set(render_anthropic_request(request)["output_config"]) == {"format"}
 
 
-@pytest.mark.parametrize(
-    "parameters",
-    [
-        {"temperature": 0.5},
-        {"temperature": 0.0},
-        {"reasoning_effort": "none"},
-        {"reasoning_effort": "minimal"},
-        {"provider": "openai"},
-    ],
-)
-def test_unsupported_configuration_is_rejected(parameters: dict[str, Any]) -> None:
-    request = model_request(**parameters)
+def test_other_provider_configuration_is_rejected() -> None:
+    request = model_request(provider="fake", effort="high")
     with pytest.raises(ValueError):
         render_anthropic_request(request)
 

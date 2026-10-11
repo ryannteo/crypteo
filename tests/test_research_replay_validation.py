@@ -300,7 +300,7 @@ def test_baseline_remains_sync_inside_event_loop_and_avoids_provider_imports() -
             "-c",
             (
                 "import sys; import crypteo.replay; "
-                "assert not {'openai', 'anthropic', 'httpx2', 'langgraph', "
+                "assert not {'anthropic', 'httpx2', 'langgraph', "
                 "'sqlite3', "
                 "'crypteo.research_workflow', "
                 "'crypteo.research_persistence'} & set(sys.modules)"

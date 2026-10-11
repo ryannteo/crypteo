@@ -27,7 +27,7 @@ python -m pytest "tests/test_research_persistence.py::test_cache_attempts_and_bu
 python -m pytest tests/test_research_workflow.py -k budget
 ```
 
-`tests/` is on `pythonpath`, so test modules import helpers from each other: `tests/research_support.py` (`ScriptedModel`, fixtures, `CODE`) and `tests/test_replay.py` (`bar`, `history`, `dataset`, `config`). No test touches the network: Coinbase goes through an injected `HttpTransport`; Claude uses a real `AsyncAnthropic` over `httpx2.MockTransport` (`research_support.anthropic_client`), and the OpenAI adapter tests use a real `AsyncOpenAI` over `httpx.MockTransport`.
+`tests/` is on `pythonpath`, so test modules import helpers from each other: `tests/research_support.py` (`ScriptedModel`, fixtures, `CODE`) and `tests/test_replay.py` (`bar`, `history`, `dataset`, `config`). No test touches the network: Coinbase goes through an injected `HttpTransport`; Claude uses a real `AsyncAnthropic` over `httpx2.MockTransport` (`research_support.anthropic_client`).
 
 There is no CLI or app entrypoint. Everything is a Python API (see README for the public replay and research entrypoints).
 
@@ -77,7 +77,7 @@ There is no migration path. On `load_terminal` and `inspect_run`, the journal va
 
 Separately, `experiment.current_code_identity()` hashes all `src/crypteo/**/*.py` plus `pyproject.toml` and requires a git checkout. Any source edit changes replay `run_id`s and blocks frozen reuse of earlier artifacts. Tests pass an explicit `CODE`.
 
-Observed provider response bodies can only be decoded and validated for providers `"openai"` and `"anthropic"` (`research_journal.PROVIDER_CODECS`, used by `validate_prepared` and `validate_observation`). Test fakes use provider `"fake"` and must not call the `observe` callback.
+Observed provider response bodies can only be decoded and validated for provider `"anthropic"`, the Claude adapter (`research_journal.PROVIDER_CODECS`, used by `validate_prepared` and `validate_observation`). Test fakes use provider `"fake"` and must not call the `observe` callback.
 
 ### Failure semantics are part of the contract
 

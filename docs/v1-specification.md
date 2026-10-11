@@ -857,11 +857,12 @@ schema fields; the runtime does not repair malformed output or fill missing fiel
 and async invocation returning typed replies. `AnthropicResearchModel` is the
 research implementation, using the Claude Messages API with structured JSON-schema
 output, strict tools, and parallel tool use disabled. The caller supplies an
-`AsyncAnthropic` client, owns its lifetime, and explicitly selects the model and
-supported parameters (`reasoning_effort` maps to `output_config.effort`;
-`temperature` and the `none`/`minimal` efforts are rejected). The
-`OpenAIResearchModel` Responses API adapter remains present with the same
-contracts.
+`AsyncAnthropic` client, owns its lifetime, and explicitly selects the model.
+`ModelParameters` holds explicit supported parameters only: `effort` is one of
+`low`, `medium`, `high`, `xhigh`, or `max`, or unset. A set effort is sent as
+`output_config.effort`; an unset effort is omitted, so the provider default
+applies. Unknown levels and any other parameter, including `temperature`, are
+rejected by contract validation.
 
 The Claude adapter:
 
@@ -1012,8 +1013,7 @@ market data or regeneration of model inference from an artifact.
 [research_workflow.py](../src/crypteo/research_workflow.py) is
 `run_durable_opportunity_research(request, service, model, configuration, *, store, code=None)`.
 It requires a `ResearchStore` and an `ObservableResearchModel` supporting observation
-before project decoding; `AnthropicResearchModel` and `OpenAIResearchModel`
-implement this boundary. It uses
+before project decoding; `AnthropicResearchModel` implements this boundary. It uses
 the same bounded opportunity-led workflow, temporal bindings, and research policy.
 The caller/runtime explicitly supplies `research_run_id`. Registration commits
 the header and `RUN_STARTED` together; duplicate run IDs reject before inference,
@@ -1122,7 +1122,7 @@ a normalized timeout if the call finishes too late.
 
 ### Exact provider observation
 
-The Claude and OpenAI adapters' observable invocations expose both successful and
+The Claude adapter's observable invocation exposes both successful and
 HTTP-error response entities before project decoding. `MODEL_RESPONSE_OBSERVED`
 retains the exact bytes separately as a SQLite BLOB, including malformed content.
 Here "exact" means HTTP entity bytes observable by the client, not TLS records or
@@ -1199,9 +1199,9 @@ Loading validates relationships as well as schemas and checksums:
   source bindings; evidence identity/content consistency and grounded references.
 - Prepared provider JSON versus normalized request, and requests versus accumulated
   context, evidence, request history, prompts, schemas, and tool definitions.
-  Providers `anthropic` and `openai` have registered journal codecs: their
-  prepared body must equal the adapter's pure request renderer output (for
-  Claude, including stripped wire schemas). Other providers compare against the
+  Provider `anthropic` is the only provider with a registered journal codec: its
+  prepared body must equal the Claude adapter's pure request renderer output,
+  including stripped wire schemas. Other providers compare against the
   normalized project request encoding.
 - Provider observation versus normalized reply using the registered provider's
   pure decoders: every reply except a network failure or timeout requires an

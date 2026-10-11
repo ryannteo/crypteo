@@ -146,10 +146,6 @@ def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
     if not messages or any(m.role != "user" for m in messages):
         raise ValueError("Claude requests need system messages before user messages")
     parameters = request.configuration.parameters
-    if parameters.temperature is not None:
-        raise ValueError("Claude adapter does not support temperature")
-    if parameters.reasoning_effort in ("none", "minimal"):
-        raise ValueError("Claude adapter does not support this reasoning effort")
     output_config: dict[str, Any] = {
         "format": {
             "type": "json_schema",
@@ -158,8 +154,8 @@ def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
             ),
         }
     }
-    if parameters.reasoning_effort is not None:
-        output_config["effort"] = parameters.reasoning_effort
+    if parameters.effort is not None:
+        output_config["effort"] = parameters.effort
     body: dict[str, Any] = {
         "model": request.configuration.model,
         "max_tokens": request.max_output_tokens,
