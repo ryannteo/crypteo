@@ -1,5 +1,13 @@
 from collections.abc import Callable
-from decimal import ROUND_DOWN, Decimal, Inexact, Rounded, getcontext, localcontext
+from decimal import (
+    MIN_EMIN,
+    ROUND_DOWN,
+    Decimal,
+    Inexact,
+    Rounded,
+    getcontext,
+    localcontext,
+)
 
 import pytest
 
@@ -116,3 +124,11 @@ def test_multiply_keeps_sign_and_exact_exponent() -> None:
     result = _multiply(Decimal("-0.5"), Decimal("0.2"))
     assert result == Decimal("-0.10")
     assert str(result) == "-0.10"
+
+
+def test_product_below_the_exponent_floor_traps_instead_of_rounding_to_zero() -> None:
+    # Precision grows with operand widths, but the exponent floor is fixed, so
+    # a subnormal product would otherwise be silently rounded to zero.
+    smallest = Decimal(f"1E{MIN_EMIN}")
+    with pytest.raises(Inexact):
+        _multiply(smallest, smallest)
