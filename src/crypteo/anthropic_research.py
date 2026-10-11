@@ -1,6 +1,6 @@
 """Claude Messages adapter. Async, stateless, no SDK retries or vendor state."""
 
-from typing import Any
+from typing import Any, Literal
 
 import anthropic
 import httpx2
@@ -34,6 +34,100 @@ from crypteo.research_model import (
 
 ADAPTER_VERSION = "anthropic_messages_research_v1"
 
+# Claude structured outputs reject these keywords. Project validation still
+# enforces them; the wire schema only states them in descriptions. Fixed order.
+UNSUPPORTED_SCHEMA_CONSTRAINTS = (
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+)
+# Keywords whose value is a subschema (or, for a list, a list of subschemas)
+# versus a map of names to subschemas. Every other value is data, copied as is.
+_SUBSCHEMA_KEYWORDS = frozenset(
+    {
+        "additionalItems",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "contains",
+        "else",
+        "if",
+        "items",
+        "not",
+        "oneOf",
+        "prefixItems",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_SUBSCHEMA_MAP_KEYWORDS = frozenset(
+    {"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"}
+)
+
+
+def render_anthropic_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Copy a JSON schema without Claude-unsupported constraints, iteratively.
+
+    Constraints are removed only at schema positions, never from property names,
+    enum or const data, and each removal is noted in that subschema's description.
+    """
+    result: dict[str, Any] = {}
+    pending: list[tuple[Any, Any, Literal["schema", "map", "data"]]] = [
+        (schema, result, "schema")
+    ]
+    while pending:
+        source, target, kind = pending.pop()
+        if isinstance(source, list):
+            element: Literal["schema", "data"] = (
+                "schema" if kind == "schema" else "data"
+            )
+            for item in source:
+                target.append(_shell(item))
+                if isinstance(item, dict | list):
+                    pending.append((item, target[-1], element))
+            continue
+        for key, value in source.items():
+            if kind == "schema" and key in UNSUPPORTED_SCHEMA_CONSTRAINTS:
+                continue
+            child: Literal["schema", "map", "data"] = "data"
+            if kind == "map" or (kind == "schema" and key in _SUBSCHEMA_KEYWORDS):
+                child = "schema"
+            elif kind == "schema" and key in _SUBSCHEMA_MAP_KEYWORDS:
+                child = "map"
+            target[key] = _shell(value)
+            if isinstance(value, dict | list):
+                pending.append((value, target[key], child))
+        removed = [k for k in UNSUPPORTED_SCHEMA_CONSTRAINTS if k in source]
+        if kind == "schema" and removed:
+            note = (
+                "Constraints: "
+                + ", ".join(f"{k} {render_json(source[k])}" for k in removed)
+                + "."
+            )
+            description = source.get("description")
+            if description is not None and not isinstance(description, str):
+                raise ValueError("schema description must be a string")
+            target["description"] = f"{description}\n\n{note}" if description else note
+    return result
+
+
+def _shell(value: Any) -> Any:
+    """Empty container to fill later, or the immutable scalar itself."""
+    if isinstance(value, dict):
+        return {}
+    if isinstance(value, list):
+        return []
+    return value
+
 
 def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
     """Exact credential-free wire body, retained with every adapter result."""
@@ -57,7 +151,9 @@ def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
     output_config: dict[str, Any] = {
         "format": {
             "type": "json_schema",
-            "schema": request.output_schema.model_dump(mode="json")["json_schema"],
+            "schema": render_anthropic_schema(
+                request.output_schema.model_dump(mode="json")["json_schema"]
+            ),
         }
     }
     if parameters.reasoning_effort is not None:
@@ -75,7 +171,9 @@ def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
             {
                 "name": t.name,
                 "description": t.description,
-                "input_schema": t.model_dump(mode="json")["parameters"],
+                "input_schema": render_anthropic_schema(
+                    t.model_dump(mode="json")["parameters"]
+                ),
                 "strict": True,
             }
             for t in request.tools

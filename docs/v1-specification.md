@@ -860,6 +860,12 @@ parallel tool calls disabled, `store=False`, and no retained provider conversati
 The caller supplies an async client, owns its lifetime, and explicitly selects
 model and supported parameters. The adapter enforces zero SDK retries even for
 an injected client; there are no workflow retries.
+The Claude adapter removes constraint keywords that Claude structured outputs
+reject (`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`,
+`multipleOf`, `minLength`, `maxLength`, `minItems`, `maxItems`, `uniqueItems`)
+from its wire output and tool schemas, noting each in that subschema's
+description, while project validation still enforces them and project schema
+identities are unchanged.
 
 | Limit | Current value |
 | --- | --- |

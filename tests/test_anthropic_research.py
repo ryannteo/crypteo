@@ -28,9 +28,12 @@ import crypteo.anthropic_research as adapter_module
 import crypteo.research_workflow as workflow
 from crypteo.anthropic_research import (
     ADAPTER_VERSION,
+    UNSUPPORTED_SCHEMA_CONSTRAINTS,
     AnthropicResearchModel,
     render_anthropic_request,
+    render_anthropic_schema,
 )
+from crypteo.domain.market import TradingPair
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     OpportunityResearchRequest,
@@ -50,6 +53,8 @@ from crypteo.research_model import (
     ToolReply,
     render_json,
 )
+from crypteo.research_prompts import structured_schema
+from crypteo.research_tools import tool_definitions
 from crypteo.research_workflow import run_opportunity_research
 
 KEY = "test-only-not-a-secret"
@@ -258,7 +263,9 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
     assert wire["output_config"] == {
         "format": {
             "type": "json_schema",
-            "schema": request.output_schema.model_dump(mode="json")["json_schema"],
+            "schema": render_anthropic_schema(
+                request.output_schema.model_dump(mode="json")["json_schema"]
+            ),
         }
     }
     assert wire["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
@@ -268,7 +275,9 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
         assert sent_tool == {
             "name": definition.name,
             "description": definition.description,
-            "input_schema": definition.model_dump(mode="json")["parameters"],
+            "input_schema": render_anthropic_schema(
+                definition.model_dump(mode="json")["parameters"]
+            ),
             "strict": True,
         }
 
@@ -325,7 +334,9 @@ def test_synthesis_wire_has_no_tools_and_maps_effort(effort: str) -> None:
         assert wire["output_config"] == {
             "format": {
                 "type": "json_schema",
-                "schema": request.output_schema.model_dump(mode="json")["json_schema"],
+                "schema": render_anthropic_schema(
+                    request.output_schema.model_dump(mode="json")["json_schema"]
+                ),
             },
             "effort": effort,
         }
@@ -977,17 +988,22 @@ def test_missing_or_empty_request_id_header_is_none(
     assert [o.request_id for o in observed] == [None]
 
 
-def test_complete_graph_with_mocked_anthropic_transport() -> None:
-    svc = service()
-    result = svc.trend(BTC)
+def graph_responses(**final: Any) -> list[dict[str, Any]]:
+    """Claude replies for one complete graph; ``final`` overrides the assessment."""
+    result = service().trend(BTC)
     evidence_id = result.model_dump(mode="json")["evidence"]["evidence_id"]
-    responses = [
+    decision = assessment("TRADE", (evidence_id,)).model_dump(mode="json") | final
+    return [
         tool_envelope(THINKING, tool_use()),
         envelope([THINKING, text(completion((evidence_id,)).content)]),
         envelope([text(structured(thesis((evidence_id,))).content)]),
         envelope([REDACTED, text(structured(critique()).content)]),
-        envelope([text(structured(assessment("TRADE", (evidence_id,))).content)]),
+        envelope([text(json.dumps(decision))]),
     ]
+
+
+def test_complete_graph_with_mocked_anthropic_transport() -> None:
+    responses = graph_responses()
     bodies: list[dict[str, Any]] = []
     raw: list[bytes] = []
 
@@ -1026,6 +1042,9 @@ def test_complete_graph_with_mocked_anthropic_transport() -> None:
     assert all("tools" not in b and "tool_choice" not in b for b in bodies[2:])
     tools = [r for r in research.trace if isinstance(r, ToolRecord)]
     assert len(tools) == 1 and tools[0].result is not None
+    assert calls[-1].request.stage == "final_assessment"
+    assert all(not constraint_keywords(b) for b in bodies)
+    assert final_confidence(bodies[-1]) == CONFIDENCE_WIRE
 
 
 @pytest.mark.parametrize(
@@ -1043,3 +1062,188 @@ def test_invalid_json_schema_interrupted_without_retry(content: str) -> None:
     result = run(model)
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
     assert len(model.requests) == 1
+
+
+STAGES = ("investigate", "draft_thesis", "critique", "final_assessment")
+# Project schema identities recorded before Claude wire rendering was added.
+STAGE_SCHEMA_DIGESTS = {
+    "investigate": "sha256:"
+    "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
+    "draft_thesis": "sha256:"
+    "7a62eaa5f8f91a3a94a93b32477db6c287f1a2d586258f071a8fdccc9472da26",
+    "critique": "sha256:"
+    "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
+    "final_assessment": "sha256:"
+    "54f953c92fd301620f314d8fefb2b2ed037f0aa812c4bf4e39a8a6264d40adcc",
+}
+CONFIDENCE_WIRE = [
+    {"type": "integer", "description": "Constraints: minimum 0, maximum 100."},
+    {"type": "null"},
+]
+
+
+def constraint_keywords(value: Any) -> list[str]:
+    """Every removed keyword appearing as any object key in a rendered dict."""
+    found: list[str] = []
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            found.extend(k for k in item if k in UNSUPPORTED_SCHEMA_CONSTRAINTS)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return found
+
+
+def final_confidence(wire: dict[str, Any]) -> Any:
+    return wire["output_config"]["format"]["schema"]["properties"]["confidence"][
+        "anyOf"
+    ]
+
+
+def test_final_assessment_wire_schema_states_confidence_range() -> None:
+    request = synthesis_requests()[-1]
+    assert request.stage == "final_assessment"
+    project = request.output_schema.model_dump(mode="json")["json_schema"]
+    assert project["properties"]["confidence"]["anyOf"][0] == {
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer",
+    }
+    wire = render_anthropic_request(request)
+    assert not constraint_keywords(wire)
+    assert final_confidence(wire) == CONFIDENCE_WIRE
+    # Rendering neither mutates nor re-identifies the project schema.
+    assert request.output_schema == structured_schema("final_assessment")
+
+
+def test_all_stage_and_tool_wire_schemas_have_no_unsupported_constraints() -> None:
+    for stage in STAGES:
+        schema = structured_schema(stage).model_dump(mode="json")["json_schema"]
+        assert not constraint_keywords(render_anthropic_schema(schema))
+    for pair in TradingPair:
+        for definition in tool_definitions(pair):
+            parameters = definition.model_dump(mode="json")["parameters"]
+            assert render_anthropic_schema(parameters) == parameters
+    requests = synthesis_requests()
+    for request in [model_request(), *requests]:
+        assert not constraint_keywords(render_anthropic_request(request))
+    assert [r.stage for r in requests] == list(STAGES[1:])
+
+
+def test_stage_schema_identities_are_unchanged() -> None:
+    for stage in STAGES:
+        identity = structured_schema(stage).identity
+        assert identity.version == f"{stage}_schema_v1"
+        assert identity.digest == STAGE_SCHEMA_DIGESTS[stage]
+
+
+def test_constraints_removed_only_at_schema_positions() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "minimum": {"type": "integer", "maximum": 9, "minimum": 1},
+            "maxLength": {
+                "type": "string",
+                "description": "Named like a keyword.",
+                "maxLength": 4,
+                "minLength": 2,
+            },
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Tag"},
+                "uniqueItems": True,
+                "maxItems": 3,
+                "minItems": 1,
+            },
+            "ratio": {
+                "type": "number",
+                "multipleOf": 0.5,
+                "exclusiveMaximum": 1,
+                "exclusiveMinimum": 0,
+            },
+            "choice": {"enum": [{"minimum": 1}], "const": {"maxLength": 2}},
+        },
+        "required": ["minimum", "maxLength", "items", "ratio", "choice"],
+        "$defs": {"Tag": {"anyOf": [{"type": "string", "minLength": 1}]}},
+    }
+    original = json.loads(json.dumps(schema))
+    rendered = render_anthropic_schema(schema)
+    assert schema == original
+    assert rendered == {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "minimum": {
+                "type": "integer",
+                "description": "Constraints: minimum 1, maximum 9.",
+            },
+            "maxLength": {
+                "type": "string",
+                "description": "Named like a keyword.\n\n"
+                "Constraints: minLength 2, maxLength 4.",
+            },
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Tag"},
+                "description": "Constraints: minItems 1, maxItems 3, uniqueItems true.",
+            },
+            "ratio": {
+                "type": "number",
+                "description": "Constraints: exclusiveMinimum 0, "
+                "exclusiveMaximum 1, multipleOf 0.5.",
+            },
+            "choice": {"enum": [{"minimum": 1}], "const": {"maxLength": 2}},
+        },
+        "required": ["minimum", "maxLength", "items", "ratio", "choice"],
+        "$defs": {
+            "Tag": {
+                "anyOf": [
+                    {"type": "string", "description": "Constraints: minLength 1."}
+                ]
+            }
+        },
+    }
+    assert list(rendered["properties"]) == list(schema["properties"])
+    assert render_json(render_anthropic_schema(schema)) == render_json(rendered)
+
+
+def test_deep_schema_renders_without_recursion() -> None:
+    schema: dict[str, Any] = {"type": "integer", "minimum": 0}
+    for _ in range(10_000):
+        schema = {"type": "array", "items": schema, "maxItems": 1}
+    rendered = render_anthropic_schema(schema)
+    depth = 0
+    while "items" in rendered:
+        assert rendered.pop("description") == "Constraints: maxItems 1."
+        assert set(rendered) == {"type", "items"} and rendered["type"] == "array"
+        rendered = rendered["items"]
+        depth += 1
+    assert depth == 10_000
+    assert rendered == {"type": "integer", "description": "Constraints: minimum 0."}
+
+
+def test_out_of_range_confidence_is_still_rejected_by_project_validation() -> None:
+    responses = graph_responses(confidence=150)
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(assert_clean_wire(request))
+        return httpx2.Response(200, json=responses.pop(0))
+
+    research = anthropic_research(
+        handler,
+        OpportunityResearchRequest(
+            research_run_id="anthropic-confidence", opportunity=opportunity()
+        ),
+    )
+    assert final_confidence(bodies[-1]) == CONFIDENCE_WIRE
+    assert not responses
+    assert research.failure and research.failure.code == "INVALID_MODEL_OUTPUT"
+    assert research.assessment.outcome.value == "ABSTAIN"
+    calls = [r for r in research.trace if isinstance(r, ModelCallRecord)]
+    assert calls[-1].request.stage == "final_assessment"
+    assert isinstance(calls[-1].reply, StructuredReply)
+    assert '"confidence": 150' in calls[-1].reply.content
