@@ -63,6 +63,10 @@ must be strict UTC, hourly aligned, and ordered. The builder divides `[start, en
 into deterministic, nonoverlapping requests of at most 300 hourly slots; a
 zero-length interval produces no requests.
 
+The standard-library transport sends `User-Agent: crypteo/<version>` because
+Coinbase rejects Python's default `Python-urllib` agent; the capture envelope contains
+no request headers, so the User-Agent does not affect capture IDs.
+
 Each response owns only candle opens in `[request.start, request.end)`. Provider
 extras are preserved in the raw body but cannot supply another request's missing
 slots. Excluded rows still require a six-value row structure and a valid integer

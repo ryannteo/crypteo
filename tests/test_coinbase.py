@@ -1,3 +1,4 @@
+import importlib.metadata
 import inspect
 from collections.abc import Mapping
 from dataclasses import FrozenInstanceError
@@ -15,6 +16,7 @@ from crypteo.coinbase import (
     COINBASE_EXCHANGE_API,
     COINBASE_HOURLY_GRANULARITY_SECONDS,
     COINBASE_MAX_CANDLES_PER_REQUEST,
+    COINBASE_USER_AGENT,
     CoinbaseCandleRequest,
     CoinbaseCandleRetriever,
     CoinbasePublicHttpTransport,
@@ -413,6 +415,12 @@ def test_public_http_transport_sends_exact_get_and_returns_body_unchanged(
     assert sent.full_url == f"{url}?{query}"
     assert sent.get_method() == "GET"
     assert sent.data is None
+    assert sent.get_header("User-agent") == COINBASE_USER_AGENT
+    assert sent.header_items() == [("User-agent", COINBASE_USER_AGENT)]
+
+
+def test_public_http_user_agent_tracks_package_version() -> None:
+    assert f"crypteo/{importlib.metadata.version('crypteo')}" == COINBASE_USER_AGENT
 
 
 @pytest.mark.parametrize(

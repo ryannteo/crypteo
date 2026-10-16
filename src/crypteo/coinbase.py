@@ -15,6 +15,7 @@ from crypteo.domain.time import UtcDatetime
 COINBASE_EXCHANGE_API = "https://api.exchange.coinbase.com"
 COINBASE_MAX_CANDLES_PER_REQUEST = 300
 COINBASE_HOURLY_GRANULARITY_SECONDS = 3600
+COINBASE_USER_AGENT = "crypteo/1.0.0"
 
 _UTC_DATETIME_ADAPTER = TypeAdapter(UtcDatetime)
 
@@ -26,10 +27,17 @@ class HttpTransport(Protocol):
 
 
 class CoinbasePublicHttpTransport:
-    """Standard-library transport for Coinbase's public endpoint."""
+    """Standard-library transport for Coinbase's public endpoint.
+
+    Sends an identifying User-Agent because Coinbase rejects the urllib default.
+    """
 
     def get(self, url: str, params: Mapping[str, str | int]) -> bytes:
-        request = Request(f"{url}?{urlencode(params)}", method="GET")
+        request = Request(
+            f"{url}?{urlencode(params)}",
+            headers={"User-Agent": COINBASE_USER_AGENT},
+            method="GET",
+        )
         with urlopen(request) as response:  # noqa: B310
             return cast(bytes, response.read())
 
