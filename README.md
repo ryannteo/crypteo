@@ -1,5 +1,7 @@
 # Crypteo
 
+[![CI](https://github.com/ryannteo/crypteo/actions/workflows/ci.yml/badge.svg)](https://github.com/ryannteo/crypteo/actions/workflows/ci.yml)
+
 Crypteo is an agentic crypto research copilot in development for traders and
 researchers with market knowledge. It is designed to gather evidence, challenge
 trade theses, and surface uncertainty to support informed trading decisions.
@@ -33,6 +35,15 @@ The repository implements deterministic foundations and bounded AI research:
   and frozen validated-artifact modes, marked equity, and financial/research metrics.
 - Mandatory durable research journaling and an explicit positive research-run cap
   for fresh replay; strict provenance-compatible frozen reproduction.
+
+## V1 release run
+
+V1 was verified end to end at the `v1.0.0` tag on real Coinbase Exchange hourly
+data: a fresh historical research replay with Claude, then an exact frozen
+reproduction from the stored artifacts with no inference, and a fresh clone of the
+tag reproducing the run's code identity. The single research run assessed one BTC-USD
+candidate and returned NO_TRADE with confidence 58. That is one decision (n=1), not
+a performance result. See the [release-run record](docs/releases/v1.0.0.md).
 
 ## Architecture
 
@@ -188,6 +199,8 @@ Git preserves implementation history.
 - [Data pipeline](docs/data-pipeline.md): Coinbase acquisition, identity,
   provenance, persistence, and failure behavior.
 - [ADRs](docs/decisions/README.md): durable decisions, rationale, and trade-offs.
+- [V1 release run](docs/releases/v1.0.0.md): the `v1.0.0` end-to-end run on real
+  data, its checks, identities, and limitations.
 
 ## Local development
 
