@@ -10,8 +10,9 @@ research tools, and bounded opportunity-led model investigation, thesis, critiqu
 and final assessment through LangGraph, with optional durable SQLite lifecycle
 journaling and immutable terminal research artifacts. One historical replay
 lifecycle supports the deterministic baseline, fresh model research with mandatory
-durable journaling, and frozen validated-research-artifact reproduction. An
-integrated evaluation/comparison harness remains unimplemented.
+durable journaling, and frozen validated-research-artifact reproduction. A paired
+baseline/research comparison artifact validates and aggregates single-candidate
+windows; window planning, an evaluation runner, and statistics remain unimplemented.
 
 ## V1 Scope and Market Environment
 
@@ -709,9 +710,85 @@ validated artifacts, deterministic replay inputs, and implementation/provenance
 assumptions. Frozen reproduction consumes terminal research artifacts rather than
 rerunning stored model responses through the graph. Neither mode resolves the
 [parametric-knowledge limitation](#temporal-ownership-and-execution). Shared
-economics/configuration support later comparisons; comparison artifacts and
-experiment management are future work.
+economics/configuration support the
+[baseline/research comparison](#baselineresearch-comparison); experiment
+management is future work.
 [ADR-011](decisions/ADR-011-model-research-historical-replay.md) records the rationale.
+
+### Baseline/research comparison
+
+[evaluation.py](../src/crypteo/evaluation.py) pairs completed results; contracts
+live in [domain/evaluation.py](../src/crypteo/domain/evaluation.py). The unit is
+one window that admits exactly one scanner candidate, replayed once with
+`run_scanner_only` and once with `run_research_replay` (fresh or frozen) under
+identical `ReplayConfig`, datasets and code
+([ADR-013](decisions/ADR-013-v2-evaluation-scope.md)). The comparison runs no
+replay, inference, research-tool dispatch, or market-data read.
+
+`compare_replays(pairs, *, store)` takes an iterable of `(baseline, research)`
+results, sorts windows into canonical order, and returns a `ResearchComparison`.
+`load_comparison(encoded, *, store)` parses canonical JSON. Both call
+`validate_research_links` for every research result: pure contract validation
+cannot prove that referenced research artifacts exist.
+
+| Contract | Fields |
+| --- | --- |
+| `FinancialOutcome` | `status`; `exit_reason` and exact `net_pnl` only for `CLOSED` |
+| `CandidateComparison` | `opportunity_id`, `pair`, `observed_at`, research `outcome` and `confidence`, `baseline` and `research` financial outcomes |
+| `WindowComparison` | Baseline `ReplayResult`, research `ReplayResult`, `candidate` |
+| `ComparisonMetrics` | Descriptive aggregates below |
+| `ResearchComparison` | Ordered `windows`, `metrics`, `comparison_id` |
+
+Financial status is the candidate's terminal result in that mode: `NOT_SELECTED`
+(research `NO_TRADE`/`ABSTAIN`), `TERMS_REJECTED`, `RISK_REJECTED`,
+`ENTRY_REJECTED`, `CLOSED` (exit `STOP`/`TARGET`/`TIME` with the `ClosedTrade` net
+P&L), `OPEN_AT_END`, or `DATA_GAP` (unresolved holding gap).
+
+`WindowComparison` validation, on every parse:
+
+1. Revalidates both results.
+2. Requires a schema `"1"` `SCANNER_ONLY` baseline and a schema `"2"` `RESEARCH`
+   result; swapped or same-mode pairs fail.
+3. Requires equal `code`, `python_version`, `pydantic_version`, `replay`, and
+   `datasets`. Scanner-policy strings differ by design and are not compared.
+4. Requires identical ordered `SCAN` and `DELIVERY` records.
+5. Requires exactly one `ADMITTED` delivery; zero or several fail.
+6. For research `TRADE`, requires the research financial projection to equal the
+   baseline's: ordered records without `SCAN`/`DELIVERY`/`RESEARCH`, with
+   `RESEARCH_SELECTION` mapped to its proposal, plus final portfolio and metrics.
+   Order IDs are excluded from equality, but every order ID on each side must be
+   the one derived from that result's `run_id` and the candidate.
+7. For `NO_TRADE`/`ABSTAIN`, requires no candidate records after `RESEARCH`, zero
+   entries, and a flat final portfolio at initial cash.
+8. Recomputes `CandidateComparison` and requires equality.
+
+`ResearchComparison` validation requires at least one window; unique baseline run
+IDs, research run IDs, and opportunity IDs; one code identity, research policy
+identity, and workflow configuration; identical `initial_cash`, `trade_terms`,
+`risk`, and `execution`; and canonical order by candidate `observed_at`, then
+BTC-USD → ETH-USD → SOL-USD, then `opportunity_id`. Non-canonical order is
+rejected; `compare_replays` sorts before construction. `comparison_id` is the
+replay-canonical identity of purpose `research_comparison_v1` and the ordered
+`[baseline run_id, research run_id]` pairs. `metrics` is recomputed.
+
+| Metric | Meaning |
+| --- | --- |
+| `window_count` | Paired windows |
+| `trade_count`, `no_trade_count`, `abstain_count` | Research outcomes |
+| `baseline_closed_count`, `research_closed_count` | `CLOSED` outcomes per mode |
+| `baseline_realized_net_pnl`, `research_realized_net_pnl` | Exact sums of `CLOSED` net P&L per mode |
+| `taken` | Baseline `CLOSED` outcomes where research chose `TRADE` |
+| `declined` | Baseline `CLOSED` outcomes where research chose `NO_TRADE` or `ABSTAIN` |
+| `unresolved_count` | Baseline `OPEN_AT_END` or `DATA_GAP` outcomes |
+
+`taken` and `declined` each hold exact `net_pnl`, `wins` (> 0), `losses` (< 0),
+`breakevens` (= 0), and `win_rate` (wins / closed in the group, 50 significant
+digits half-even, `None` when empty). Because research `TRADE` reproduces the
+baseline, research realized P&L equals `taken` P&L, and baseline realized P&L
+equals `taken` plus `declined`. Results from different research policies are
+never pooled. Metrics are descriptive: no significance, calibration, or cost.
+The comparison grants no financial authority and feeds nothing back into
+research.
 
 ## Simulation and Risk
 
@@ -1263,29 +1340,24 @@ Research replay binds scanner/risk/simulation inputs to its versioned manifest;
 standalone research does not extend the schema-1 baseline manifest.
 
 The evaluation question is whether bounded research improves selection among the
-same opportunities under identical risk and execution assumptions. The implemented
-modes preserve common deterministic configuration, but a first-class baseline/model
-comparison artifact, an integrated evaluation/reporting harness, generalized
-experiment management, additional baselines, process/performance graders, and
-statistical model-performance evaluation remain unimplemented. There is no alpha
+same opportunities under identical risk and execution assumptions. The
+[baseline/research comparison](#baselineresearch-comparison) artifact is
+implemented. Window planning, an evaluation runner, an integrated reporting
+harness, multi-candidate windows, generalized experiment management, additional
+baselines, process/performance graders, and statistical model-performance
+evaluation remain unimplemented. There is no alpha
 attribution, confidence calibration, significance analysis, profitability
 probability, or inference-cost estimator. Distributed replay, automatic replay
 crash resumption, concurrent candidate research, tolerant continuation after
 research infrastructure failure, and unrestricted frozen reuse across changed
 configurations are also unimplemented.
 
-The planned chronological split policy is:
+[ADR-013](decisions/ADR-013-v2-evaluation-scope.md) defines the evaluation
+periods, because the research model's training data extends through June 2026:
 
-| Role | First hourly boundary | Last hourly boundary |
+| Role | Hourly boundaries | Permitted use |
 | --- | --- | --- |
-| Development | `2021-07-01T00:00:00Z` | `2023-06-30T23:00:00Z` |
-| Validation | `2023-07-01T00:00:00Z` | `2024-06-30T23:00:00Z` |
-| Untouched test | `2024-07-01T00:00:00Z` | `2026-06-30T23:00:00Z` |
+| Contaminated | Before `2026-07-01T00:00:00Z` | Plumbing, determinism and integration checks only; no claims about research selection |
+| Evaluation | From `2026-07-01T00:00:00Z` | Model-backed evaluation runs |
 
-These split labels are not enforcement in `ReplayConfig`, which uses an exclusive
-`end`. The common start accommodates SOL-USD availability. Dataset integrity
-checks may inspect timestamps/schema/gaps across splits, but final-period prices,
-signals, and outcomes must remain uninspected during development. Prompts, scanner,
-risk, and design must freeze before final-test outcome inspection. The small,
-correlated asset universe and limited market cycles constrain generalization.
-Walk-forward enforcement and the final-test access guard are not implemented.
+These periods are not enforced by `ReplayConfig` or the comparison artifact.

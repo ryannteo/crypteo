@@ -56,3 +56,4 @@ durable decision actually changes.
 | [010](ADR-010-durable-research-lifecycle.md) | Durable append-only research lifecycle and transactional terminal publication | Accepted |
 | [011](ADR-011-model-research-historical-replay.md) | Model research admission into deterministic historical replay | Accepted |
 | [012](ADR-012-claude-research-provider.md) | Claude as the durable research provider | Accepted |
+| [013](ADR-013-v2-evaluation-scope.md) | V2 evaluates research selection on post-cutoff data | Accepted |

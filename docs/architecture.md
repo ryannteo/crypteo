@@ -255,6 +255,14 @@ each referenced run through `load_terminal`, applies replay admission, and compa
 the full compact projection. `load_research_replay` combines JSON parsing with that
 external validation for imported results used in evaluation.
 
+`compare_replays` and `load_comparison` in `evaluation.py` pair a scanner-only
+and a research `ReplayResult` per single-candidate window into a
+`ResearchComparison`. Its contracts revalidate both results, require identical
+deterministic inputs, scans and deliveries, require research `TRADE` to reproduce
+the baseline financial chain apart from run-bound order IDs, and recompute
+descriptive metrics. The functions also resolve research links through the store.
+They neither run replays nor feed results back into research.
+
 Marked equity uses visible completed closes; a holding gap leaves valid-prefix
 valuation and known realized results available. Replay results remain in-memory
 with canonical JSON output; durable research persistence does not persist the
