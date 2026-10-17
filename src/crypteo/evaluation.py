@@ -1,22 +1,33 @@
-"""Paired scanner-only/research replay comparison over completed results.
+"""Evaluation window planning and paired scanner-only/research comparison.
 
-No inference, research-tool dispatch, or market-data reads: windows are built
-from existing ``ReplayResult``s, fresh or frozen, and research links resolve
-through the caller's store.
+Planning reads candles only through the point-in-time gateway and scanner, and
+never runs terms, risk, execution, replay or research, so selection cannot see
+outcomes. Comparison performs no inference, research-tool dispatch, or
+market-data reads: windows are built from existing ``ReplayResult``s, fresh or
+frozen, and research links resolve through the caller's store.
 """
 
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from crypteo.coinbase_dataset import (
+    CoinbaseCanonicalDataset,
+    CoinbaseHistoricalDataset,
+)
 from crypteo.domain._execution_arithmetic import _add
 from crypteo.domain.evaluation import (
     CandidateComparison,
     ClosedOutcomeGroup,
     ComparisonMetrics,
+    ExclusionReason,
     FinancialOutcome,
+    PlannedCandidate,
     ResearchComparison,
     WindowComparison,
+    WindowPlan,
+    WindowPlanSettings,
 )
 from crypteo.domain.execution import (
     ClosedTrade,
@@ -24,6 +35,7 @@ from crypteo.domain.execution import (
     EntryRejection,
     PortfolioSnapshot,
 )
+from crypteo.domain.market import Timeframe, TradingPair
 from crypteo.domain.replay import (
     PAYLOAD_KINDS,
     Delivery,
@@ -35,12 +47,22 @@ from crypteo.domain.replay_research import (
     ResearchReplayManifest,
     ResearchSelection,
 )
-from crypteo.domain.research import DecisionOutcome
+from crypteo.domain.research import DecisionOutcome, Opportunity
 from crypteo.domain.trade_terms import TradeTerms
-from crypteo.experiment import ASSET_PRIORITY, ExperimentManifest, identity
+from crypteo.experiment import (
+    ASSET_PRIORITY,
+    SCANNER_POLICY,
+    DatasetIdentity,
+    ExperimentManifest,
+    ReplayConfig,
+    identity,
+)
+from crypteo.replay import _inputs
 from crypteo.replay_metrics import _ratio
 from crypteo.research_persistence import ResearchStore
 from crypteo.research_replay import validate_research_links
+from crypteo.scanner import OpportunityScanner
+from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
 
 def _order_free(value: Any, order_id: str | None) -> Any:
@@ -354,3 +376,189 @@ def load_comparison(
 ) -> ResearchComparison:
     """Import a comparison; pure parsing cannot prove research artifacts exist."""
     return _with_links(ResearchComparison.model_validate_json(encoded), store)
+
+
+def _candidate_key(opportunity: Opportunity) -> tuple[Any, ...]:
+    return (
+        opportunity.observed_at,
+        ASSET_PRIORITY.index(opportunity.pair),
+        opportunity.opportunity_id,
+    )
+
+
+def planned_window(
+    opportunity: Opportunity, settings: WindowPlanSettings
+) -> ReplayConfig:
+    """The single-candidate window ``[T, T + max_holding_bars hours]``.
+
+    A position authorized at T enters on the candle opening at T, and the broker
+    closes, gaps or rejects it by the reconciliation at the window end. A candidate
+    observed at the end is never scanned, since that boundary only reconciles.
+    """
+    start = opportunity.observed_at
+    return ReplayConfig(
+        start=start,
+        end=start + settings.risk.max_holding_bars * Timeframe.ONE_HOUR.duration,
+        initial_cash=settings.initial_cash,
+        assets=(opportunity.pair,),
+        trade_terms=settings.trade_terms,
+        risk=settings.risk,
+        execution=settings.execution,
+    )
+
+
+def _overlaps(
+    opportunity: Opportunity, others: Iterable[Opportunity], end: datetime
+) -> bool:
+    return any(
+        other.pair == opportunity.pair
+        and opportunity.observed_at < other.observed_at < end
+        for other in others
+    )
+
+
+def validate_planned_candidates(
+    settings: WindowPlanSettings,
+    pairs: tuple[TradingPair, ...],
+    candidates: Sequence[PlannedCandidate],
+) -> None:
+    """Pure plan rules; dataset ends and unlisted candidates need ``validate_plan``."""
+    opportunities = [c.opportunity for c in candidates]
+    if len({o.opportunity_id for o in opportunities}) != len(opportunities):
+        raise ValueError("planned candidates require unique opportunity IDs")
+    keys = [_candidate_key(o) for o in opportunities]
+    if keys != sorted(keys) or len(set(keys)) != len(keys):
+        raise ValueError(
+            "candidates must be ordered by observed_at, asset priority, opportunity ID"
+        )
+    selected = sum(c.decision == "SELECTED" for c in candidates)
+    if selected > settings.limit:
+        raise ValueError("plan selects more candidates than its limit")
+    truncated = selected == settings.limit
+    if truncated and candidates[-1].decision != "SELECTED":
+        raise ValueError("a plan at its limit must end with its last selection")
+    last = opportunities[-1].observed_at if opportunities else None
+    for candidate in candidates:
+        opportunity = candidate.opportunity
+        if opportunity.observed_at < settings.planning_start:
+            raise ValueError("planned candidates must not precede planning_start")
+        if opportunity.pair not in pairs:
+            raise ValueError("planned candidates must belong to a planned dataset")
+        window = planned_window(opportunity, settings)
+        if candidate.replay is not None and candidate.replay != window:
+            raise ValueError(
+                "selected replay must match the candidate's derived window"
+            )
+        if candidate.exclusion_reason == "NOT_AVAILABLE_AT_OBSERVATION":
+            continue
+        listed = _overlaps(opportunity, opportunities, window.end)
+        if listed and candidate.decision == "SELECTED":
+            raise ValueError("a selected window cannot contain a listed candidate")
+        if (
+            candidate.exclusion_reason == "OVERLAPPING_CANDIDATE"
+            and not listed
+            and not (truncated and last is not None and window.end > last)
+        ):
+            raise ValueError("OVERLAPPING_CANDIDATE requires an overlapping candidate")
+
+
+def plan_identity(
+    settings: WindowPlanSettings,
+    scanner_policy: str,
+    datasets: Sequence[DatasetIdentity],
+    candidates: Sequence[PlannedCandidate],
+) -> str:
+    return identity(
+        {
+            "purpose": "evaluation_window_plan_v1",
+            "settings": settings,
+            "scanner_policy": scanner_policy,
+            "datasets": list(datasets),
+            "candidates": list(candidates),
+        }
+    )
+
+
+def plan_windows(
+    datasets: Iterable[CoinbaseCanonicalDataset | CoinbaseHistoricalDataset],
+    settings: WindowPlanSettings,
+) -> WindowPlan:
+    """Plan single-candidate windows from one full-history scan per pair.
+
+    Each pair's gateway clock sits at its last completed candle close. A
+    crossing depends only on the 21 candles up to it, so the scan finds the same
+    opportunity a replay starting at its ``observed_at`` admits, provided it was
+    available then. Selection uses only scanner candidates and candle close
+    times, never prices or outcomes. Failures raise.
+    """
+    settings = WindowPlanSettings.model_validate(settings.model_dump())
+    datasets = tuple(datasets)
+    supplied = {dataset.manifest.pair for dataset in datasets}
+    pairs = tuple(pair for pair in ASSET_PRIORITY if pair in supplied)
+    candles, dataset_ids = _inputs(pairs, datasets)
+    found: list[Opportunity] = []
+    last_close: dict[TradingPair, datetime] = {}
+    for pair in pairs:
+        history = tuple(candle for candle in candles if candle.pair is pair)
+        if not history:
+            continue
+        last_close[pair] = max(candle.close_time for candle in history)
+        gateway = PointInTimeDataGateway(SimulationClock(last_close[pair]), history)
+        scanned = tuple(
+            Opportunity.model_validate(item.model_dump())
+            for item in OpportunityScanner(gateway).scan(pair=pair)
+        )
+        if any(item.pair != pair for item in scanned):
+            raise ValueError("scanner returned a different pair")
+        found.extend(o for o in scanned if o.observed_at >= settings.planning_start)
+    found.sort(key=_candidate_key)
+    planned: list[PlannedCandidate] = []
+    selected = 0
+    for opportunity in found:
+        if selected == settings.limit:
+            break
+        window = planned_window(opportunity, settings)
+        reason: ExclusionReason | None = None
+        if opportunity.available_at > opportunity.observed_at:
+            reason = "NOT_AVAILABLE_AT_OBSERVATION"
+        elif window.end > last_close[opportunity.pair]:
+            reason = "WINDOW_BEYOND_DATA"
+        elif _overlaps(opportunity, found, window.end):
+            reason = "OVERLAPPING_CANDIDATE"
+        if reason is None:
+            selected += 1
+            planned.append(
+                PlannedCandidate(
+                    opportunity=opportunity, decision="SELECTED", replay=window
+                )
+            )
+        else:
+            planned.append(
+                PlannedCandidate(
+                    opportunity=opportunity,
+                    decision="EXCLUDED",
+                    exclusion_reason=reason,
+                )
+            )
+    return WindowPlan(
+        settings=settings,
+        scanner_policy=SCANNER_POLICY,
+        datasets=dataset_ids,
+        candidates=tuple(planned),
+        plan_id=plan_identity(settings, SCANNER_POLICY, dataset_ids, planned),
+    )
+
+
+def validate_plan(
+    plan: WindowPlan,
+    datasets: Iterable[CoinbaseCanonicalDataset | CoinbaseHistoricalDataset],
+) -> WindowPlan:
+    """Re-plan from ``datasets`` and require exact equality.
+
+    Catches what pure validation cannot see: unlisted overlaps, dataset ends,
+    omitted candidates, and different datasets.
+    """
+    plan = WindowPlan.model_validate(plan.model_dump())
+    if plan_windows(datasets, plan.settings) != plan:
+        raise ValueError("plan must equal a re-plan of the supplied datasets")
+    return plan

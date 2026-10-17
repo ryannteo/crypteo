@@ -75,9 +75,10 @@ artifacts improve reproducibility without resolving that limitation.
 - One bounded opportunity-led research workflow is implemented. Trader-led
   interactive research/chat, live mode, UI, non-market research, specialist agents,
   and memory/RAG are deferred.
-- No evaluation window planner, integrated evaluation/reporting harness,
-  statistical model-performance evaluation, or automatic replay crash resume. A
-  paired baseline/research comparison artifact is implemented.
+- No evaluation runner, integrated evaluation/reporting harness, statistical
+  model-performance evaluation, or automatic replay crash resume. A paired
+  baseline/research comparison artifact and a mechanical single-candidate
+  evaluation window planner are implemented.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
 
@@ -132,6 +133,11 @@ links. Parsing a compact replay result alone does not prove the artifacts exist.
 results for windows that each admit one candidate and returns a validated
 `ResearchComparison` with descriptive metrics; `load_comparison(encoded, *, store)`
 imports one from canonical JSON. Both resolve research links through the store.
+`crypteo.evaluation.plan_windows(datasets, settings)` derives those windows from
+scanner candidates without reference to outcomes, recording a reason for every
+excluded candidate; `validate_plan(plan, datasets)` re-plans and requires
+equality. See the
+[window planning specification](docs/v1-specification.md#evaluation-window-planning).
 See the [research replay specification](docs/v1-specification.md#historical-research-replay)
 and [ADR-011](docs/decisions/ADR-011-model-research-historical-replay.md).
 

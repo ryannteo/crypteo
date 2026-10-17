@@ -790,6 +790,82 @@ never pooled. Metrics are descriptive: no significance, calibration, or cost.
 The comparison grants no financial authority and feeds nothing back into
 research.
 
+### Evaluation window planning
+
+`plan_windows(datasets, settings)` in [evaluation.py](../src/crypteo/evaluation.py)
+turns canonical datasets into a `WindowPlan` of single-candidate replay windows
+for the comparison above. It runs no replay, inference, terms, risk or execution,
+so no outcome can influence selection. `validate_plan(plan, datasets)` re-plans
+from the datasets and requires exact equality.
+
+`WindowPlanSettings` holds `purpose`, an hourly UTC `planning_start`, a strictly
+positive integer `limit`, and the `initial_cash`, `trade_terms`, `risk` and
+`execution` shared by every window; terms and execution price increments must
+match. Purpose `EVALUATION` requires `planning_start >= EVALUATION_PERIOD_START`
+(`2026-07-01T00:00:00Z`, ADR-013). Purpose `PLUMBING` accepts any start and
+exists for tests and integration checks on contaminated data.
+
+Planning validates datasets as replay does (exactly one canonical dataset per
+pair, any nonempty subset of BTC-USD, ETH-USD and SOL-USD). For each pair it
+builds a point-in-time gateway with the clock at that pair's last completed
+candle close and scans once. A crossing depends only on the 21 candles up to its
+close, and gateway visibility only grows with time. So this scan contains every
+opportunity a replay could admit, identical in ID, payload, times and summary to
+the one a replay starting at its `observed_at` admits. A crossing that depends on
+a candle not yet available at the last close is not a candidate. Candidates with
+`observed_at >= planning_start` are ordered by `observed_at`, then BTC-USD →
+ETH-USD → SOL-USD, then `opportunity_id`.
+
+The window for a candidate observed at T is `start = T`,
+`end = T + max_holding_bars` hours, `assets = (pair,)`, with the settings'
+economics. An authorized position enters on the candle opening at T, and the
+TIME exit falls on the close of holding bar `max_holding_bars` at `end`, so by
+the final reconciliation the baseline position is closed, gapped or rejected,
+never open. With more than one holding bar, an `end` one hour earlier leaves it
+open. A candidate observed exactly at `end` is never scanned, and earlier ones are
+`NOT_CURRENT`.
+
+Exclusions apply in this order, and the first that applies is recorded:
+
+| Reason | Condition |
+| --- | --- |
+| `NOT_AVAILABLE_AT_OBSERVATION` | `available_at > observed_at`, so a replay starting at `observed_at` would not admit it |
+| `WINDOW_BEYOND_DATA` | `end` is after the pair's last completed candle close |
+| `OVERLAPPING_CANDIDATE` | Another scanner candidate of the same pair is observed strictly inside `(T, end)` |
+
+The overlap rule uses scanner candidates only, including ones that are
+themselves unavailable at observation. Planning walks candidates in canonical
+order, selecting each one not excluded, and stops after the `limit`-th
+selection. `candidates` lists every candidate from `planning_start` through that
+selection; if the data runs out first, it lists all of them with fewer
+selections.
+
+`WindowPlan` holds `settings`, `scanner_policy` (the implemented scanner policy),
+`datasets` (`DatasetIdentity` per supplied pair, in canonical pair order),
+`candidates` and `plan_id`. Each `PlannedCandidate` holds the full `Opportunity`,
+`decision` (`SELECTED` or `EXCLUDED`), `exclusion_reason` (only when excluded)
+and `replay` (`ReplayConfig`, only when selected). `plan_id` is the
+replay-canonical identity of the plan without `plan_id` plus purpose
+`evaluation_window_plan_v1`.
+
+Pure validation, on every parse, checks the settings rules, the scanner policy,
+dataset order, candidates that are unique, canonically ordered, at or after
+`planning_start` and on a planned pair, and decisions consistent with reasons
+and windows. Each selected `replay` must equal the derived window.
+`NOT_AVAILABLE_AT_OBSERVATION` must match the opportunity's own times. A
+selected window cannot contain a listed same-pair candidate, and
+`OVERLAPPING_CANDIDATE` needs a listed overlap unless the overlap could lie after
+the last candidate of a plan at its limit. A plan has at most `limit`
+selections and, at its limit, ends with a selection. `plan_id` is recomputed.
+Dataset ends, unlisted overlaps and omitted candidates need `validate_plan`.
+
+Limitations: single-asset windows bind only that pair's dataset, so
+relative-strength evidence is unavailable to research in planned windows.
+`OVERLAPPING_CANDIDATE` drops candidates followed by another crossing within the
+window, which may bias the sample toward candidates whose decline did not
+continue. Internal dataset gaps are not excluded; they surface as baseline
+`ENTRY_REJECTED` or `DATA_GAP`.
+
 ## Simulation and Risk
 
 Deterministic LONG risk authorization and sizing use `RiskService.authorize(TradeProposal, PortfolioSnapshot)`, independent of `TradeDecision`. Authorization uses current flat cash as capital and the exact gateway-visible completed candle close ending at `decision_at`, which must equal gateway time. Supplied stop/target levels must align to the price increment and satisfy `0 < stop < reference < target`; the separate trade-terms service generates them. Risk authorization also accepts direct proposals and independently validates their economics; it does not depend on a `TradeTerms` object.
@@ -1341,11 +1417,11 @@ standalone research does not extend the schema-1 baseline manifest.
 
 The evaluation question is whether bounded research improves selection among the
 same opportunities under identical risk and execution assumptions. The
-[baseline/research comparison](#baselineresearch-comparison) artifact is
-implemented. Window planning, an evaluation runner, an integrated reporting
-harness, multi-candidate windows, generalized experiment management, additional
-baselines, process/performance graders, and statistical model-performance
-evaluation remain unimplemented. There is no alpha
+[baseline/research comparison](#baselineresearch-comparison) artifact and
+[evaluation window planning](#evaluation-window-planning) are implemented. An
+evaluation runner, an integrated reporting harness, multi-candidate windows,
+generalized experiment management, additional baselines, process/performance
+graders, and statistical model-performance evaluation remain unimplemented. There is no alpha
 attribution, confidence calibration, significance analysis, profitability
 probability, or inference-cost estimator. Distributed replay, automatic replay
 crash resumption, concurrent candidate research, tolerant continuation after
@@ -1360,4 +1436,5 @@ periods, because the research model's training data extends through June 2026:
 | Contaminated | Before `2026-07-01T00:00:00Z` | Plumbing, determinism and integration checks only; no claims about research selection |
 | Evaluation | From `2026-07-01T00:00:00Z` | Model-backed evaluation runs |
 
-These periods are not enforced by `ReplayConfig` or the comparison artifact.
+Window planning with purpose `EVALUATION` enforces the evaluation period start.
+`ReplayConfig` and the comparison artifact do not enforce the periods.

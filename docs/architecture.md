@@ -261,7 +261,10 @@ and a research `ReplayResult` per single-candidate window into a
 deterministic inputs, scans and deliveries, require research `TRADE` to reproduce
 the baseline financial chain apart from run-bound order IDs, and recompute
 descriptive metrics. The functions also resolve research links through the store.
-They neither run replays nor feed results back into research.
+They neither run replays nor feed results back into research. `plan_windows` derives
+those windows mechanically: one gateway-bound scan per pair yields every
+candidate, each selected or excluded with a recorded reason, without terms, risk,
+execution, replay or research; `validate_plan` re-plans and requires equality.
 
 Marked equity uses visible completed closes; a holding gap leaves valid-prefix
 valuation and known realized results available. Replay results remain in-memory

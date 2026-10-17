@@ -1,19 +1,32 @@
-"""Paired baseline/research comparison contracts; descriptive, never authority.
+"""Evaluation window plans and paired baseline/research comparison contracts.
 
-A comparison reads completed replay results only. It grants no financial
-authority and feeds nothing back into research. Pure validation cannot prove
-that referenced research artifacts exist; ``crypteo.evaluation`` resolves them.
+A window plan derives replay windows from scanner candidates only. A comparison
+reads completed replay results only. Neither grants financial authority or feeds
+anything back into research. Pure validation cannot prove that referenced
+research artifacts exist or that a plan covers its datasets;
+``crypteo.evaluation`` resolves both.
 """
 
-from typing import Literal, Self
+from datetime import UTC, datetime
+from typing import Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from crypteo.domain.execution import ExecutionConfig
 from crypteo.domain.market import ExactDecimal, NonNegativeDecimal, TradingPair
 from crypteo.domain.replay import ReplayResult
-from crypteo.domain.research import DecisionOutcome, NonBlankText
+from crypteo.domain.research import DecisionOutcome, NonBlankText, Opportunity
+from crypteo.domain.risk import RiskConfig
 from crypteo.domain.time import UtcDatetime
-from crypteo.experiment import Digest, canonical_bytes
+from crypteo.domain.trade_terms import TradeTermsConfig
+from crypteo.experiment import (
+    ASSET_PRIORITY,
+    SCANNER_POLICY,
+    DatasetIdentity,
+    Digest,
+    ReplayConfig,
+    canonical_bytes,
+)
 
 FinancialStatus = Literal[
     "NOT_SELECTED",
@@ -153,6 +166,108 @@ class ResearchComparison(BaseModel):
             raise ValueError("metrics must match window candidate comparisons")
         if self.comparison_id != comparison_identity(self.windows):
             raise ValueError("comparison_id must match ordered window run IDs")
+        return self
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_bytes(self)
+
+
+# ADR-013: earlier hourly boundaries are inside the research model's training data.
+EVALUATION_PERIOD_START: Final = datetime(2026, 7, 1, tzinfo=UTC)
+
+ExclusionReason = Literal[
+    "NOT_AVAILABLE_AT_OBSERVATION", "WINDOW_BEYOND_DATA", "OVERLAPPING_CANDIDATE"
+]
+
+
+class WindowPlanSettings(BaseModel):
+    """Planning range, selection cap and the economics shared by every window.
+
+    ``PLUMBING`` permits contaminated pre-evaluation data for tests and
+    integration checks; ``EVALUATION`` requires the ADR-013 evaluation period.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    purpose: Literal["EVALUATION", "PLUMBING"]
+    planning_start: UtcDatetime
+    limit: int = Field(strict=True, gt=0)
+    initial_cash: NonNegativeDecimal
+    trade_terms: TradeTermsConfig
+    risk: RiskConfig
+    execution: ExecutionConfig
+
+    @model_validator(mode="after")
+    def validate_settings(self) -> Self:
+        start = self.planning_start
+        if start.minute or start.second or start.microsecond:
+            raise ValueError("planning_start must align to an hour")
+        if self.purpose == "EVALUATION" and start < EVALUATION_PERIOD_START:
+            raise ValueError("EVALUATION planning must start in the evaluation period")
+        if self.trade_terms.price_increment != self.execution.price_increment:
+            raise ValueError("trade terms and execution price increments must match")
+        return self
+
+
+class PlannedCandidate(BaseModel):
+    """One scanner candidate: SELECTED with its window, or EXCLUDED with a reason."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    opportunity: Opportunity
+    decision: Literal["SELECTED", "EXCLUDED"]
+    exclusion_reason: ExclusionReason | None = None
+    replay: ReplayConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> Self:
+        selected = self.decision == "SELECTED"
+        if selected != (self.exclusion_reason is None) or selected != (
+            self.replay is not None
+        ):
+            raise ValueError("exactly SELECTED candidates carry a replay and no reason")
+        opportunity = self.opportunity
+        if (opportunity.available_at > opportunity.observed_at) != (
+            self.exclusion_reason == "NOT_AVAILABLE_AT_OBSERVATION"
+        ):
+            raise ValueError(
+                "NOT_AVAILABLE_AT_OBSERVATION must match the opportunity's own times"
+            )
+        return self
+
+
+class WindowPlan(BaseModel):
+    """Canonically ordered candidates from ``planning_start`` to the last selection.
+
+    Pure validation recomputes each window and every listed fact; only
+    ``crypteo.evaluation.validate_plan`` can prove coverage of the datasets.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    settings: WindowPlanSettings
+    scanner_policy: str
+    datasets: tuple[DatasetIdentity, ...] = Field(min_length=1)
+    candidates: tuple[PlannedCandidate, ...]
+    plan_id: Digest
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> Self:
+        from crypteo.evaluation import plan_identity, validate_planned_candidates
+
+        if self.scanner_policy != SCANNER_POLICY:
+            raise ValueError("scanner policy must match the implemented policy")
+        pairs = tuple(item.pair for item in self.datasets)
+        if pairs != tuple(pair for pair in ASSET_PRIORITY if pair in pairs):
+            raise ValueError("plan datasets must be unique in canonical pair order")
+        validate_planned_candidates(self.settings, pairs, self.candidates)
+        if self.plan_id != plan_identity(
+            self.settings, self.scanner_policy, self.datasets, self.candidates
+        ):
+            raise ValueError("plan_id must match the plan contents")
         return self
 
     def canonical_bytes(self) -> bytes:
