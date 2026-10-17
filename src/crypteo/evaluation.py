@@ -1,26 +1,35 @@
-"""Evaluation window planning and paired scanner-only/research comparison.
+"""Evaluation window planning, paired comparison, and the evaluation runner.
 
 Planning reads candles only through the point-in-time gateway and scanner, and
 never runs terms, risk, execution, replay or research, so selection cannot see
 outcomes. Comparison performs no inference, research-tool dispatch, or
 market-data reads: windows are built from existing ``ReplayResult``s, fresh or
-frozen, and research links resolve through the caller's store.
+frozen, and research links resolve through the caller's store. The runner
+executes a plan as given through the existing replay entrypoints and saves each
+window as it completes; reproduction replays saved research frozen.
 """
 
+import os
+import re
+import tempfile
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from crypteo.coinbase_dataset import (
     CoinbaseCanonicalDataset,
     CoinbaseHistoricalDataset,
 )
+from crypteo.coinbase_persistence import _write_immutable
 from crypteo.domain._execution_arithmetic import _add
 from crypteo.domain.evaluation import (
     CandidateComparison,
     ClosedOutcomeGroup,
     ComparisonMetrics,
+    EvaluationAttempt,
+    EvaluationResult,
     ExclusionReason,
     FinancialOutcome,
     PlannedCandidate,
@@ -43,24 +52,40 @@ from crypteo.domain.replay import (
     proposal_from_terms,
 )
 from crypteo.domain.replay_research import (
+    FreshResearchSettings,
+    FrozenResearchMapping,
+    FrozenResearchSettings,
     ReplayResearchRecord,
     ResearchReplayManifest,
     ResearchSelection,
+    research_run_id,
 )
 from crypteo.domain.research import DecisionOutcome, Opportunity
+from crypteo.domain.research_workflow import ResearchWorkflowConfig
 from crypteo.domain.trade_terms import TradeTerms
 from crypteo.experiment import (
     ASSET_PRIORITY,
     SCANNER_POLICY,
+    CodeIdentity,
     DatasetIdentity,
     ExperimentManifest,
     ReplayConfig,
+    build_research_manifest,
+    canonical_bytes,
+    current_code_identity,
     identity,
 )
-from crypteo.replay import _inputs
+from crypteo.replay import _inputs, run_scanner_only
 from crypteo.replay_metrics import _ratio
+from crypteo.research_journal import ResearchStorageError
+from crypteo.research_model import ObservableResearchModel
 from crypteo.research_persistence import ResearchStore
-from crypteo.research_replay import validate_research_links
+from crypteo.research_replay import (
+    ResearchBudgetExceeded,
+    load_research_replay,
+    run_research_replay,
+    validate_research_links,
+)
 from crypteo.scanner import OpportunityScanner
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
@@ -562,3 +587,508 @@ def validate_plan(
     if plan_windows(datasets, plan.settings) != plan:
         raise ValueError("plan must equal a re-plan of the supplied datasets")
     return plan
+
+
+type _Dataset = CoinbaseCanonicalDataset | CoinbaseHistoricalDataset
+
+_ATTEMPT_NAME = re.compile(r"attempt-([1-9][0-9]*)\.json")
+
+
+def _selected(plan: WindowPlan) -> list[PlannedCandidate]:
+    return [c for c in plan.candidates if c.decision == "SELECTED"]
+
+
+def attempt_trial_id(trial: str, opportunity_id: str, attempt: int) -> str:
+    return f"{trial}/{opportunity_id}/{attempt}"
+
+
+def _validate_attempts(
+    ids: Sequence[str],
+    trial: str,
+    max_research_runs: int,
+    attempts: Sequence[EvaluationAttempt],
+) -> dict[str, EvaluationAttempt]:
+    """Attempt rules; returns each opportunity's latest attempt."""
+    keys = [(a.opportunity_id, a.attempt) for a in attempts]
+    if len(set(keys)) != len(keys):
+        raise ValueError("attempts must be unique per opportunity and number")
+    if any(a.opportunity_id not in ids for a in attempts):
+        raise ValueError("attempts must belong to the plan's selected candidates")
+    if keys != sorted(keys, key=lambda key: (ids.index(key[0]), key[1])):
+        raise ValueError("attempts must be ordered by planned window, then number")
+    latest: dict[str, EvaluationAttempt] = {}
+    for attempt in attempts:
+        previous = latest.get(attempt.opportunity_id)
+        if attempt.attempt != (previous.attempt + 1 if previous else 1):
+            raise ValueError("attempts must be numbered from 1 without gaps")
+        if attempt.trial_id != attempt_trial_id(
+            trial, attempt.opportunity_id, attempt.attempt
+        ):
+            raise ValueError("attempt trial_id must be trial/opportunity_id/attempt")
+        latest[attempt.opportunity_id] = attempt
+    if len(attempts) > max_research_runs:
+        raise ValueError("attempts must not exceed max_research_runs")
+    return latest
+
+
+def validate_evaluation(
+    plan: WindowPlan,
+    comparison: ResearchComparison,
+    trial: str,
+    max_research_runs: int,
+    attempts: Sequence[EvaluationAttempt],
+) -> None:
+    """Pure binding of comparison windows and attempts to the executed plan."""
+    selected = _selected(plan)
+    windows = comparison.windows
+    ids = [c.opportunity.opportunity_id for c in selected]
+    if [w.candidate.opportunity_id for w in windows] != ids:
+        raise ValueError(
+            "comparison windows must match the plan's selected candidates in order"
+        )
+    datasets = {item.pair: item for item in plan.datasets}
+    settings = plan.settings
+    for window, candidate in zip(windows, selected, strict=True):
+        replay = candidate.replay
+        assert replay is not None
+        if (
+            window.baseline.manifest.replay != replay
+            or window.research.manifest.replay != replay
+        ):
+            raise ValueError("window replay configs must equal the planned windows")
+        if window.baseline.manifest.datasets != (datasets[candidate.opportunity.pair],):
+            raise ValueError("windows must replay only the plan's dataset for the pair")
+        # Implied by the planned windows; checked so the binding is explicit.
+        if (replay.initial_cash, replay.trade_terms, replay.risk, replay.execution) != (
+            settings.initial_cash,
+            settings.trade_terms,
+            settings.risk,
+            settings.execution,
+        ):
+            raise ValueError("window economics must equal the plan settings")
+    latest = _validate_attempts(ids, trial, max_research_runs, attempts)
+    for window in windows:
+        (record,) = (
+            r.payload
+            for r in window.research.records
+            if isinstance(r.payload, ReplayResearchRecord)
+        )
+        attempt = latest.get(window.candidate.opportunity_id)
+        if attempt is None or record.origin.trial_id != attempt.trial_id:
+            raise ValueError("window research must originate from its latest attempt")
+
+
+def evaluation_identity(
+    plan: WindowPlan,
+    comparison: ResearchComparison,
+    trial: str,
+    max_research_runs: int,
+    attempts: Sequence[EvaluationAttempt],
+) -> str:
+    return identity(
+        {
+            "purpose": "evaluation_result_v1",
+            "plan_id": plan.plan_id,
+            "comparison_id": comparison.comparison_id,
+            "trial": trial,
+            "max_research_runs": max_research_runs,
+            "attempts": list(attempts),
+        }
+    )
+
+
+def _evaluation(
+    plan: WindowPlan,
+    comparison: ResearchComparison,
+    trial: str,
+    max_research_runs: int,
+    attempts: tuple[EvaluationAttempt, ...],
+) -> EvaluationResult:
+    return EvaluationResult(
+        plan=plan,
+        comparison=comparison,
+        trial=trial,
+        max_research_runs=max_research_runs,
+        attempts=attempts,
+        evaluation_id=evaluation_identity(
+            plan, comparison, trial, max_research_runs, attempts
+        ),
+    )
+
+
+def load_evaluation(encoded: bytes | str, *, store: ResearchStore) -> EvaluationResult:
+    """Import an evaluation; pure parsing cannot prove research artifacts exist."""
+    result = EvaluationResult.model_validate_json(encoded)
+    _with_links(result.comparison, store)
+    return result
+
+
+def _pair_dataset(datasets: Sequence[_Dataset], pair: TradingPair) -> _Dataset:
+    return next(d for d in datasets if d.manifest.pair is pair)
+
+
+def _window_dir(directory: Path, index: int) -> Path:
+    return directory / "windows" / f"{index:03d}"
+
+
+def _write_atomic(path: Path, content: bytes) -> None:
+    """Publish whole or not at all: a temporary file in the directory, renamed."""
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(handle.name, 0o644)  # Temporary files are private; peers are not.
+    os.replace(handle.name, path)
+
+
+def _attempts(
+    directory: Path, ids: Sequence[str], trial: str, max_research_runs: int
+) -> tuple[EvaluationAttempt, ...]:
+    """Every reservation under ``windows/``, each canonical and in its own window."""
+    found = []
+    for path in (directory / "windows").rglob("attempt-*.json"):
+        encoded = path.read_bytes()
+        attempt = EvaluationAttempt.model_validate_json(encoded)
+        match = _ATTEMPT_NAME.fullmatch(path.name)
+        if (
+            match is None
+            or int(match.group(1)) != attempt.attempt
+            or attempt.opportunity_id not in ids
+            or path.parent
+            != _window_dir(directory, ids.index(attempt.opportunity_id) + 1)
+            or canonical_bytes(attempt) != encoded
+        ):
+            raise ValueError(
+                f"attempt file differs from its window or encoding: {path}"
+            )
+        found.append(attempt)
+    found.sort(key=lambda a: (ids.index(a.opportunity_id), a.attempt))
+    _validate_attempts(ids, trial, max_research_runs, found)
+    return tuple(found)
+
+
+def _attempt_research_run_id(
+    candidate: PlannedCandidate,
+    dataset: _Dataset,
+    settings: FreshResearchSettings,
+    code: CodeIdentity,
+    trial_id: str,
+) -> str:
+    """The ``research_run_id`` a fresh window replay under ``trial_id`` registers."""
+    replay = candidate.replay
+    assert replay is not None
+    manifest = build_research_manifest(
+        replay,
+        _inputs(replay.assets, [dataset])[1],
+        code,
+        FreshResearchSettings(
+            configuration=settings.configuration,
+            trial_id=trial_id,
+            max_research_runs=1,
+        ),
+    )
+    return research_run_id(manifest.run_id, candidate.opportunity)
+
+
+def _reserve(
+    directory: Path,
+    ids: Sequence[str],
+    index: int,
+    candidate: PlannedCandidate,
+    dataset: _Dataset,
+    *,
+    store: ResearchStore,
+    settings: FreshResearchSettings,
+    code: CodeIdentity,
+) -> EvaluationAttempt:
+    """Durably claim the next attempt for window ``index`` before any inference.
+
+    A retry is refused when the previous attempt completed: its result must be
+    restored, not replaced by fresh inference chosen after seeing it.
+    """
+    trial, cap = settings.trial_id, settings.max_research_runs
+    attempts = _attempts(directory, ids, trial, cap)
+    if len(attempts) >= cap:
+        raise ResearchBudgetExceeded(
+            f"max_research_runs={cap} is exhausted by {len(attempts)} reserved "
+            f"attempts; window {index:03d} was not researched"
+        )
+    oid = ids[index - 1]
+    number = 1 + sum(a.opportunity_id == oid for a in attempts)
+    if number > 1:
+        previous = _attempt_research_run_id(
+            candidate,
+            dataset,
+            settings,
+            code,
+            attempt_trial_id(trial, oid, number - 1),
+        )
+        try:
+            state = store.inspect_run(previous).state
+        except ResearchStorageError as error:
+            # Only an unregistered run may proceed; every other failure raises.
+            if str(error) != "run missing or unsupported version":
+                raise
+            state = None
+        if state == "COMPLETED":
+            raise ValueError(
+                f"window {index:03d} research.json is missing although attempt "
+                f"{number - 1} completed (research_run_id={previous}); restore "
+                "it rather than re-research the window"
+            )
+    attempt = EvaluationAttempt(
+        opportunity_id=oid,
+        attempt=number,
+        trial_id=attempt_trial_id(trial, oid, number),
+    )
+    path = _window_dir(directory, index) / f"attempt-{number}.json"
+    with path.open("xb") as handle:
+        handle.write(canonical_bytes(attempt))
+        handle.flush()
+        os.fsync(handle.fileno())
+    return attempt
+
+
+async def _run_window(
+    directory: Path,
+    ids: Sequence[str],
+    index: int,
+    candidate: PlannedCandidate,
+    dataset: _Dataset,
+    *,
+    store: ResearchStore,
+    model: ObservableResearchModel,
+    settings: FreshResearchSettings,
+    code: CodeIdentity,
+) -> tuple[ReplayResult, ReplayResult]:
+    replay = candidate.replay
+    assert replay is not None
+    window = _window_dir(directory, index)
+    baseline = run_scanner_only(replay, [dataset], code=code)
+    _write_immutable(window / "baseline.json", baseline.canonical_bytes())
+    path = window / "research.json"
+    if path.exists():
+        encoded = path.read_bytes()
+        research = load_research_replay(encoded, store=store)
+        latest = [
+            a
+            for a in _attempts(
+                directory, ids, settings.trial_id, settings.max_research_runs
+            )
+            if a.opportunity_id == ids[index - 1]
+        ]
+        manifest = research.manifest
+        if (
+            research.canonical_bytes() != encoded
+            or not latest
+            or not isinstance(manifest, ResearchReplayManifest)
+            or manifest.code != code
+            or manifest.research
+            != FreshResearchSettings(
+                configuration=settings.configuration,
+                trial_id=latest[-1].trial_id,
+                max_research_runs=1,
+            )
+        ):
+            raise ValueError(
+                f"window {index:03d} research.json is not this run's canonical "
+                "result for its latest attempt"
+            )
+    else:
+        attempt = _reserve(
+            directory,
+            ids,
+            index,
+            candidate,
+            dataset,
+            store=store,
+            settings=settings,
+            code=code,
+        )
+        try:
+            research = await run_research_replay(
+                replay,
+                [dataset],
+                research=FreshResearchSettings(
+                    configuration=settings.configuration,
+                    trial_id=attempt.trial_id,
+                    max_research_runs=1,
+                ),
+                store=store,
+                model=model,
+                code=code,
+            )
+        except BaseException as error:
+            error.add_note(
+                f"evaluation window {index:03d}; attempt {attempt.attempt}; "
+                f"trial_id={attempt.trial_id}"
+            )
+            raise
+        _write_atomic(path, research.canonical_bytes())
+    try:
+        compare_window(baseline, research)
+    except ValueError as error:
+        error.add_note(f"evaluation window {index:03d}")
+        raise
+    return baseline, research
+
+
+async def run_evaluation(
+    plan: WindowPlan,
+    datasets: Iterable[_Dataset],
+    *,
+    directory: Path,
+    store: ResearchStore,
+    model: ObservableResearchModel,
+    configuration: ResearchWorkflowConfig,
+    trial: str,
+    max_research_runs: int,
+    code: CodeIdentity | None = None,
+) -> EvaluationResult:
+    """Execute a validated plan window by window, saving each as it completes.
+
+    Each window runs a scanner-only replay and, unless ``research.json`` is
+    already saved, reserves an attempt file and runs one fresh research replay
+    with a cap of one. A failure raises and leaves its reservation; calling
+    again with the same arguments resumes without repeating completed research.
+    Reservations across all calls never exceed ``max_research_runs``. No
+    automatic retries. Single process: concurrent runners on one directory are
+    unsupported.
+    """
+    datasets = tuple(datasets)
+    plan = validate_plan(plan, datasets)
+    selected = _selected(plan)
+    if not selected:
+        raise ValueError("evaluation requires a plan with selected candidates")
+    settings = FreshResearchSettings(
+        configuration=configuration,
+        trial_id=trial,
+        max_research_runs=max_research_runs,
+    )
+    if settings.max_research_runs < len(selected):
+        raise ValueError(
+            f"max_research_runs={settings.max_research_runs} is less than the "
+            f"plan's {len(selected)} selected windows"
+        )
+    # Checked before any reservation, as run_research_replay checks it after one.
+    if not isinstance(model, ObservableResearchModel):
+        raise ValueError("evaluation requires an observable model")
+    if model.identity.provider != settings.configuration.model.provider:
+        raise ValueError("configured provider differs from model adapter")
+    code = CodeIdentity.model_validate((code or current_code_identity()).model_dump())
+    directory = Path(directory)
+    # Existing files must be byte-identical: a resume cannot change any input.
+    _write_immutable(directory / "plan.json", plan.canonical_bytes())
+    _write_immutable(
+        directory / "run.json",
+        canonical_bytes(
+            {
+                "trial": settings.trial_id,
+                "max_research_runs": settings.max_research_runs,
+                "configuration": settings.configuration,
+                "code": code,
+            }
+        ),
+    )
+    ids = [c.opportunity.opportunity_id for c in selected]
+    pairs = []
+    for index, candidate in enumerate(selected, 1):
+        pairs.append(
+            await _run_window(
+                directory,
+                ids,
+                index,
+                candidate,
+                _pair_dataset(datasets, candidate.opportunity.pair),
+                store=store,
+                model=model,
+                settings=settings,
+                code=code,
+            )
+        )
+    result = _evaluation(
+        plan,
+        compare_replays(pairs, store=store),
+        settings.trial_id,
+        settings.max_research_runs,
+        _attempts(directory, ids, settings.trial_id, settings.max_research_runs),
+    )
+    _write_immutable(directory / "evaluation.json", result.canonical_bytes())
+    return result
+
+
+def _frozen_settings(research: ReplayResult) -> FrozenResearchSettings:
+    manifest = research.manifest
+    assert isinstance(manifest, ResearchReplayManifest)
+    return FrozenResearchSettings(
+        configuration=manifest.research.configuration,
+        mapping=tuple(
+            FrozenResearchMapping(
+                opportunity_id=r.payload.opportunity_id,
+                research_run_id=r.payload.research_run_id,
+                artifact_checksum=r.payload.artifact_checksum,
+                context_digest=r.payload.context_digest,
+                origin=r.payload.origin,
+            )
+            for r in research.records
+            if isinstance(r.payload, ReplayResearchRecord)
+        ),
+    )
+
+
+async def reproduce_evaluation(
+    result: EvaluationResult,
+    datasets: Iterable[_Dataset],
+    *,
+    store: ResearchStore,
+    code: CodeIdentity | None = None,
+) -> EvaluationResult:
+    """Rebuild an evaluation from stored research with no model or inference.
+
+    Each window's baseline must replay exactly, and its research replays frozen
+    from the saved record. Candidates, metrics and baselines must equal the
+    original's; the returned result carries the frozen research replays.
+    """
+    result = EvaluationResult.model_validate(result.model_dump())
+    # Frozen mappings omit compact fields, so the original's links prove them.
+    _with_links(result.comparison, store)
+    datasets = tuple(datasets)
+    plan = validate_plan(result.plan, datasets)
+    code = code or current_code_identity()
+    pairs = []
+    for index, (candidate, window) in enumerate(
+        zip(_selected(plan), result.comparison.windows, strict=True), 1
+    ):
+        replay = candidate.replay
+        assert replay is not None
+        inputs = [_pair_dataset(datasets, candidate.opportunity.pair)]
+        baseline = run_scanner_only(replay, inputs, code=code)
+        if baseline.canonical_bytes() != window.baseline.canonical_bytes():
+            raise ValueError(f"window {index:03d} baseline differs from the original")
+        research = await run_research_replay(
+            replay,
+            inputs,
+            research=_frozen_settings(window.research),
+            store=store,
+            code=code,
+        )
+        pairs.append((baseline, research))
+    comparison = compare_replays(pairs, store=store)
+    original = result.comparison
+    if (
+        comparison.metrics != original.metrics
+        or [w.candidate for w in comparison.windows]
+        != [w.candidate for w in original.windows]
+        or [w.baseline for w in comparison.windows]
+        != [w.baseline for w in original.windows]
+    ):
+        raise ValueError("frozen reproduction differs from the original comparison")
+    return _evaluation(
+        plan,
+        comparison,
+        result.trial,
+        result.max_research_runs,
+        result.attempts,
+    )

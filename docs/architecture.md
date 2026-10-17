@@ -265,10 +265,16 @@ They neither run replays nor feed results back into research. `plan_windows` der
 those windows mechanically: one gateway-bound scan per pair yields every
 candidate, each selected or excluded with a recorded reason, without terms, risk,
 execution, replay or research; `validate_plan` re-plans and requires equality.
+`run_evaluation` executes a plan window by window through the existing replay
+entrypoints, saving canonical files and reserving each fresh research attempt
+before inference so a resume repeats no completed research and never exceeds the
+run cap. `reproduce_evaluation` rebuilds the result from frozen research with no
+model; `load_evaluation` resolves research links through the store.
 
 Marked equity uses visible completed closes; a holding gap leaves valid-prefix
 valuation and known realized results available. Replay results remain in-memory
-with canonical JSON output; durable research persistence does not persist the
+with canonical JSON output (only the evaluation runner saves them, as files);
+durable research persistence does not persist the
 financial replay lifecycle. Unimplemented replay and evaluation capabilities are
 listed in the
 [specification](v1-specification.md#unimplemented-research-and-evaluation-boundaries).

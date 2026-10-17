@@ -75,10 +75,10 @@ artifacts improve reproducibility without resolving that limitation.
 - One bounded opportunity-led research workflow is implemented. Trader-led
   interactive research/chat, live mode, UI, non-market research, specialist agents,
   and memory/RAG are deferred.
-- No evaluation runner, integrated evaluation/reporting harness, statistical
-  model-performance evaluation, or automatic replay crash resume. A paired
-  baseline/research comparison artifact and a mechanical single-candidate
-  evaluation window planner are implemented.
+- No integrated evaluation/reporting harness, statistical model-performance
+  evaluation, or automatic replay crash resume. A paired baseline/research
+  comparison artifact, a mechanical single-candidate evaluation window planner,
+  and a resumable evaluation runner with frozen reproduction are implemented.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
 
@@ -138,6 +138,15 @@ scanner candidates without reference to outcomes, recording a reason for every
 excluded candidate; `validate_plan(plan, datasets)` re-plans and requires
 equality. See the
 [window planning specification](docs/v1-specification.md#evaluation-window-planning).
+`await crypteo.evaluation.run_evaluation(plan, datasets, *, directory, store, model, configuration, trial, max_research_runs, code=None)`
+runs each planned window in scanner-only and fresh research mode, saving files as
+they complete, and returns an `EvaluationResult`; calling it again resumes without
+repeating completed research, and attempts never exceed the cap across calls.
+`await reproduce_evaluation(result, datasets, *, store, code=None)` rebuilds the
+result from frozen research with no model or API key, and
+`load_evaluation(encoded, *, store)` imports one. Results bind code identity, so
+real runs should start from a clean, committed tree. See the
+[evaluation runner specification](docs/v1-specification.md#evaluation-runner).
 See the [research replay specification](docs/v1-specification.md#historical-research-replay)
 and [ADR-011](docs/decisions/ADR-011-model-research-historical-replay.md).
 

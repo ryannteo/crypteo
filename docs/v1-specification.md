@@ -12,7 +12,9 @@ journaling and immutable terminal research artifacts. One historical replay
 lifecycle supports the deterministic baseline, fresh model research with mandatory
 durable journaling, and frozen validated-research-artifact reproduction. A paired
 baseline/research comparison artifact validates and aggregates single-candidate
-windows; window planning, an evaluation runner, and statistics remain unimplemented.
+windows; mechanical window planning and a resumable evaluation runner with frozen
+reproduction are implemented, while statistics, reports, and multi-candidate
+windows remain unimplemented.
 
 ## V1 Scope and Market Environment
 
@@ -814,7 +816,9 @@ opportunity a replay could admit, identical in ID, payload, times and summary to
 the one a replay starting at its `observed_at` admits. A crossing that depends on
 a candle not yet available at the last close is not a candidate. Candidates with
 `observed_at >= planning_start` are ordered by `observed_at`, then BTC-USD →
-ETH-USD → SOL-USD, then `opportunity_id`.
+ETH-USD → SOL-USD, then `opportunity_id`. The planner reads each dataset's last
+completed close time directly to bound windows, as planning-time inspection like
+dataset integrity checks, and reads no prices outside the gateway and scanner.
 
 The window for a candidate observed at T is `start = T`,
 `end = T + max_holding_bars` hours, `assets = (pair,)`, with the settings'
@@ -865,6 +869,115 @@ relative-strength evidence is unavailable to research in planned windows.
 window, which may bias the sample toward candidates whose decline did not
 continue. Internal dataset gaps are not excluded; they surface as baseline
 `ENTRY_REJECTED` or `DATA_GAP`.
+
+### Evaluation runner
+
+`await run_evaluation(plan, datasets, *, directory, store, model, configuration,
+trial, max_research_runs, code=None)` in [evaluation.py](../src/crypteo/evaluation.py)
+executes a plan as given and returns an `EvaluationResult`. It first runs
+`validate_plan(plan, datasets)` and, before writing any file, refuses a plan with
+no selected candidates, a `max_research_runs` below the number of selected
+windows (such a run could never finish), and a model whose provider differs from
+the configuration.
+Each selected window replays only its pair's dataset, in plan order, through the
+existing entrypoints and the single replay lifecycle. There is no concurrency
+across windows, and the run is single-process: two runners on one directory are
+unsupported.
+
+Every file is replay-canonical JSON under `directory`:
+
+| Path | Content |
+| --- | --- |
+| `plan.json` | The plan |
+| `run.json` | `trial`, `max_research_runs`, workflow `configuration`, and `code` identity |
+| `windows/<NNN>/baseline.json` | Scanner-only `ReplayResult`; `NNN` is the 1-based selected-window index, zero-padded to three digits |
+| `windows/<NNN>/attempt-<k>.json` | `EvaluationAttempt` reserving fresh research attempt `k` |
+| `windows/<NNN>/research.json` | Fresh research `ReplayResult` |
+| `evaluation.json` | The final `EvaluationResult` |
+
+`plan.json`, `run.json`, `baseline.json` and `evaluation.json` are created
+exclusively. If one exists it must be byte-identical, so a resume cannot change
+the plan, trial, cap, workflow configuration, code, or a baseline. Per window,
+the runner:
+
+1. Runs `run_scanner_only` with the planned `ReplayConfig` and writes or checks
+   `baseline.json`.
+2. If `research.json` exists, loads it with `load_research_replay` and runs no
+   research. It must be canonical and come from this run's code, configuration,
+   and the window's latest attempt.
+3. Otherwise reserves an attempt before any inference. It counts every
+   `attempt-*.json` under `windows/` and raises `ResearchBudgetExceeded`, naming
+   the cap, when the count already equals `max_research_runs`. For `k > 1` it
+   derives the `research_run_id` that attempt `k - 1` registered (same planned
+   `ReplayConfig`, dataset, code, configuration and trial ID) and refuses if the
+   store holds a `COMPLETED` run for it: that window's `research.json` must be
+   restored, not replaced by fresh inference chosen after seeing a result. An
+   `INTERRUPTED`, `ABORTED`, incomplete or unregistered prior attempt allows the
+   retry. Otherwise it exclusively creates `attempt-<k>.json` with the window's
+   next `k` and
+   `trial_id = "<trial>/<opportunity_id>/<k>"`. It then runs fresh
+   `run_research_replay` with `FreshResearchSettings(configuration, trial_id,
+   max_research_runs=1)`. Each attempt has its own `trial_id`, so its replay
+   `run_id` and `research_run_id` never collide with an earlier attempt's in the
+   store. On success it writes `research.json` atomically (a temporary file in
+   the same directory, then rename). On failure the exception propagates with a
+   note naming the window and attempt, and the reservation stays in place.
+4. Runs `compare_window(baseline, research)`, so an invariant failure stops the
+   run at the window that caused it.
+
+Every saved attempt file must be canonical and sit in its own window directory.
+After all windows the runner calls `compare_replays`, builds the result from the
+attempt files, and writes `evaluation.json`. A completed directory returns the
+identical result without inference.
+
+Failure semantics are V1's: operational research failure raises and never becomes
+`NO_TRADE`, `ABSTAIN` or a skipped window. There are no automatic retries. A
+resume is an explicit call with the same arguments. It reuses saved research and
+spends a new attempt only on windows without `research.json` whose previous
+attempt did not complete. The refusal also applies when research completed but
+its `research.json` was never written (a crash or failed write after research);
+that window then needs manual resolution, since the runner cannot rebuild a fresh
+result from the store. The total across
+calls never exceeds `max_research_runs`, which is a software limit, not a
+billing guarantee. Results bind code identity, so a real run should start from a
+clean, committed tree.
+
+`EvaluationResult` holds `plan`, `comparison`, the base `trial`, a strictly
+positive integer `max_research_runs`, ordered `attempts` (`opportunity_id`,
+`attempt` ≥ 1, `trial_id`), and `evaluation_id`. Pure validation, on every
+parse:
+
+1. Comparison windows correspond one to one, in order, with the plan's selected
+   candidates. Each has the same opportunity ID, baseline and research
+   `ReplayConfig` equal to the planned `replay`, and the plan's dataset identity
+   for its pair. The plan settings' economics equal the windows'.
+2. Attempts are unique by `(opportunity_id, attempt)`, belong to selected
+   candidates, and are ordered by planned window then number. Each opportunity's
+   attempts are numbered 1..n without gaps, every `trial_id` is
+   `"<trial>/<opportunity_id>/<attempt>"`, and the total is at most
+   `max_research_runs`.
+3. Each window's research record `origin.trial_id` equals its opportunity's
+   latest attempt `trial_id`. Frozen research carries its fresh origin, so this
+   holds for fresh and frozen results alike.
+4. `evaluation_id` is the replay-canonical identity of purpose
+   `evaluation_result_v1`, `plan_id`, `comparison_id`, `trial`,
+   `max_research_runs` and `attempts`.
+
+`load_evaluation(encoded, *, store)` parses canonical JSON and resolves research
+links through the store.
+
+`await reproduce_evaluation(result, datasets, *, store, code=None)` takes no
+model. It resolves the original's research links through the store, validates
+the plan against `datasets`, re-runs each baseline (which
+must equal the saved one exactly) and replays each window's research frozen from
+its saved research record, so any inference or research-tool dispatch fails. Its
+comparison must have candidate comparisons, metrics, and baselines equal to the
+original's. It returns an `EvaluationResult` holding the frozen research
+replays, with the original attempts, trial and cap. Its research replay `run_id`s,
+and so its `comparison_id` and `evaluation_id`, differ from the original's; the
+records' `research_run_id`s are the original's.
+Reproduction needs the same code identity, Python and Pydantic versions, since
+baselines must match byte for byte and frozen research must match its origin.
 
 ## Simulation and Risk
 
@@ -1417,9 +1530,10 @@ standalone research does not extend the schema-1 baseline manifest.
 
 The evaluation question is whether bounded research improves selection among the
 same opportunities under identical risk and execution assumptions. The
-[baseline/research comparison](#baselineresearch-comparison) artifact and
-[evaluation window planning](#evaluation-window-planning) are implemented. An
-evaluation runner, an integrated reporting harness, multi-candidate windows,
+[baseline/research comparison](#baselineresearch-comparison) artifact,
+[evaluation window planning](#evaluation-window-planning), and the resumable
+[evaluation runner](#evaluation-runner) with frozen reproduction are implemented.
+Statistics, reports, an integrated reporting harness, multi-candidate windows,
 generalized experiment management, additional baselines, process/performance
 graders, and statistical model-performance evaluation remain unimplemented. There is no alpha
 attribution, confidence calibration, significance analysis, profitability

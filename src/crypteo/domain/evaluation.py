@@ -1,7 +1,8 @@
-"""Evaluation window plans and paired baseline/research comparison contracts.
+"""Evaluation window plans, paired comparisons and executed evaluation contracts.
 
 A window plan derives replay windows from scanner candidates only. A comparison
-reads completed replay results only. Neither grants financial authority or feeds
+reads completed replay results only. An evaluation result binds a comparison to
+its plan and research attempts. None grants financial authority or feeds
 anything back into research. Pure validation cannot prove that referenced
 research artifacts exist or that a plan covers its datasets;
 ``crypteo.evaluation`` resolves both.
@@ -268,6 +269,59 @@ class WindowPlan(BaseModel):
             self.settings, self.scanner_policy, self.datasets, self.candidates
         ):
             raise ValueError("plan_id must match the plan contents")
+        return self
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_bytes(self)
+
+
+class EvaluationAttempt(BaseModel):
+    """One reserved fresh research run for a planned window, made before inference."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    opportunity_id: NonBlankText
+    attempt: int = Field(strict=True, ge=1)
+    trial_id: NonBlankText
+
+
+class EvaluationResult(BaseModel):
+    """A comparison bound to the plan it executed and every reserved attempt.
+
+    Pure validation cannot prove that research artifacts exist or that the plan
+    covers its datasets; ``crypteo.evaluation`` resolves both.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    plan: WindowPlan
+    comparison: ResearchComparison
+    trial: NonBlankText
+    max_research_runs: int = Field(strict=True, gt=0)
+    attempts: tuple[EvaluationAttempt, ...]
+    evaluation_id: Digest
+
+    @model_validator(mode="after")
+    def validate_evaluation(self) -> Self:
+        from crypteo.evaluation import evaluation_identity, validate_evaluation
+
+        validate_evaluation(
+            self.plan,
+            self.comparison,
+            self.trial,
+            self.max_research_runs,
+            self.attempts,
+        )
+        if self.evaluation_id != evaluation_identity(
+            self.plan,
+            self.comparison,
+            self.trial,
+            self.max_research_runs,
+            self.attempts,
+        ):
+            raise ValueError("evaluation_id must match the evaluation contents")
         return self
 
     def canonical_bytes(self) -> bytes:
