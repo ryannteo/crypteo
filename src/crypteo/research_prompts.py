@@ -30,9 +30,12 @@ INVESTIGATION_INSTRUCTIONS = """Choose at most one permitted deterministic tool
 per response, adaptively deciding which missing evidence matters. Only relative
 strength accepts an argument, benchmark. Interpret typed unavailable results as
 missing evidence, distinct from unrequested evidence. Repeated queries return
-cached results and consume budget. If complete, return the structured completion:
-summary, relevant_evidence_ids, remaining_gaps. Do not assess outcome or confidence.
-When attempts_remaining is zero you must complete without requesting a tool."""
+cached results and consume budget. When complete, return the structured completion:
+summary must be a nonblank synthesis of the evidence collected so far; cite the
+relevant successful evidence IDs in relevant_evidence_ids and list remaining_gaps.
+This applies even when stopping because attempts_remaining is zero. Do not assess
+outcome or confidence. When attempts_remaining is zero you must complete without
+requesting a tool."""
 
 THESIS_INSTRUCTIONS = """Draft the structured thesis using collected evidence
 and the investigation completion. Present bull and bear cases, grounded supporting
@@ -58,6 +61,12 @@ _INSTRUCTIONS = {
     "draft_thesis": THESIS_INSTRUCTIONS,
     "critique": CRITIC_INSTRUCTIONS,
     "final_assessment": ASSESSMENT_INSTRUCTIONS,
+}
+_PROMPT_VERSIONS = {
+    "investigate": "investigate_prompt_v2",
+    "draft_thesis": "draft_thesis_prompt_v1",
+    "critique": "critique_prompt_v1",
+    "final_assessment": "final_assessment_prompt_v1",
 }
 _SCHEMAS: dict[str, type[BaseModel]] = {
     "investigate": InvestigationCompletion,
@@ -108,6 +117,6 @@ def prompt_messages(stage: str, data: dict[str, Any]) -> tuple[ModelMessage, ...
 
 def prompt_identity(stage: str) -> ContentIdentity:
     return ContentIdentity(
-        version=f"{stage}_prompt_v1",
+        version=_PROMPT_VERSIONS[stage],
         digest=content_digest(SHARED_POLICY + "\n\n" + _INSTRUCTIONS[stage]),
     )

@@ -1112,7 +1112,11 @@ The graph sequence is
 only investigation completion advances through
 `investigate --complete--> draft_thesis → critique → final_assessment`.
 Investigation returns either a tool request or structured completion containing
-summary, relevant evidence IDs, and remaining gaps. Synthesis stages have no tools.
+summary, relevant evidence IDs, and remaining gaps. The investigation instructions
+require the summary to be a nonblank synthesis of the evidence collected so far,
+including on a completion forced at the budget boundary (`attempts_remaining` is
+zero); a blank summary fails validation as `INVALID_MODEL_OUTPUT` and is never
+filled by runtime. Synthesis stages have no tools.
 A completed run cannot skip critic; interruptions terminate without requiring
 later stages to execute. Outputs must contain exactly the declared structured
 schema fields; the runtime does not repair malformed output or fill missing fields.

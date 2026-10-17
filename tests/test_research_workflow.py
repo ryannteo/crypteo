@@ -56,6 +56,11 @@ from crypteo.research_model import (
     ToolReply,
     ToolRequest,
 )
+from crypteo.research_prompts import (
+    INVESTIGATION_INSTRUCTIONS,
+    SHARED_POLICY,
+    prompt_identity,
+)
 from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
 from crypteo.research_workflow import ResearchInvariantError, collected_evidence
 from crypteo.temporal import SimulationClock
@@ -174,6 +179,27 @@ def test_eight_attempts_and_ninth_completion_twelve_calls_cache_linkage(
     assert all(r.cached_from == "run-1/tool/0001" for r in records(result)[1:])
     assert all(r.result == records(result)[0].result for r in records(result))
     assert len(collected_evidence(result.trace)) == 1
+
+
+def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -> None:
+    empty = '{"summary":"","relevant_evidence_ids":[],"remaining_gaps":[]}'
+    model = ScriptedModel([tool()] * 8 + [StructuredReply(content=empty)])
+    result = run(model)
+    final = model.requests[-1]
+    assert len(model.requests) == 9 and len(records(result)) == 8
+    assert data(final)["attempts_remaining"] == 0
+    assert final.messages[0].content == SHARED_POLICY + "\n\n" + (
+        INVESTIGATION_INSTRUCTIONS
+    )
+    assert "summary must be a nonblank synthesis" in final.messages[0].content
+    assert final.prompt_identity == prompt_identity("investigate")
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.failure is not None
+    assert result.failure.code == ResearchFailureCode.INVALID_MODEL_OUTPUT
+    assert result.assessment.abstention_reasons == (
+        AbstentionReason.VALIDATION_FAILURE,
+    )
+    assert result.thesis is None and result.critique is None
 
 
 def test_ninth_tool_request_interrupts_without_dispatch(
