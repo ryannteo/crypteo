@@ -308,9 +308,9 @@ def test_run_relational_corruption_rejected_on_every_input_path(
             if mutation == "request_context":
                 supplied["context"]["request"]["research_run_id"] = "foreign"
             elif mutation == "request_evidence":
-                supplied["evidence"][0]["summary"] = "Conflicting model copy."
+                supplied["evidence"][0]["payload"] = {"unexpected": "changed"}
             else:
-                supplied["request_history"][0]["attempt_id"] = "foreign/tool/0001"
+                supplied["request_history"][0]["attempt"] = 2
             calls[1]["request"]["messages"][-1]["content"] = json.dumps(content)
     # For these mutations update the repeated context too: the tool/evidence
     # relationship must fail independently of model-message context equality.

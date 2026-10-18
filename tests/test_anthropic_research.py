@@ -741,10 +741,8 @@ def test_tool_input_surrogates_have_identical_invalid_attempt_accounting(
     second_input = json.loads(sent[1]["messages"][-1]["content"])["research_data"]
     assert second_input["attempts_remaining"] == 7
     assert len(second_input["request_history"]) == 1
-    assert (
-        second_input["request_history"][0]["rejection"]["code"]
-        == "INVALID_TOOL_REQUEST"
-    )
+    assert second_input["request_history"][0]["status"] == "rejected"
+    assert second_input["request_history"][0]["code"] == "INVALID_TOOL_REQUEST"
     if occurrences == 1:
         assert result.status == "COMPLETED" and result.failure is None
         assert len(sent) == 5

@@ -140,6 +140,9 @@ resolve within the run.
 The critic receives a fresh context containing the validated thesis, all collected
 evidence, and request history; completed research cannot skip it. This is
 procedural independence, not statistical independence.
+Model requests carry compact views of evidence and tool history (identifiers,
+category, times and unchanged payload; per-attempt requests, admission and
+outcome), while the trace and journal retain full envelopes and records.
 
 A completed run contains a model assessment. An operational interruption contains
 a typed failure and deterministic runtime `ABSTAIN`; it is not a completed model

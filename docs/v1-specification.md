@@ -547,7 +547,8 @@ Research settings/contracts live in
 dataset identities and matching source bindings, research settings, and research
 policy identity. It binds scanner, trade-terms, risk, execution, admission, and
 failure policies. Research policy contains the workflow and market-research
-versions, configuration digest, prompt and structured-schema identities for each
+versions, the model-request view (`model_view`, `compact_research_view_v1`),
+configuration digest, prompt and structured-schema identities for each
 model stage, and tool-definition identities for every subject pair and every
 benchmark subset that pair can be offered: per pair in BTC, ETH, SOL order, no
 benchmark, each other pair alone, then both (12 entries). Validation requires
@@ -1245,14 +1246,30 @@ values are preserved in model context; Decimal values remain strings rather than
 being rounded or converted to binary floats. Raw candle datasets stay outside
 workflow state.
 
+Model requests carry a compact view (`compact_research_view_v1`) of evidence and
+tool history; the trace and journal retain full `EvidenceItem` envelopes and
+`ToolRecord`s. Each successful evidence item appears, in presentation order, as
+exactly `evidence_id`, `category`, `evidence_type`, `source`, `observed_at`,
+`available_at`, and the unchanged `payload`; provenance, summary, relevance and
+quality stay in the trace. The request history has one entry per tool record in
+trace order: `attempt` (1-based position), `requests` (each request's `name` and
+`arguments_json`), `admitted`, and `status` with its detail: `success` with
+`evidence_id`; `unavailable` with `role` and `reason`; or `rejected` with `code`
+and `message`. A cache hit adds `cached_from_attempt`, the position of the
+earlier record it reuses; a cache link to no earlier record raises
+`ResearchInvariantError`. Queries, results, contexts and cache attempt IDs are
+not sent. Validation recomputes both views from the trace before each request
+and requires exact equality.
+
 Investigation, thesis, and final assessment evidence references must belong to
 successful evidence collected in that run. Critique is structured textual content
 without separate citation fields. The critic is a separate fresh model call and
 context receiving the exact validated thesis, all collected evidence, and tool
-request history including unavailability. It challenges unsupported claims,
-contradictions, missing evidence, assumptions, and interpretive overreach. It does
-not inherit the investigator's completion narrative or a provider conversation.
-Independence is procedural only; statistical independence is not claimed.
+request history including unavailability, both in the compact view. It challenges
+unsupported claims, contradictions, missing evidence, assumptions, and interpretive
+overreach. It does not inherit the investigator's completion narrative or a
+provider conversation. Independence is procedural only; statistical independence
+is not claimed.
 Final assessment receives the validated thesis and critique and must address the
 critic explicitly for every completed outcome.
 
@@ -1514,7 +1531,8 @@ Loading validates relationships as well as schemas and checksums:
 - Tool request/query/result/rejection/cache linkage, subject, research time, and
   source bindings; evidence identity/content consistency and grounded references.
 - Prepared provider JSON versus normalized request, and requests versus accumulated
-  context, evidence, request history, prompts, schemas, and tool definitions.
+  context, the compact evidence and request-history views recomputed from the
+  retained trace, prompts, schemas, and tool definitions.
   The projection independently decides when a re-ask is due (the last retained
   call is an invalid structured first reply, fewer than 2 re-asks and 14 model
   calls so far) and then requires the next request of that stage to carry

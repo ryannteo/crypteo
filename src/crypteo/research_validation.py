@@ -6,7 +6,11 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
 
-from crypteo.domain.market_research import MarketResearchCapability, ResearchToolSuccess
+from crypteo.domain.market_research import (
+    MarketResearchCapability,
+    ResearchToolSuccess,
+    ResearchToolUnavailable,
+)
 from crypteo.domain.research import (
     Critique,
     EvidenceItem,
@@ -88,30 +92,16 @@ def validate_trace_relationships(
                     "retained model context differs from enclosing research context"
                 )
             data = content["research_data"]
-            retained = data.get("evidence")
-            if not isinstance(retained, list):
+            # Rendered comparison keeps JSON types exact (true is not 1).
+            if render_json(data.get("evidence")) != render_json(
+                [evidence_view(e) for e in collected_evidence(trace[:index])]
+            ):
                 raise ResearchValidationError(
-                    "retained model request lacks evidence collection"
+                    "retained model evidence differs from collected evidence"
                 )
-            retained_ids: set[str] = set()
-            for value in retained:
-                item = EvidenceItem.model_validate_json(render_json(value))
-                if evidence.get(item.evidence_id) != item:
-                    raise ResearchValidationError(
-                        "retained model evidence differs from tool evidence"
-                    )
-                if item.evidence_id in retained_ids:
-                    raise ResearchValidationError(
-                        "model evidence collection must be deduplicated"
-                    )
-                retained_ids.add(item.evidence_id)
-            if retained_ids != set(evidence):
-                raise ResearchValidationError(
-                    "retained model request omits collected evidence"
-                )
-            if data.get("request_history") != [
-                tool.model_dump(mode="json") for tool in tools.values()
-            ]:
+            if render_json(data.get("request_history")) != render_json(
+                request_history_view(tuple(tools.values()))
+            ):
                 raise ResearchValidationError(
                     "retained request history differs from tool trace"
                 )
@@ -229,6 +219,60 @@ def collected_evidence(trace: tuple[TraceRecord, ...]) -> tuple[EvidenceItem, ..
     )
 
 
+_EVIDENCE_VIEW = (
+    "evidence_id",
+    "category",
+    "evidence_type",
+    "source",
+    "observed_at",
+    "available_at",
+    "payload",
+)
+
+
+def evidence_view(item: EvidenceItem) -> dict[str, Any]:
+    """The model's compact evidence; the trace retains the full envelope."""
+    encoded = item.model_dump(mode="json")
+    return {key: encoded[key] for key in _EVIDENCE_VIEW}
+
+
+def request_history_view(tools: tuple[ToolRecord, ...]) -> list[dict[str, Any]]:
+    """The model's compact tool history; the trace retains full records."""
+    positions: dict[str, int] = {}
+    view: list[dict[str, Any]] = []
+    for attempt, record in enumerate(tools, 1):
+        entry: dict[str, Any] = {
+            "attempt": attempt,
+            "requests": [
+                {"name": r.name, "arguments_json": r.arguments_json}
+                for r in record.requests
+            ],
+            "admitted": record.admitted,
+        }
+        result = record.result
+        if record.rejection is not None:
+            entry |= {
+                "status": "rejected",
+                "code": record.rejection.code,
+                "message": record.rejection.message,
+            }
+        elif isinstance(result, ResearchToolSuccess):
+            entry |= {"status": "success", "evidence_id": result.evidence.evidence_id}
+        elif isinstance(result, ResearchToolUnavailable):
+            entry |= {
+                "status": "unavailable",
+                "role": result.role.value,
+                "reason": result.reason.value,
+            }
+        if record.cached_from is not None:
+            if record.cached_from not in positions:
+                raise ResearchInvariantError("cache link names no earlier attempt")
+            entry["cached_from_attempt"] = positions[record.cached_from]
+        positions.setdefault(record.attempt_id, attempt)
+        view.append(entry)
+    return view
+
+
 _OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "investigate": InvestigationCompletion,
     "draft_thesis": ResearchThesis,
@@ -331,8 +375,8 @@ def research_data(
     tools = tuple(r for r in trace if isinstance(r, ToolRecord))
     data: dict[str, Any] = {
         "context": context.model_dump(mode="json"),
-        "evidence": [e.model_dump(mode="json") for e in collected_evidence(trace)],
-        "request_history": [r.model_dump(mode="json") for r in tools],
+        "evidence": [evidence_view(e) for e in collected_evidence(trace)],
+        "request_history": request_history_view(tools),
     }
     if stage == "investigate":
         data["attempts_remaining"] = configuration.budget.max_tool_attempts - sum(

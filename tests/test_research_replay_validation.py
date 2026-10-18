@@ -259,6 +259,7 @@ def test_fresh_input_changes_identity(tmp_path: Path, field: str) -> None:
     [
         "workflow",
         "market_research",
+        "model_view",
         "prompts",
         "schemas",
         "tools",
@@ -273,6 +274,14 @@ def test_unsupported_policy_identity_rejected(tmp_path: Path, field: str) -> Non
     )
     with pytest.raises(ValidationError):
         ResearchReplayManifest.model_validate(data)
+
+
+def test_policy_identifies_compact_model_view(tmp_path: Path) -> None:
+    assert research_policy(WORKFLOW).model_view == "compact_research_view_v1"
+    result = execute(ResearchStore(tmp_path / "r.sqlite"))
+    assert isinstance(result.manifest, ResearchReplayManifest)
+    policy = json.loads(result.manifest.canonical_bytes())["policy"]
+    assert policy["model_view"] == "compact_research_view_v1"
 
 
 def test_policy_enumerates_every_subject_and_bound_benchmark_subset() -> None:

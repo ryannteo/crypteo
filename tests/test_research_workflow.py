@@ -71,6 +71,7 @@ from crypteo.research_prompts import (
     prompt_identity,
 )
 from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
+from crypteo.research_validation import evidence_view
 from crypteo.research_workflow import ResearchInvariantError, collected_evidence
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
@@ -167,7 +168,7 @@ def test_critic_fresh_context_exact_thesis_all_evidence_and_request_history() ->
     assert result.thesis is not None and result.critique is not None
     assert data(critic_request)["thesis"] == result.thesis.model_dump(mode="json")
     assert len(data(critic_request)["evidence"]) == 2
-    assert [r["result"]["status"] for r in data(critic_request)["request_history"]] == [
+    assert [r["status"] for r in data(critic_request)["request_history"]] == [
         "success",
         "success",
         "unavailable",
@@ -301,9 +302,9 @@ def test_first_invalid_feedback_consumes_attempt_second_interrupts(
     assert all(r.result is None and r.admitted for r in records(result))
     assert len(data(model.requests[1])["request_history"]) == 1
     assert data(model.requests[1])["attempts_remaining"] == 7
+    assert data(model.requests[1])["request_history"][0]["status"] == "rejected"
     assert (
-        data(model.requests[1])["request_history"][0]["rejection"]["code"]
-        == "INVALID_TOOL_REQUEST"
+        data(model.requests[1])["request_history"][0]["code"] == "INVALID_TOOL_REQUEST"
     )
 
 
@@ -517,13 +518,12 @@ def test_model_preserves_exact_decimals_undefined_reasons_and_provenance() -> No
         "value": None,
         "undefined_reason": "ZERO_BASELINE_VOLUME",
     }
-    assert evidence == [
-        e.model_dump(mode="json") for e in collected_evidence(result.trace)
-    ]
+    assert evidence == [evidence_view(e) for e in collected_evidence(result.trace)]
+    # The model sees the compact view; the trace keeps full provenance.
     assert (
-        evidence[0]["provenance"]["query_params"]["inputs"][0]["source"][
-            "dataset_version"
-        ]
+        collected_evidence(result.trace)[0].model_dump(mode="json")["provenance"][
+            "query_params"
+        ]["inputs"][0]["source"]["dataset_version"]
         == "sha256:" + "c" * 64
     )
 
