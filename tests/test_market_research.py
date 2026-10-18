@@ -48,7 +48,8 @@ ORACLE = Context(prec=50, rounding=ROUND_HALF_EVEN)
 
 
 def candle(hour: int, pair: TradingPair = BTC, **changes: Any) -> Candle:
-    price = Decimal(100 + hour)
+    # Negative hours extend history for long windows with positive prices.
+    price = Decimal(100 + hour) if hour >= 0 else 100 + Decimal(hour) / 100
     end = START + timedelta(hours=hour + 1)
     return Candle.model_validate(
         dict(
@@ -62,14 +63,23 @@ def candle(hour: int, pair: TradingPair = BTC, **changes: Any) -> Candle:
             high=price + 2,
             low=price - 2,
             close=price,
-            volume=Decimal(hour + 1),
+            volume=Decimal(abs(hour) + 1),
         )
         | changes
     )
 
 
-def history(pair: TradingPair = BTC) -> tuple[Candle, ...]:
-    return tuple(candle(i, pair) for i in range(60))
+def history(pair: TradingPair = BTC, hours: int = 60) -> tuple[Candle, ...]:
+    """Candles for hours 60 - hours..59; the candle for hour 59 ends at T."""
+    return tuple(candle(i, pair) for i in range(60 - hours, 60))
+
+
+def span(capability: MarketResearchCapability) -> int:
+    """History length covering the window plus older noncontributing candles."""
+    return max(60, POLICY.required_bars(capability) + 10)
+
+
+LONG = span(MarketResearchCapability.LOWER_BAND_CROSSINGS)
 
 
 def dataset(
@@ -108,8 +118,8 @@ def service(candles: tuple[Candle, ...] | None = None) -> MarketResearchService:
     return build_market_research(
         SimulationClock(T),
         [
-            dataset(history() if candles is None else candles),
-            dataset(history(ETH), ETH),
+            dataset(history(hours=LONG) if candles is None else candles),
+            dataset(history(ETH, LONG), ETH),
         ],
     )
 
@@ -329,6 +339,7 @@ def test_all_six_ordered_relative_comparisons(
         (MarketRole.SUBJECT, pair),
         (MarketRole.BENCHMARK, benchmark),
     ]
+    assert (payload.subject_pair, payload.benchmark_pair) == (pair, benchmark)
 
 
 @pytest.mark.parametrize("pair", list(TradingPair))
@@ -354,10 +365,17 @@ def test_fixed_api_and_window(capability: MarketResearchCapability) -> None:
     assert result.evidence.observed_at == result.evidence.available_at == T
 
 
+def slots(count: int) -> tuple[int, ...]:
+    # Long windows check edges and middle rather than hundreds of slow cases.
+    return (
+        tuple(range(count)) if count <= 50 else (0, 1, count // 2, count - 2, count - 1)
+    )
+
+
 SLOTS = [
     (capability, i)
     for capability in CAPABILITIES
-    for i in range(POLICY.required_bars(capability))
+    for i in slots(POLICY.required_bars(capability))
 ]
 
 
@@ -374,7 +392,7 @@ def test_every_required_slot_is_mandatory_without_older_fallback(
             if i == missing
             else START + timedelta(hours=i + 1),
         )
-        for i in range(60)
+        for i in range(60 - span(capability), 60)
         if delayed or i != missing
     )
     result = invoke(service(candles), capability)
@@ -390,7 +408,9 @@ def test_every_required_slot_is_mandatory_without_older_fallback(
 @pytest.mark.parametrize("capability", CAPABILITIES)
 def test_short_leading_history(capability: MarketResearchCapability) -> None:
     count = POLICY.required_bars(capability)
-    result = invoke(service(history()[-count + 1 :]), capability)
+    visible = history(hours=span(capability))[-count + 1 :]
+    assert len(visible) == count - 1
+    result = invoke(service(visible), capability)
     assert isinstance(result, ResearchToolUnavailable)
     assert result.reason is ResearchUnavailableReason.INSUFFICIENT_HISTORY
 
@@ -399,7 +419,7 @@ def test_short_leading_history(capability: MarketResearchCapability) -> None:
 def test_all_dependencies_may_become_available_exactly_at_t(
     capability: MarketResearchCapability,
 ) -> None:
-    candles = tuple(candle(i, available_at=T) for i in range(60))
+    candles = tuple(candle(i, available_at=T) for i in range(60 - span(capability), 60))
     result = success(service(candles), capability)
     assert (
         result.evidence.available_at
@@ -412,9 +432,10 @@ def test_all_dependencies_may_become_available_exactly_at_t(
 def test_future_and_noncontributing_data_do_not_change_identity(
     capability: MarketResearchCapability,
 ) -> None:
-    original = success(service(), capability)
+    base = history(hours=span(capability))
+    original = success(service(base), capability)
     changed = success(
-        service(history() + (candle(60, high="999999", close="999999"),)), capability
+        service(base + (candle(60, high="999999", close="999999"),)), capability
     )
     assert changed.payload == original.payload
     assert [i.window_digest for i in changed.context.inputs] == [
@@ -425,7 +446,8 @@ def test_future_and_noncontributing_data_do_not_change_identity(
         changed.context.inputs[0].source.dataset_version
         != original.context.inputs[0].source.dataset_version
     )
-    old_changed = (candle(0, high="999999", close="999999"),) + history()[1:]
+    oldest = 60 - span(capability)
+    old_changed = (candle(oldest, high="999999", close="999999"),) + base[1:]
     assert (
         success(service(old_changed), capability).evidence.evidence_id
         == original.evidence.evidence_id
@@ -446,9 +468,10 @@ def test_future_and_noncontributing_data_do_not_change_identity(
 def test_every_contributing_candle_field_affects_identity(
     capability: MarketResearchCapability, field: str, value: str
 ) -> None:
-    original = success(service(), capability)
+    base = history(hours=span(capability))
+    original = success(service(base), capability)
     changes: dict[str, Any] = {field: value}
-    changed = success(service(history()[:-1] + (candle(59, **changes),)), capability)
+    changed = success(service(base[:-1] + (candle(59, **changes),)), capability)
     assert (
         changed.context.inputs[0].window_digest
         != original.context.inputs[0].window_digest
@@ -488,7 +511,8 @@ def test_repeated_outputs_and_hostile_decimal_contexts(
 def test_source_input_order_and_decimal_spelling_independence(
     capability: MarketResearchCapability,
 ) -> None:
-    btc, eth = dataset(history()), dataset(history(ETH), ETH)
+    hours = span(capability)
+    btc, eth = dataset(history(hours=hours)), dataset(history(ETH, hours), ETH)
     expected = success(
         build_market_research(SimulationClock(T), [btc, eth]), capability
     )
@@ -556,7 +580,10 @@ def test_subject_benchmark_swap_changes_identity_even_for_equal_returns() -> Non
     assert isinstance(first, ResearchToolSuccess) and isinstance(
         second, ResearchToolSuccess
     )
-    assert first.payload == second.payload
+    pairs = {"subject_pair", "benchmark_pair"}
+    assert first.payload.model_dump(exclude=pairs) == second.payload.model_dump(
+        exclude=pairs
+    )
     assert first.evidence.evidence_id != second.evidence.evidence_id
 
 
@@ -782,10 +809,10 @@ def test_provenance_is_canonical_schema_and_complete_typed_context() -> None:
     envelope = json.loads(result.evidence.model_dump_json())
     assert envelope["source"] == "coinbase_exchange_candles"
     provenance = envelope["provenance"]
-    assert provenance["producer"] == "market_research_v1.relative_strength"
+    assert provenance["producer"] == "market_research_v2.relative_strength"
     assert provenance["source_version"] == "1"
     params = provenance["query_params"]
-    assert params["policy"] == {"policy_id": "market_research_v1"}
+    assert params["policy"] == {"policy_id": "market_research_v2"}
     assert params["window"]["end"] == "2022-01-03T12:00:00.000000Z"
     assert [i["source"]["role"] for i in params["inputs"]] == ["subject", "benchmark"]
     for item in params["inputs"]:
@@ -857,7 +884,7 @@ def test_semantic_identity_matches_independent_canonical_encoding() -> None:
     expected_id = digest(
         {
             "identity_encoding_version": "1",
-            "policy": {"policy_id": "market_research_v1"},
+            "policy": {"policy_id": "market_research_v2"},
             "capability": "trend",
             "observed_at": timestamp(60),
             "window": window,

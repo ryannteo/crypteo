@@ -1,8 +1,10 @@
-"""Seven deterministic research capabilities through one authoritative gateway."""
+"""Ten deterministic research capabilities through one authoritative gateway."""
 
 from collections.abc import Iterable
 from datetime import datetime
+from decimal import Decimal
 from types import MappingProxyType
+from typing import Any
 
 from pydantic import TypeAdapter
 
@@ -23,8 +25,13 @@ from crypteo.domain._market_research_arithmetic import (
 from crypteo.domain.market import Candle, TradingPair
 from crypteo.domain.market_research import (
     BollingerPositionPayload,
+    CandleStructurePayload,
+    DailySection,
+    FourHourSection,
+    HigherTimeframePayload,
     HourlyDatetime,
     LevelsPayload,
+    LowerBandCrossingsPayload,
     MarketResearchCapability,
     MarketResearchPayload,
     MarketResearchPolicy,
@@ -43,6 +50,7 @@ from crypteo.domain.market_research import (
     UndefinedReason,
     VolatilityPayload,
     VolumeContextPayload,
+    _candle_anatomy,
     _canonical,
     _digest,
     _evidence_identity,
@@ -125,6 +133,33 @@ class MarketResearchService:
         return self._research(
             MarketResearchQuery(
                 capability=MarketResearchCapability.VOLUME_CONTEXT, pair=pair
+            )
+        )
+
+    def candle_structure(
+        self, pair: TradingPair
+    ) -> ResearchToolSuccess | ResearchToolUnavailable:
+        return self._research(
+            MarketResearchQuery(
+                capability=MarketResearchCapability.CANDLE_STRUCTURE, pair=pair
+            )
+        )
+
+    def higher_timeframe(
+        self, pair: TradingPair
+    ) -> ResearchToolSuccess | ResearchToolUnavailable:
+        return self._research(
+            MarketResearchQuery(
+                capability=MarketResearchCapability.HIGHER_TIMEFRAME, pair=pair
+            )
+        )
+
+    def lower_band_crossings(
+        self, pair: TradingPair
+    ) -> ResearchToolSuccess | ResearchToolUnavailable:
+        return self._research(
+            MarketResearchQuery(
+                capability=MarketResearchCapability.LOWER_BAND_CROSSINGS, pair=pair
             )
         )
 
@@ -353,6 +388,24 @@ def _calculate(
                     candles[-1].volume, baseline, UndefinedReason.ZERO_BASELINE_VOLUME
                 ),
             )
+        case MarketResearchCapability.CANDLE_STRUCTURE:
+            last = candles[-1]
+            return CandleStructurePayload(
+                open=last.open,
+                high=last.high,
+                low=last.low,
+                close=close,
+                **_candle_anatomy(
+                    last.open, last.high, last.low, close, mean_true_range(candles[:21])
+                ),
+            )
+        case MarketResearchCapability.HIGHER_TIMEFRAME:
+            return HigherTimeframePayload(
+                four_hour=FourHourSection(**_block_section(candles, 4)),
+                daily=DailySection(**_block_section(candles, 24)),
+            )
+        case MarketResearchCapability.LOWER_BAND_CROSSINGS:
+            return _lower_band_crossings(candles)
         case MarketResearchCapability.RELATIVE_STRENGTH:
             if benchmark is None or tuple(c.open_time for c in candles) != tuple(
                 c.open_time for c in benchmark
@@ -365,6 +418,8 @@ def _calculate(
             benchmark6 = _return(benchmark[-1].close, benchmark[-7].close)
             benchmark24 = _return(benchmark[-1].close, benchmark[-25].close)
             return RelativeStrengthPayload(
+                subject_pair=candles[-1].pair,
+                benchmark_pair=benchmark[-1].pair,
                 subject_return_6h=subject6,
                 subject_return_24h=subject24,
                 benchmark_return_6h=benchmark6,
@@ -372,6 +427,94 @@ def _calculate(
                 spread_6h=_difference(subject6, benchmark6),
                 spread_24h=_difference(subject24, benchmark24),
             )
+
+
+def _block_section(candles: tuple[Candle, ...], hours: int) -> dict[str, Any]:
+    """25 consecutive blocks of `hours` candles ending at T; block 0 is newest."""
+    blocks = tuple(
+        candles[len(candles) - (k + 1) * hours : len(candles) - k * hours]
+        for k in range(25)
+    )
+    closes = tuple(block[-1].close for block in blocks)
+    close, sma20, previous_sma20 = closes[0], _mean(closes[:20]), _mean(closes[5:])
+    range_high = max(item.high for block in blocks[1:21] for item in block)
+    range_low = min(item.low for block in blocks[1:21] for item in block)
+    return dict(
+        close=close,
+        sma20=sma20,
+        previous_sma20=previous_sma20,
+        close_vs_sma20=_return(close, sma20),
+        sma20_change=_return(sma20, previous_sma20),
+        close_5_blocks_ago=closes[5],
+        return_5_blocks=_return(close, closes[5]),
+        range_high=range_high,
+        range_low=range_low,
+        range_high_distance=_return(close, range_high),
+        range_low_distance=_return(close, range_low),
+    )
+
+
+_HORIZON = 6
+
+
+def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayload:
+    """Sample scanner-rule crossings whose whole outcome horizon closed by T.
+
+    The window ends at T, so no outcome can read a candle after the window.
+    """
+    statistics = rolling_bollinger_statistics(candles)
+    last = len(candles) - 1
+    pending = 0
+    reached: list[bool] = []
+    closes: list[Decimal] = []
+    adverse: list[Decimal] = []
+    favorable: list[Decimal] = []
+    for i in range(1, len(candles)):
+        previous, current = statistics[i - 1], statistics[i]
+        if previous is None or current is None:
+            continue
+        if not (
+            candles[i - 1].close >= previous.lower_band
+            and candles[i].close < current.lower_band
+        ):
+            continue
+        if i + _HORIZON > last:
+            pending += 1
+            continue
+        entry, outcome = candles[i].close, candles[i + 1 : i + 1 + _HORIZON]
+        reached.append(any(item.high >= current.sma for item in outcome))
+        closes.append(_return(outcome[-1].close, entry))
+        adverse.append(_return(min(item.low for item in outcome), entry))
+        favorable.append(_return(max(item.high for item in outcome), entry))
+    count = len(closes)
+    ordered = sorted(closes)
+    middle = count // 2
+    median = (
+        None
+        if not count
+        else ordered[middle]
+        if count % 2
+        else _mean((ordered[middle - 1], ordered[middle]))
+    )
+    positive = sum(1 for value in closes if value > 0)
+    return LowerBandCrossingsPayload(
+        sample_count=count,
+        pending_count=pending,
+        reached_sma20_count=sum(reached),
+        positive_close_count=positive,
+        reached_sma20_fraction=_ratio(
+            Decimal(sum(reached)), Decimal(count), UndefinedReason.ZERO_SAMPLE
+        ),
+        positive_close_fraction=_ratio(
+            Decimal(positive), Decimal(count), UndefinedReason.ZERO_SAMPLE
+        ),
+        mean_close_return=_mean(tuple(closes)) if count else None,
+        median_close_return=median,
+        min_close_return=ordered[0] if count else None,
+        max_close_return=ordered[-1] if count else None,
+        mean_adverse_excursion=_mean(tuple(adverse)) if count else None,
+        mean_favorable_excursion=_mean(tuple(favorable)) if count else None,
+    )
 
 
 def build_market_research(

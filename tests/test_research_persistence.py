@@ -1,6 +1,7 @@
 """Durable lifecycle and adversarial storage tests; never paid inference."""
 
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
 from importlib.metadata import version
@@ -175,6 +176,55 @@ def test_btc_only_durable_run_rejects_relative_strength_and_loads(
         if isinstance(r, ModelCallRecord) and r.request.stage == "investigate"
     ]
     assert offered and all(tools == tool_definitions(BTC, ()) for tools in offered)
+    assert store.load_terminal("run-1") == artifact
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").state == "COMPLETED"
+
+
+# The largest single-pair evidence set the 8-attempt budget admits: every
+# single-asset tool except volume_context, the smallest existing payload.
+EIGHT_TOOLS = (
+    "trend",
+    "momentum",
+    "volatility",
+    "bollinger_position",
+    "levels",
+    "candle_structure",
+    "higher_timeframe",
+    "lower_band_crossings",
+)
+
+
+def test_btc_only_durable_run_with_eight_tools_including_new_ones_loads(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    model = ObservedModel([tool(name) for name in EIGHT_TOOLS], outcome="NO_TRADE")
+    artifact = asyncio.run(
+        run_durable_opportunity_research(
+            OpportunityResearchRequest(
+                research_run_id="run-1", opportunity=opportunity()
+            ),
+            service(pairs=(BTC,), hours=720),
+            model,
+            workflow_config(model.provider),
+            store=store,
+            code=CODE,
+        )
+    )
+    result = artifact.result
+    assert result.status == "COMPLETED" and result.context.benchmarks == ()
+    attempts = [r for r in result.trace if isinstance(r, ToolRecord)]
+    assert [r.query.capability.value for r in attempts if r.query] == list(EIGHT_TOOLS)
+    assert all(r.result is not None and r.result.status == "success" for r in attempts)
+    assert [t.name for t in model.requests[0].tools] == [
+        t.name for t in tool_definitions(BTC, ())
+    ]
+    assert len(model.requests[0].tools) == 9
+    final = next(r for r in model.requests if r.stage == "final_assessment")
+    evidence = json.loads(final.messages[-1].content)["research_data"]["evidence"]
+    # Evidence is presented in capability order, as the tools were called.
+    assert [e["evidence_type"] for e in evidence] == list(EIGHT_TOOLS)
     assert store.load_terminal("run-1") == artifact
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
     assert store.inspect_run("run-1").state == "COMPLETED"

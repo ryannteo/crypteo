@@ -305,7 +305,7 @@ def test_policy_enumerates_every_subject_and_bound_benchmark_subset() -> None:
         assert entry.definitions == tuple(
             tool.identity for tool in tool_definitions(entry.pair, entry.benchmarks)
         )
-        assert len(entry.definitions) == (7 if entry.benchmarks else 6)
+        assert len(entry.definitions) == (10 if entry.benchmarks else 9)
 
 
 def test_source_and_acquisition_binding_are_exact(tmp_path: Path) -> None:

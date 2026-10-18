@@ -115,10 +115,10 @@ GOLDEN = {
         "sha256:c53eb965e8472b2a126936167e7cc8a28a121356506ca9ce97c132adeae0e0bd"
     ),
     "frozen_research": (
-        "sha256:9205e9dc76a3dc57451b0219808f9396b1eefd7ead0da000fe491c8fa5fadf07"
+        "sha256:42cad6fd3fbafa9813b4e9126df417b1b5f30a575ed95d6abd17fae362c53370"
     ),
     "claude_artifact": (
-        "sha256:a1cfeac3fef5f5cc2f6ec5a8a3c7713f7f4d3bb3e2e06e3ea3857cb473accde4"
+        "sha256:46ddc4518e2490a6de28a8f23f6abbf3147fc2e4e2ab90a58b2280ed7a23cecb"
     ),
 }
 

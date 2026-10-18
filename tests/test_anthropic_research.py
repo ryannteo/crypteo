@@ -242,7 +242,7 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
         }
     }
     assert wire["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
-    assert len(wire["tools"]) == 7
+    assert len(wire["tools"]) == 10
     assert [t["name"] for t in wire["tools"]] == [t.name for t in request.tools]
     for sent_tool, definition in zip(wire["tools"], request.tools, strict=True):
         assert sent_tool == {

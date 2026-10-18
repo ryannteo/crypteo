@@ -15,6 +15,7 @@ from crypteo.domain.market_research import (
     MarketResearchQuery,
     MarketRole,
     MarketSourceBinding,
+    RelativeStrengthPayload,
     ResearchContext,
     ResearchInput,
     ResearchRatio,
@@ -32,6 +33,7 @@ from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 T = datetime(2022, 1, 4, tzinfo=UTC)
 BTC, ETH, _ = TradingPair
 CAPABILITIES = tuple(MarketResearchCapability)
+HOURS = 730
 
 
 def result(
@@ -43,9 +45,9 @@ def result(
                 venue="COINBASE",
                 pair=pair,
                 timeframe="1h",
-                open_time=T - timedelta(hours=60 - i),
-                close_time=T - timedelta(hours=59 - i),
-                available_at=T - timedelta(hours=59 - i),
+                open_time=T - timedelta(hours=HOURS - i),
+                close_time=T - timedelta(hours=HOURS - 1 - i),
+                available_at=T - timedelta(hours=HOURS - 1 - i),
                 open="100",
                 high="102",
                 low="98",
@@ -54,7 +56,7 @@ def result(
             )
         )
         for pair in (BTC, ETH)
-        for i in range(60)
+        for i in range(HOURS)
     )
     svc = MarketResearchService(
         PointInTimeDataGateway(SimulationClock(T), candles),
@@ -487,6 +489,31 @@ def test_incorrect_query_params_and_payload_capability_are_rejected() -> None:
             payload=result(MarketResearchCapability.MOMENTUM).payload,
             evidence=original.evidence,
         )
+
+
+@pytest.mark.parametrize("pairs", [(BTC, BTC), (ETH, BTC), (BTC, TradingPair.SOL_USD)])
+def test_relative_strength_pairs_must_name_the_query_markets(
+    pairs: tuple[TradingPair, TradingPair],
+) -> None:
+    original = result(MarketResearchCapability.RELATIVE_STRENGTH)
+    assert isinstance(original.payload, RelativeStrengthPayload)
+    assert (original.payload.subject_pair, original.payload.benchmark_pair) == (
+        BTC,
+        ETH,
+    )
+    payload = original.payload.model_copy(
+        update={"subject_pair": pairs[0], "benchmark_pair": pairs[1]}
+    )
+    with pytest.raises(ValidationError):
+        ResearchToolSuccess(
+            context=original.context, payload=payload, evidence=original.evidence
+        )
+
+
+def test_relative_strength_payload_rejects_equal_pairs() -> None:
+    payload = result(MarketResearchCapability.RELATIVE_STRENGTH).payload
+    with pytest.raises(ValidationError, match="self-comparison"):
+        type(payload).model_validate(payload.model_copy(update={"benchmark_pair": BTC}))
 
 
 def test_level_times_must_exclude_current_candle() -> None:

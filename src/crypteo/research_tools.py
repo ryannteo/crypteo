@@ -23,7 +23,7 @@ from crypteo.research_model import (
     render_json,
 )
 
-TOOL_VERSION = "bounded_market_tools_v2"
+TOOL_VERSION = "bounded_market_tools_v3"
 
 _DESCRIPTION_SUFFIX = (
     "Completed Coinbase hourly candles visible at T; venue, timeframe, window and "
@@ -64,6 +64,28 @@ TOOL_DESCRIPTIONS: Mapping[MarketResearchCapability, str] = MappingProxyType(
         MarketResearchCapability.VOLUME_CONTEXT: (
             "In the 25-candle window ending at T: base-asset volume of the current "
             "candle, mean volume of the 24 candles before it, and their ratio."
+        ),
+        MarketResearchCapability.CANDLE_STRUCTURE: (
+            "Anatomy of the current candle ending at T: OHLC, range, signed body, "
+            "upper and lower wicks, their fractions of the range, and close "
+            "location in the range; plus the range relative to the mean true range "
+            "of the 20 candles before it (22-candle window)."
+        ),
+        MarketResearchCapability.HIGHER_TIMEFRAME: (
+            "4-hour and daily views built from consecutive blocks of hourly candles "
+            "ending at T (not calendar-aligned; 600-candle window): per view, SMA20 "
+            "of block closes, close vs SMA20, SMA20 change vs five blocks earlier, "
+            "5-block return, and the high/low of the 20 blocks before the current "
+            "one with distances."
+        ),
+        MarketResearchCapability.LOWER_BAND_CROSSINGS: (
+            "History of this pair's hourly closes crossing below the lower "
+            "Bollinger band (scanner rule) in the 720-candle window ending at T. "
+            "Only crossings whose next 6 candles all closed by T are sampled: "
+            "counts and fractions reaching the trigger's SMA20 intrabar and closing "
+            "higher after 6 hours, close-return mean, median and range, and mean "
+            "adverse and favorable excursions. Later crossings are counted as "
+            "pending."
         ),
         MarketResearchCapability.RELATIVE_STRENGTH: (
             "Subject minus benchmark close-to-close returns over 6h and 24h from "

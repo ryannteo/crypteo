@@ -18,9 +18,9 @@ The repository implements deterministic foundations and bounded AI research:
 - Coinbase historical candle retrieval, normalization, gap reporting, and immutable
   local raw, canonical, and acquisition artifacts.
 - Deterministic Bollinger analytics and a lower-band crossover opportunity scanner.
-- Seven deterministic market-research tools producing point-in-time evidence:
+- Ten deterministic market-research tools producing point-in-time evidence:
   trend, momentum, volatility, Bollinger position, recent levels, volume context,
-  and relative strength.
+  candle structure, higher timeframe, lower-band crossings, and relative strength.
 - Bounded opportunity-led model research: the model chooses deterministic tools,
   then produces a structured thesis, a separate critique, and a final research
   assessment. A Claude adapter implements the provider boundary; see the

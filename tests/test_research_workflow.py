@@ -371,6 +371,9 @@ def test_btc_only_rejects_unoffered_relative_strength_and_completes() -> None:
             "bollinger_position",
             "levels",
             "volume_context",
+            "candle_structure",
+            "higher_timeframe",
+            "lower_band_crossings",
         ]
         for r in investigations
     )

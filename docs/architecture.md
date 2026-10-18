@@ -86,12 +86,13 @@ history and returns a reproducible snapshot of candidates. An `Opportunity` is
 research context; it does not grant trading authority. Replay owns freshness,
 delivery, and deduplication.
 
-`MarketResearchService` supplies seven fixed-window tools: trend, momentum,
-volatility, Bollinger position, recent levels, volume context, and relative
-strength. Each returns typed unavailable information or neutral measurements in
-a common `EvidenceItem`, with temporal and source provenance. Evidence identity
-describes contributing data and computed payload; acquisition and whole-dataset
-identities remain provenance. Large candle windows stay outside the envelope.
+`MarketResearchService` supplies ten fixed-window tools: trend, momentum,
+volatility, Bollinger position, recent levels, volume context, candle structure,
+higher timeframe, lower-band crossings, and relative strength. Each returns
+typed unavailable information or neutral measurements in a common
+`EvidenceItem`, with temporal and source provenance. Evidence identity describes
+contributing data and computed payload; acquisition and whole-dataset identities
+remain provenance. Large candle windows stay outside the envelope.
 
 Common opportunity, evidence, thesis, critique, and assessment schemas are validated
 contracts. They revalidate existing/nested instances and detach mutable inputs.
@@ -106,13 +107,13 @@ only investigation completion advances through
 `investigate --complete--> draft_thesis → critique → final_assessment`.
 A structured reply that fails validation transitions its node to itself for one
 bounded re-ask carrying code-computed problems; a failed re-ask interrupts.
-The investigator chooses among seven deterministic market capabilities, each
+The investigator chooses among ten deterministic market capabilities, each
 described by a fixed statement of its window and measurements; relative strength
 is offered only against other pairs with a bound source, so a single-pair run
-sees six tools. The tool adapter binds the opportunity's subject and allows only a
-relative-strength benchmark argument. Software enforces tool-attempt, invalid-request, model-call,
-output, provider-input, and deadline budgets. The graph recursion limit is a
-secondary guard. Exact limits live in the
+sees nine tools. The tool adapter binds the opportunity's subject and allows
+only a relative-strength benchmark argument. Software enforces tool-attempt,
+invalid-request, model-call, output, provider-input, and deadline budgets. The
+graph recursion limit is a secondary guard. Exact limits live in the
 [specification](v1-specification.md#bounded-model-backed-research).
 
 `ResearchModel` is the project-owned async provider abstraction: it prepares the

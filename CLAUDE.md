@@ -16,7 +16,7 @@ CI runs exactly these four; run all of them before considering work done:
 python -m ruff format --check .   # apply with: python -m ruff format .
 python -m ruff check .
 python -m mypy                    # strict; config covers both src/ and tests/
-python -m pytest                  # ~3,000 cases, ~3 minutes
+python -m pytest                  # ~3,700 cases, ~5 minutes
 ```
 
 Single test or subset:

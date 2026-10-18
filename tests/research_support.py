@@ -63,7 +63,11 @@ def opportunity(pair: TradingPair = BTC) -> Opportunity:
 
 
 def candles(
-    pair: TradingPair = BTC, *, future: bool = False, delayed: int | None = None
+    pair: TradingPair = BTC,
+    *,
+    future: bool = False,
+    delayed: int | None = None,
+    hours: int = 60,
 ) -> tuple[Candle, ...]:
     return tuple(
         Candle.model_validate(
@@ -71,11 +75,11 @@ def candles(
                 venue="COINBASE",
                 pair=pair,
                 timeframe="1h",
-                open_time=T - timedelta(hours=60 - i),
-                close_time=T - timedelta(hours=59 - i),
+                open_time=T - timedelta(hours=hours - i),
+                close_time=T - timedelta(hours=hours - 1 - i),
                 available_at=T + timedelta(hours=1)
                 if i == delayed
-                else T - timedelta(hours=59 - i),
+                else T - timedelta(hours=hours - 1 - i),
                 open="100.0000000000000000000001",
                 close="100.0000000000000000000001",
                 high="102",
@@ -83,7 +87,7 @@ def candles(
                 volume="0",
             )
         )
-        for i in range(61 if future else 60)
+        for i in range(hours + 1 if future else hours)
     )
 
 
@@ -93,11 +97,16 @@ def service(
     pairs: tuple[TradingPair, ...] = (BTC, ETH),
     future: bool = False,
     delayed: int | None = None,
+    hours: int = 60,
 ) -> MarketResearchService:
     return MarketResearchService(
         PointInTimeDataGateway(
             clock or SimulationClock(T),
-            tuple(c for p in pairs for c in candles(p, future=future, delayed=delayed)),
+            tuple(
+                c
+                for p in pairs
+                for c in candles(p, future=future, delayed=delayed, hours=hours)
+            ),
         ),
         [
             MarketSourceBinding(pair=p, dataset_version="sha256:" + "c" * 64)

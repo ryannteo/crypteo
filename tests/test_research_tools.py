@@ -34,6 +34,15 @@ SINGLE_ASSET_DIGESTS = {
     "volume_context": (
         "7cfcd4a8d2474c18dcd7a7b4ba011d6f5925cffc96f1bd4e72b12f32c5c10db1"
     ),
+    "candle_structure": (
+        "d9a309f73ee82c880255746024ede40bbccf67e04721b9498120d337743daf18"
+    ),
+    "higher_timeframe": (
+        "bf9f4be59991949bdeba8845050aa465c12ec169a8d769079ecacac873939a5b"
+    ),
+    "lower_band_crossings": (
+        "0990d9006a7d9ec3c2e13886b3c81c9f9b1a44cfa009b1c1593f4d2c7faccca0"
+    ),
 }
 
 
@@ -44,7 +53,7 @@ def digests(benchmarks: tuple[TradingPair, ...]) -> dict[str, str]:
     }
 
 
-def test_v2_tool_identity_snapshots() -> None:
+def test_v3_tool_identity_snapshots() -> None:
     assert digests((ETH, SOL)) == SINGLE_ASSET_DIGESTS | {
         "relative_strength": (
             "46a313cda8bdbe314a3d64119ffde3c0aaadeb92169c5f3e0e95a47ab35c55ca"
@@ -52,8 +61,31 @@ def test_v2_tool_identity_snapshots() -> None:
     }
     # Without a bound benchmark, relative strength is not offered at all.
     assert digests(()) == SINGLE_ASSET_DIGESTS
-    assert TOOL_VERSION == "bounded_market_tools_v2"
+    assert TOOL_VERSION == "bounded_market_tools_v3"
     assert {t.identity.version for t in tool_definitions(BTC, ())} == {TOOL_VERSION}
+
+
+def test_tool_order_and_single_pair_offer() -> None:
+    order = [
+        "trend",
+        "momentum",
+        "volatility",
+        "bollinger_position",
+        "levels",
+        "volume_context",
+        "candle_structure",
+        "higher_timeframe",
+        "lower_band_crossings",
+        "relative_strength",
+    ]
+    assert [c.value for c in MarketResearchCapability] == order
+    assert [t.name for t in tool_definitions(BTC, (ETH, SOL))] == order
+    assert [t.name for t in tool_definitions(BTC, ())] == order[:-1]
+    assert len(tool_definitions(BTC, ())) == 9
+    assert {
+        c.value: MarketResearchPolicy().required_bars(c)
+        for c in MarketResearchCapability
+    } == dict(zip(order, [50, 25, 41, 20, 25, 25, 22, 600, 720, 25], strict=True))
 
 
 @pytest.mark.parametrize("subject", tuple(TradingPair))
@@ -163,7 +195,7 @@ def test_service_accessors_are_read_only_and_canonically_ordered() -> None:
 def test_bound_query_dispatch_preserves_capability_output(
     capability: MarketResearchCapability, unavailable: bool
 ) -> None:
-    svc = service(delayed=59 if unavailable else None)
+    svc = service(hours=721, delayed=720 if unavailable else None)
     relative = capability is MarketResearchCapability.RELATIVE_STRENGTH
     request = tool(capability.value, {"benchmark": ETH.value} if relative else {})
     query = bind_tool_request(request.requests, BTC, (ETH,))
@@ -178,6 +210,9 @@ def test_bound_query_dispatch_preserves_capability_output(
             MarketResearchCapability.BOLLINGER_POSITION: svc.bollinger_position,
             MarketResearchCapability.LEVELS: svc.levels,
             MarketResearchCapability.VOLUME_CONTEXT: svc.volume_context,
+            MarketResearchCapability.CANDLE_STRUCTURE: svc.candle_structure,
+            MarketResearchCapability.HIGHER_TIMEFRAME: svc.higher_timeframe,
+            MarketResearchCapability.LOWER_BAND_CROSSINGS: svc.lower_band_crossings,
         }[capability](BTC)
     )
     actual = dispatch_tool(svc, query)

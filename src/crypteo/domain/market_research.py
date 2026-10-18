@@ -58,6 +58,9 @@ class MarketResearchCapability(StrEnum):
     BOLLINGER_POSITION = "bollinger_position"
     LEVELS = "levels"
     VOLUME_CONTEXT = "volume_context"
+    CANDLE_STRUCTURE = "candle_structure"
+    HIGHER_TIMEFRAME = "higher_timeframe"
+    LOWER_BAND_CROSSINGS = "lower_band_crossings"
     RELATIVE_STRENGTH = "relative_strength"
 
 
@@ -69,7 +72,7 @@ class MarketRole(StrEnum):
 class MarketResearchPolicy(_Contract):
     """One fixed policy; window lengths are not configurable query parameters."""
 
-    policy_id: Literal["market_research_v1"] = "market_research_v1"
+    policy_id: Literal["market_research_v2"] = "market_research_v2"
 
     def required_bars(self, capability: MarketResearchCapability) -> int:
         match capability:
@@ -79,6 +82,12 @@ class MarketResearchPolicy(_Contract):
                 return 41
             case MarketResearchCapability.BOLLINGER_POSITION:
                 return 20
+            case MarketResearchCapability.CANDLE_STRUCTURE:
+                return 22
+            case MarketResearchCapability.HIGHER_TIMEFRAME:
+                return 600
+            case MarketResearchCapability.LOWER_BAND_CROSSINGS:
+                return 720
             case _:
                 return 25
 
@@ -180,6 +189,9 @@ class UndefinedReason(StrEnum):
     ZERO_PREVIOUS_NORMALIZED_RANGE = "ZERO_PREVIOUS_NORMALIZED_RANGE"
     ZERO_BAND_WIDTH = "ZERO_BAND_WIDTH"
     ZERO_BASELINE_VOLUME = "ZERO_BASELINE_VOLUME"
+    ZERO_RANGE = "ZERO_RANGE"
+    ZERO_MEAN_TRUE_RANGE = "ZERO_MEAN_TRUE_RANGE"
+    ZERO_SAMPLE = "ZERO_SAMPLE"
 
 
 class ResearchRatio(_Contract):
@@ -339,10 +351,199 @@ class VolumeContextPayload(_Contract):
         return self
 
 
+class CandleStructurePayload(_Contract):
+    """Anatomy of the candle ending at T; fractions are of its own high-low range."""
+
+    capability: Literal[MarketResearchCapability.CANDLE_STRUCTURE] = (
+        MarketResearchCapability.CANDLE_STRUCTURE
+    )
+    open: PositiveDecimal
+    high: PositiveDecimal
+    low: PositiveDecimal
+    close: PositiveDecimal
+    range: NonNegativeDecimal
+    body: ExactDecimal
+    upper_wick: NonNegativeDecimal
+    lower_wick: NonNegativeDecimal
+    body_fraction: ResearchRatio
+    upper_wick_fraction: ResearchRatio
+    lower_wick_fraction: ResearchRatio
+    close_location: ResearchRatio
+    previous_mean_true_range: NonNegativeDecimal
+    range_vs_mean_true_range: ResearchRatio
+
+    @model_validator(mode="after")
+    def validate_arithmetic(self) -> Self:
+        if self.low > min(self.open, self.close) or self.high < max(
+            self.open, self.close
+        ):
+            raise ValueError("candle prices are inconsistent")
+        derived = _candle_anatomy(
+            self.open, self.high, self.low, self.close, self.previous_mean_true_range
+        )
+        if any(getattr(self, name) != value for name, value in derived.items()):
+            raise ValueError("candle structure does not reconcile")
+        return self
+
+
+def _candle_anatomy(
+    open: Decimal,
+    high: Decimal,
+    low: Decimal,
+    close: Decimal,
+    previous_mean_true_range: Decimal,
+) -> dict[str, Any]:
+    """Derived candle fields, shared by calculation and recomputing validation."""
+    span = _difference(high, low)
+    body = _difference(close, open)
+    upper_wick = _difference(high, max(open, close))
+    lower_wick = _difference(min(open, close), low)
+    reason = UndefinedReason.ZERO_RANGE
+    return dict(
+        range=span,
+        body=body,
+        upper_wick=upper_wick,
+        lower_wick=lower_wick,
+        body_fraction=_ratio(body.copy_abs(), span, reason),
+        upper_wick_fraction=_ratio(upper_wick, span, reason),
+        lower_wick_fraction=_ratio(lower_wick, span, reason),
+        close_location=_ratio(_difference(close, low), span, reason),
+        previous_mean_true_range=previous_mean_true_range,
+        range_vs_mean_true_range=_ratio(
+            span, previous_mean_true_range, UndefinedReason.ZERO_MEAN_TRUE_RANGE
+        ),
+    )
+
+
+class _BlockSection(_Contract):
+    """Block 0 is the newest block of consecutive hourly candles ending at T."""
+
+    close: PositiveDecimal
+    sma20: PositiveDecimal
+    previous_sma20: PositiveDecimal
+    close_vs_sma20: ExactDecimal
+    sma20_change: ExactDecimal
+    close_5_blocks_ago: PositiveDecimal
+    return_5_blocks: ExactDecimal
+    range_high: PositiveDecimal
+    range_low: PositiveDecimal
+    range_high_distance: ExactDecimal
+    range_low_distance: ExactDecimal
+
+    @model_validator(mode="after")
+    def validate_arithmetic(self) -> Self:
+        if self.range_low > self.range_high or (
+            self.close_vs_sma20,
+            self.sma20_change,
+            self.return_5_blocks,
+            self.range_high_distance,
+            self.range_low_distance,
+        ) != (
+            _return(self.close, self.sma20),
+            _return(self.sma20, self.previous_sma20),
+            _return(self.close, self.close_5_blocks_ago),
+            _return(self.close, self.range_high),
+            _return(self.close, self.range_low),
+        ):
+            raise ValueError("higher-timeframe ratios do not reconcile")
+        return self
+
+
+class FourHourSection(_BlockSection):
+    block_hours: Literal[4] = 4
+
+
+class DailySection(_BlockSection):
+    block_hours: Literal[24] = 24
+
+
+class HigherTimeframePayload(_Contract):
+    """Blocks of consecutive hourly candles ending at T, not calendar-aligned."""
+
+    capability: Literal[MarketResearchCapability.HIGHER_TIMEFRAME] = (
+        MarketResearchCapability.HIGHER_TIMEFRAME
+    )
+    four_hour: FourHourSection
+    daily: DailySection
+
+    @model_validator(mode="after")
+    def validate_sections(self) -> Self:
+        if self.four_hour.close != self.daily.close:
+            raise ValueError("higher-timeframe sections must share the current close")
+        return self
+
+
+Count = Annotated[int, Field(strict=True, ge=0)]
+
+
+class LowerBandCrossingsPayload(_Contract):
+    """Scanner-rule crossings in the window; samples have all outcomes closed by T."""
+
+    capability: Literal[MarketResearchCapability.LOWER_BAND_CROSSINGS] = (
+        MarketResearchCapability.LOWER_BAND_CROSSINGS
+    )
+    lookback_bars: Literal[720] = 720
+    horizon_bars: Literal[6] = 6
+    sample_count: Count
+    pending_count: Count
+    reached_sma20_count: Count
+    positive_close_count: Count
+    reached_sma20_fraction: ResearchRatio
+    positive_close_fraction: ResearchRatio
+    mean_close_return: ExactDecimal | None
+    median_close_return: ExactDecimal | None
+    min_close_return: ExactDecimal | None
+    max_close_return: ExactDecimal | None
+    mean_adverse_excursion: ExactDecimal | None
+    mean_favorable_excursion: ExactDecimal | None
+
+    @model_validator(mode="after")
+    def validate_aggregates(self) -> Self:
+        samples = Decimal(self.sample_count)
+        if (
+            max(self.reached_sma20_count, self.positive_close_count) > self.sample_count
+            or self.reached_sma20_fraction
+            != _ratio(
+                Decimal(self.reached_sma20_count),
+                samples,
+                UndefinedReason.ZERO_SAMPLE,
+            )
+            or self.positive_close_fraction
+            != _ratio(
+                Decimal(self.positive_close_count),
+                samples,
+                UndefinedReason.ZERO_SAMPLE,
+            )
+        ):
+            raise ValueError("crossing counts do not reconcile")
+        aggregates = (
+            self.mean_close_return,
+            self.median_close_return,
+            self.min_close_return,
+            self.max_close_return,
+            self.mean_adverse_excursion,
+            self.mean_favorable_excursion,
+        )
+        if any((value is None) != (self.sample_count == 0) for value in aggregates):
+            raise ValueError("crossing aggregates must exist exactly with samples")
+        mean, median, low, high = aggregates[:4]
+        if (
+            mean is not None
+            and median is not None
+            and low is not None
+            and high is not None
+            and not (low <= median <= high and low <= mean <= high)
+        ):
+            raise ValueError("crossing close-return statistics are inconsistent")
+        return self
+
+
 class RelativeStrengthPayload(_Contract):
     capability: Literal[MarketResearchCapability.RELATIVE_STRENGTH] = (
         MarketResearchCapability.RELATIVE_STRENGTH
     )
+    subject_pair: TradingPair
+    benchmark_pair: TradingPair
     subject_return_6h: ExactDecimal
     subject_return_24h: ExactDecimal
     benchmark_return_6h: ExactDecimal
@@ -352,6 +553,8 @@ class RelativeStrengthPayload(_Contract):
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        if self.subject_pair == self.benchmark_pair:
+            raise ValueError("self-comparison is not permitted")
         if (self.spread_6h, self.spread_24h) != (
             _difference(self.subject_return_6h, self.benchmark_return_6h),
             _difference(self.subject_return_24h, self.benchmark_return_24h),
@@ -367,6 +570,9 @@ MarketResearchPayload = Annotated[
     | BollingerPositionPayload
     | LevelsPayload
     | VolumeContextPayload
+    | CandleStructurePayload
+    | HigherTimeframePayload
+    | LowerBandCrossingsPayload
     | RelativeStrengthPayload,
     Field(discriminator="capability"),
 ]
@@ -446,6 +652,11 @@ class ResearchToolSuccess(_Contract):
             ):
                 if not context.window.start < timestamp < context.window.end:
                     raise ValueError("recent levels must belong to prior candles")
+        if isinstance(self.payload, RelativeStrengthPayload) and (
+            self.payload.subject_pair,
+            self.payload.benchmark_pair,
+        ) != (context.query.pair, context.query.benchmark):
+            raise ValueError("relative strength pairs do not match the query")
         if (
             evidence.category is not EvidenceCategory.MARKET
             or evidence.evidence_type != context.query.capability.value

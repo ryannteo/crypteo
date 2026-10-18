@@ -5,7 +5,7 @@ This is the authoritative specification of current V1 behavior at HEAD. The
 [data pipeline](data-pipeline.md) defines acquisition and storage semantics.
 Durable architectural changes require an [ADR](decisions/README.md).
 
-The implementation provides deterministic scanner-only replay, seven market
+The implementation provides deterministic scanner-only replay, ten market
 research tools, and bounded opportunity-led model investigation, thesis, critique,
 and final assessment through LangGraph, with optional durable SQLite lifecycle
 journaling and immutable terminal research artifacts. One historical replay
@@ -83,17 +83,19 @@ detach mutable input collections into deeply immutable validated state.
 [market_research.py](../src/crypteo/market_research.py), with immutable typed
 [contracts and payloads](../src/crypteo/domain/market_research.py) and private
 [research arithmetic](../src/crypteo/domain/_market_research_arithmetic.py).
-The fixed policy is `market_research_v1`.
+The fixed policy is `market_research_v2`.
 
 ### Public API and assembly
 
 The service exposes `trend(pair)`, `momentum(pair)`, `volatility(pair)`,
-`bollinger_position(pair)`, `levels(pair)`, `volume_context(pair)`, and
-`relative_strength(pair, benchmark)`. Each returns
-`ResearchToolSuccess | ResearchToolUnavailable`. Supported markets are Coinbase
-`BTC-USD`, `ETH-USD`, and `SOL-USD`, using completed 1h candles. Tools require no
-`Opportunity` and expose no timestamp, arbitrary lookback, or window override,
-allowing reuse by opportunity-led research and future trader-led orchestration.
+`bollinger_position(pair)`, `levels(pair)`, `volume_context(pair)`,
+`candle_structure(pair)`, `higher_timeframe(pair)`,
+`lower_band_crossings(pair)`, and `relative_strength(pair, benchmark)`. Each
+returns `ResearchToolSuccess | ResearchToolUnavailable`. Supported markets are
+Coinbase `BTC-USD`, `ETH-USD`, and `SOL-USD`, using completed 1h candles. Tools
+require no `Opportunity` and expose no timestamp, arbitrary lookback, or window
+override, allowing reuse by opportunity-led research and future trader-led
+orchestration.
 
 `build_market_research(clock, datasets)` validates canonical datasets and any
 supplied acquisition linkage, then constructs the gateway and source-provenance
@@ -120,7 +122,10 @@ ending at `T`, including the current candle. Returns and distances are fractions
 | Bollinger position | 20 | Scanner-identical SMA20 and population standard deviation `σ` over `C0..C19`; `lower = SMA20 - 2σ`, `upper = SMA20 + 2σ`; `percent_b = (C0 - lower) / (upper - lower)`; `bandwidth_fraction = (upper - lower) / SMA20`. |
 | Recent levels | 25 | `recent_high = max(H1..H24)` and `recent_low = min(L1..L24)`, excluding the current candle. `close_vs_high = C0 / recent_high - 1`; `close_vs_low = C0 / recent_low - 1`. |
 | Volume context | 25 | Current base-asset volume `V0`, previous 24-bar mean `mean(V1..V24)`, and `volume_ratio = V0 / mean(V1..V24)`. |
-| Relative strength | 25 per market | Subject and benchmark simple returns `C0 / C6 - 1` and `C0 / C24 - 1`; each spread is subject return minus benchmark return at the same horizon. |
+| Candle structure | 22 | Current `O0`, `H0`, `L0`, `C0`; `range = H0 - L0`; signed `body = C0 - O0`; `upper_wick = H0 - max(O0, C0)`; `lower_wick = min(O0, C0) - L0`; `body_fraction = abs(body) / range`, `upper_wick_fraction = upper_wick / range`, `lower_wick_fraction = lower_wick / range`, `close_location = (C0 - L0) / range`; `previous_mean_true_range = mean(TR1..TR20)`, seeded by `C21`; `range_vs_mean_true_range = range / previous_mean_true_range`. |
+| Higher timeframe | 600 | Sections `four_hour` (`block_hours = 4`) and `daily` (`block_hours = 24`), each from the last `25 * h` candles split into 25 consecutive `h`-hour blocks ending at `T` (block 0 newest; not calendar-aligned). Block close is its last candle's close, high the maximum high, low the minimum low. Per section, with `Bk` the close of block `k`: `close = B0`; `sma20 = mean(B0..B19)`; `previous_sma20 = mean(B5..B24)`; `close_vs_sma20 = close / sma20 - 1`; `sma20_change = sma20 / previous_sma20 - 1`; `close_5_blocks_ago = B5`; `return_5_blocks = close / close_5_blocks_ago - 1`; `range_high` and `range_low` are the highest high and lowest low of blocks 1..20; `range_high_distance = close / range_high - 1`; `range_low_distance = close / range_low - 1`. Both sections share `close`. |
+| Lower-band crossings | 720 | Window candles indexed `0..719` in time order (719 ends at `T`) with scanner-identical rolling Bollinger statistics computed over the window alone. A crossing is an index `i` with both `i - 1` and `i` statistics defined, `C(i-1) >= lower(i-1)` and `C(i) < lower(i)` (the scanner rule). It is a sample when `i + 6 <= 719`; otherwise it counts only in `pending_count`. Per sample: reached SMA20 when any `H(i+1..i+6) >= SMA20(i)`; `close_return = C(i+6) / C(i) - 1`; adverse excursion `min(L(i+1..i+6)) / C(i) - 1`; favorable excursion `max(H(i+1..i+6)) / C(i) - 1`. Payload: `lookback_bars = 720`, `horizon_bars = 6`, `sample_count`, `pending_count`, `reached_sma20_count`, `positive_close_count` (`close_return > 0`), their fractions of `sample_count`, and the mean, median (mean of the two middle values for an even count), minimum and maximum close return and the mean adverse and favorable excursions, all `null` exactly when `sample_count = 0`. |
+| Relative strength | 25 per market | Subject and benchmark simple returns `C0 / C6 - 1` and `C0 / C24 - 1`; each spread is subject return minus benchmark return at the same horizon. The payload names its `subject_pair` and `benchmark_pair`. |
 
 Volatility reuses existing `mean_true_range` for two non-overlapping sets of 20
 true ranges; the shared candle ending at `T - 20h` supplies the current set's
@@ -128,15 +133,25 @@ previous-close seed and the previous set's ending close. These are arithmetic
 means, not Wilder ATR, a volatility percentile, or a regime classification.
 Bollinger `percent_b` is unclipped and can lie below zero or above one.
 
+Candle structure reuses `mean_true_range` for the 20 candles before the current
+candle; the current candle's own range is excluded from its baseline. Higher
+timeframe blocks are fixed offsets from `T`, so a change to the candle ending at
+`T - 4h` changes four-hour block 1, not block 0. Lower-band crossings reuse the
+scanner's Bollinger statistics and crossing rule; because statistics need 20
+in-window closes, crossings at window indices below 20 are not counted even when
+the scanner, reading older history, reports them. These measurements are
+observational history, not a predictive base rate or a trade signal.
+
 Recent levels select the most recent prior candle when extrema tie and retain
 its close time. The payload names for `close_vs_high` and `close_vs_low` are
 `recent_high_distance` and `recent_low_distance`, respectively. These are
 observational levels, not predictive support/resistance or proposed trade terms.
 
 Relative strength requires explicit ordered subject/benchmark roles and exactly
-aligned windows. All six ordered comparisons are supported: BTC/ETH, BTC/SOL,
-ETH/BTC, ETH/SOL, SOL/BTC, and SOL/ETH (each asset's USD pair). Self-comparison
-raises; no default benchmark is inferred.
+aligned windows. Its payload names both pairs; they must differ and must equal
+the query's pair and benchmark. All six ordered comparisons are supported:
+BTC/ETH, BTC/SOL, ETH/BTC, ETH/SOL, SOL/BTC, and SOL/ETH (each asset's USD
+pair). Self-comparison raises; no default benchmark is inferred.
 
 ### Temporal boundary and unavailable outcomes
 
@@ -166,6 +181,10 @@ table's reference, leading-history, then gap order, subject before benchmark.
 Malformed, corrupt, future/invisible, mismatched, duplicate, or unordered gateway
 data raises rather than becoming ordinary unavailability.
 
+Lower-band crossing outcomes are read only from the window ending at `T`. A
+crossing whose six outcome candles have not all closed by `T` is pending: it
+contributes only to `pending_count`, and no candle after `T` can complete it.
+
 Availability is derived as the maximum availability of **all** contributing
 candles across all inputs, including previous-close seeds. Since success requires
 the visible candle ending at `T`, successful V1 evidence naturally satisfies
@@ -187,7 +206,7 @@ context is embedded in `provenance.query_params`, and the deterministic payload
 is normalized into the immutable envelope. Raw candle windows stay outside it.
 
 Semantic `evidence_id` is a SHA-256 digest of identity encoding version `1`,
-the `market_research_v1` policy and capability, ordered subject/benchmark roles
+the `market_research_v2` policy and capability, ordered subject/benchmark roles
 and market identities (venue, pair, timeframe), observed time, required-window
 geometry, canonical digests of the actual contributing candle windows, and the
 normalized deterministic payload. Each window digest includes encoding version,
@@ -207,7 +226,7 @@ source reference, alongside role, venue, pair, timeframe, source, and source sch
 version; acquisition ID may be absent. Relative-strength provenance preserves
 both subject and benchmark roles. `provenance.source_version` is canonical source
 schema version `1`, not dataset content identity or research-policy version.
-`provenance.producer` identifies `market_research_v1.<capability>`.
+`provenance.producer` identifies `market_research_v2.<capability>`.
 
 ### Numerical policy
 
@@ -219,10 +238,13 @@ to a new research mean. Calculations and relational validators share the numeric
 policy.
 
 Zero denominators produce a `ResearchRatio` with `value=None` and an explicit
-`ZERO_PREVIOUS_NORMALIZED_RANGE`, `ZERO_BAND_WIDTH`, or `ZERO_BASELINE_VOLUME`
-reason as appropriate. They do not make otherwise valid evidence unavailable.
-Zero numerators with positive denominators produce defined zero ratios; prices
-and price means used as denominators must remain positive.
+`ZERO_PREVIOUS_NORMALIZED_RANGE`, `ZERO_BAND_WIDTH`, `ZERO_BASELINE_VOLUME`,
+`ZERO_RANGE` (candle-structure fractions of a zero range),
+`ZERO_MEAN_TRUE_RANGE` (candle range versus a zero previous mean true range), or
+`ZERO_SAMPLE` (crossing fractions with no samples) reason as appropriate. They
+do not make otherwise valid evidence unavailable. Zero numerators with positive
+denominators produce defined zero ratios; prices and price means used as
+denominators must remain positive.
 
 ## Temporal and Replay Invariants
 
@@ -1081,21 +1103,24 @@ Model inference remains subject to the
 
 The runtime-enforced policy is `bounded_research_v2`. Budget and operational
 limits are validated literal configuration values, not freely tunable overrides.
-Seven deterministic capabilities exist: `trend`, `momentum`, `volatility`,
-`bollinger_position`, `levels`, `volume_context`, and `relative_strength`.
-Runtime binds the subject; the six single-asset tools accept empty arguments and
-are offered regardless of source bindings. Relative-strength `benchmark` is the
-only model-selectable research argument. The run context's benchmarks are exactly the other supported
-BTC/ETH/SOL USD pairs that have a bound source, in deterministic BTC, ETH, SOL
-order, and `relative_strength` is offered with only those benchmarks. When no
-other pair is bound, `relative_strength` is not offered and requesting it is an
-invalid tool request ("relative_strength is not offered without a bound
-benchmark"); naming a benchmark outside the context's benchmarks is likewise an
-invalid tool request. Neither dispatches. Venue, timeframe, cutoff, and windows
-are runtime-owned. Each tool definition carries a fixed description of its window
-and measurements, ending with the shared statement that it reads completed
-Coinbase hourly candles visible at T and that venue, timeframe, window and cutoff
-are runtime-owned. Tool definitions are versioned `bounded_market_tools_v2`.
+Ten deterministic capabilities exist: `trend`, `momentum`, `volatility`,
+`bollinger_position`, `levels`, `volume_context`, `candle_structure`,
+`higher_timeframe`, `lower_band_crossings`, and `relative_strength`, offered in
+that order. Runtime binds the subject; the nine single-asset tools accept empty
+arguments and are offered regardless of source bindings. Relative-strength
+`benchmark` is the only model-selectable research argument. The run context's
+benchmarks are exactly the other supported BTC/ETH/SOL USD pairs that have a
+bound source, in deterministic BTC, ETH, SOL order, and `relative_strength` is
+offered with only those benchmarks. When no other pair is bound,
+`relative_strength` is not offered and requesting it is an invalid tool request
+("relative_strength is not offered without a bound benchmark"); naming a
+benchmark outside the context's benchmarks is likewise an invalid tool request.
+Neither dispatches. Venue, timeframe, cutoff, and windows are runtime-owned.
+Each tool definition carries a fixed description of its window and measurements,
+ending with the shared statement that it reads completed Coinbase hourly candles
+visible at T and that venue, timeframe, window and cutoff are runtime-owned.
+Tool definitions are versioned `bounded_market_tools_v3`. A single-pair run is
+offered nine tools within its eight admitted tool attempts.
 
 | Bound | Current policy |
 | --- | --- |
