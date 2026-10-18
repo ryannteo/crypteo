@@ -7,6 +7,7 @@ import socket
 from datetime import timedelta
 from decimal import Decimal
 from importlib.metadata import version as package_version
+from itertools import combinations
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from research_support import (
     ScriptedModel,
     T,
     assessment,
+    candles,
     completion,
     critique,
     opportunity,
@@ -30,7 +32,12 @@ from research_support import (
 
 import crypteo.research_workflow as workflow
 from crypteo.domain.market import TradingPair
-from crypteo.domain.market_research import ResearchToolSuccess, ResearchToolUnavailable
+from crypteo.domain.market_research import (
+    MarketResearchQuery,
+    MarketSourceBinding,
+    ResearchToolSuccess,
+    ResearchToolUnavailable,
+)
 from crypteo.domain.research import AbstentionReason
 from crypteo.domain.research_workflow import (
     AssessmentOrigin,
@@ -43,7 +50,9 @@ from crypteo.domain.research_workflow import (
     ResearchRunStatus,
     ResearchWorkflowConfig,
     ToolRecord,
+    ToolRejection,
 )
+from crypteo.market_research import MarketResearchService
 from crypteo.research_model import (
     FailureReply,
     ModelConfiguration,
@@ -63,7 +72,7 @@ from crypteo.research_prompts import (
 )
 from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
 from crypteo.research_workflow import ResearchInvariantError, collected_evidence
-from crypteo.temporal import SimulationClock
+from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
 
 def records(result: ResearchRunResult) -> tuple[ToolRecord, ...]:
@@ -135,10 +144,20 @@ def test_critic_fresh_context_exact_thesis_all_evidence_and_request_history() ->
         [
             tool("trend"),
             tool("momentum"),
-            tool("relative_strength", {"benchmark": "SOL-USD"}),
+            tool("relative_strength", {"benchmark": "ETH-USD"}),
         ]
     )
-    result = run(model)
+    # ETH is bound, so relative strength is offered, but its window has a gap.
+    svc = MarketResearchService(
+        PointInTimeDataGateway(
+            SimulationClock(T), candles(BTC) + candles(ETH, delayed=40)
+        ),
+        [
+            MarketSourceBinding(pair=p, dataset_version="sha256:" + "c" * 64)
+            for p in (BTC, ETH)
+        ],
+    )
+    result = run(model, svc)
     critic_request, final_request = model.requests[-2:]
     assert len(critic_request.messages) == 2
     assert critic_request.tools == final_request.tools == ()
@@ -189,7 +208,7 @@ def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> No
     assert len(investigations) == 9
     for request in investigations[:8]:
         assert data(request)["attempts_remaining"] > 0
-        assert request.tools == tool_definitions(BTC)
+        assert request.tools == tool_definitions(BTC, (ETH,))
     final = investigations[8]
     assert data(final)["attempts_remaining"] == 0
     assert final.tools == ()
@@ -248,7 +267,7 @@ def test_ninth_tool_request_interrupts_without_dispatch(
     # The ninth call offers no tools; a tool request there is still rejected by
     # the budget check, never dispatched, accepted or converted into completion.
     assert model.requests[8].tools == ()
-    assert all(r.tools == tool_definitions(BTC) for r in model.requests[:8])
+    assert all(r.tools == tool_definitions(BTC, (ETH,)) for r in model.requests[:8])
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert result.investigation is None
     rejection = records(result)[-1].rejection
@@ -296,49 +315,85 @@ def test_first_invalid_request_can_recover_and_complete() -> None:
     assert records(result)[1].result is not None
     assert data(model.requests[2])["attempts_remaining"] == 6
     assert all(
-        r.tools == tool_definitions(BTC)
+        r.tools == tool_definitions(BTC, (ETH,))
         for r in model.requests
         if r.stage == "investigate"
     )
 
 
 @pytest.mark.parametrize("subject", tuple(TradingPair))
-def test_exact_seven_tools_two_benchmarks_bound_subject(subject: TradingPair) -> None:
-    definitions = tool_definitions(subject)
-    assert [t.name for t in definitions] == [
-        "trend",
-        "momentum",
-        "volatility",
-        "bollinger_position",
-        "levels",
-        "volume_context",
-        "relative_strength",
-    ]
-    relative = definitions[-1].model_dump(mode="json")["parameters"]
-    expected = [p.value for p in (BTC, ETH, SOL) if p != subject]
-    assert relative["properties"]["benchmark"]["enum"] == expected
-    for t in definitions[:-1]:
-        assert t.model_dump(mode="json")["parameters"] == {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        }
-    for benchmark in expected:
-        query = bind_tool_request(
-            tool("relative_strength", {"benchmark": benchmark}).requests, subject
+@pytest.mark.parametrize("size", [0, 1, 2])
+def test_context_offers_and_binds_only_bound_benchmarks(
+    subject: TradingPair, size: int
+) -> None:
+    others = tuple(p for p in (BTC, ETH, SOL) if p != subject)
+    for benchmarks in combinations(others, size):
+        model = ScriptedModel([tool()], outcome="ABSTAIN")
+        request = OpportunityResearchRequest(
+            research_run_id="bound-run", opportunity=opportunity(subject)
         )
-        assert query.model_dump()["pair"] == subject
-    request = OpportunityResearchRequest(
-        research_run_id="bound-run", opportunity=opportunity(subject)
+        result = run(model, service(pairs=(subject, *benchmarks)), request=request)
+        assert result.context.benchmarks == benchmarks
+        investigations = [r for r in model.requests if r.stage == "investigate"]
+        assert all(
+            r.tools == tool_definitions(subject, benchmarks) for r in investigations
+        )
+        bound_query = records(result)[0].query
+        assert bound_query is not None and bound_query.pair == subject
+        for benchmark in others:
+            query = bind_tool_request(
+                tool("relative_strength", {"benchmark": benchmark.value}).requests,
+                subject,
+                result.context.benchmarks,
+            )
+            if benchmark in benchmarks:
+                assert isinstance(query, MarketResearchQuery)
+                assert (query.pair, query.benchmark) == (subject, benchmark)
+            else:
+                assert isinstance(query, ToolRejection)
+
+
+def test_btc_only_rejects_unoffered_relative_strength_and_completes() -> None:
+    model = ScriptedModel(
+        [tool("relative_strength", {"benchmark": "ETH-USD"}), tool()],
+        outcome="NO_TRADE",
     )
-    result = run(ScriptedModel([tool()], outcome="ABSTAIN"), request=request)
-    assert result.context.benchmarks == tuple(
-        p for p in (BTC, ETH, SOL) if p != subject
+    result = run(model, service(pairs=(BTC,)))
+    assert result.status == "COMPLETED" and result.context.benchmarks == ()
+    investigations = [r for r in model.requests if r.stage == "investigate"]
+    assert all(
+        [t.name for t in r.tools]
+        == [
+            "trend",
+            "momentum",
+            "volatility",
+            "bollinger_position",
+            "levels",
+            "volume_context",
+        ]
+        for r in investigations
     )
-    bound_query = records(result)[0].query
-    assert bound_query is not None
-    assert bound_query.pair == subject
+    first = records(result)[0]
+    assert first.admitted and first.query is None and first.result is None
+    assert first.rejection == ToolRejection(
+        code="INVALID_TOOL_REQUEST",
+        message="relative_strength is not offered without a bound benchmark",
+    )
+    assert data(investigations[1])["attempts_remaining"] == 7
+    assert records(result)[1].result is not None
+
+
+def test_second_unoffered_relative_strength_interrupts_run() -> None:
+    model = ScriptedModel([tool("relative_strength", {"benchmark": "ETH-USD"})] * 2)
+    result = run(model, service(pairs=(BTC,)))
+    assert len(model.requests) == 2 and len(records(result)) == 2
+    assert all(r.admitted and r.result is None for r in records(result))
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.failure is not None
+    assert result.failure.code == ResearchFailureCode.INVALID_TOOL_REQUEST
+    assert result.assessment.abstention_reasons == (
+        AbstentionReason.VALIDATION_FAILURE,
+    )
 
 
 @pytest.mark.parametrize(
@@ -397,10 +452,8 @@ def test_unavailable_cached_and_not_synthetic_evidence(
         return original(*args)
 
     monkeypatch.setattr(workflow, "dispatch_tool", dispatch)
-    model = ScriptedModel(
-        [tool("relative_strength", {"benchmark": "SOL-USD"})] * 8, outcome="ABSTAIN"
-    )
-    result = run(model)
+    model = ScriptedModel([tool()] * 8, outcome="ABSTAIN")
+    result = run(model, service(delayed=40))
     assert result.status == "COMPLETED" and count == 1
     assert collected_evidence(result.trace) == ()
     assert all(isinstance(r.result, ResearchToolUnavailable) for r in records(result))
@@ -409,7 +462,7 @@ def test_unavailable_cached_and_not_synthetic_evidence(
     )
     first = records(result)[0].result
     assert first is not None
-    assert first.model_dump()["reason"] == "SOURCE_UNAVAILABLE"
+    assert first.model_dump()["reason"] == "HISTORY_GAP"
 
 
 def test_relative_strength_executes_once_per_benchmark(
@@ -478,7 +531,7 @@ def test_model_preserves_exact_decimals_undefined_reasons_and_provenance() -> No
 @pytest.mark.parametrize("stage", ["investigate", "draft_thesis", "final_assessment"])
 def test_unknown_or_unavailable_evidence_citations_interrupt(stage: str) -> None:
     bad_id = "unavailable-or-fabricated-id"
-    steps: list[Any] = [tool("relative_strength", {"benchmark": "SOL-USD"})]
+    steps: list[Any] = [tool()]
     if stage == "investigate":
         steps.append(completion((bad_id,)))
     elif stage == "draft_thesis":
@@ -491,7 +544,8 @@ def test_unknown_or_unavailable_evidence_citations_interrupt(stage: str) -> None
             structured(assessment("TRADE", (bad_id,))),
         ]
     model = ScriptedModel(steps + steps[-1:])
-    result = run(model)
+    result = run(model, service(delayed=40))
+    assert isinstance(records(result)[0].result, ResearchToolUnavailable)
     assert result.failure and result.failure.code == "UNKNOWN_EVIDENCE_REFERENCE"
     assert result.failure.call_id == model.requests[-1].call_id
     assert result.assessment.abstention_reasons == (
@@ -939,7 +993,7 @@ def test_eighth_invalid_attempt_consumed_then_ninth_completes() -> None:
     assert data(model.requests[8])["attempts_remaining"] == 0
     # An admitted invalid request consumes an attempt, so the rule follows
     # attempts_remaining: the ninth call offers no tools here too.
-    assert model.requests[7].tools == tool_definitions(BTC)
+    assert model.requests[7].tools == tool_definitions(BTC, (ETH,))
     assert model.requests[8].tools == ()
 
 

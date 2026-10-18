@@ -276,7 +276,7 @@ def test_run_relational_corruption_rejected_on_every_input_path(
             context["request"]["research_run_id"] = "replacement-run"
         case "subject":
             context["request"]["opportunity"]["pair"] = "ETH-USD"
-            context["benchmarks"] = ["BTC-USD", "SOL-USD"]
+            context["benchmarks"] = ["BTC-USD"]
         case "research_at":
             later = (T + timedelta(hours=1)).isoformat()
             context["research_at"] = later

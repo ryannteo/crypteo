@@ -30,6 +30,7 @@ from crypteo.domain.research import Opportunity
 from crypteo.replay import run_scanner_only
 from crypteo.research_persistence import ResearchStore
 from crypteo.research_replay import ResearchAdmissionError, validate_research_links
+from crypteo.research_tools import tool_definitions
 from crypteo.scanner import OpportunityScanner
 
 
@@ -272,6 +273,30 @@ def test_unsupported_policy_identity_rejected(tmp_path: Path, field: str) -> Non
     )
     with pytest.raises(ValidationError):
         ResearchReplayManifest.model_validate(data)
+
+
+def test_policy_enumerates_every_subject_and_bound_benchmark_subset() -> None:
+    tools = research_policy(WORKFLOW).tools
+    expected = [
+        (BTC, ()),
+        (BTC, (ETH,)),
+        (BTC, (SOL,)),
+        (BTC, (ETH, SOL)),
+        (ETH, ()),
+        (ETH, (BTC,)),
+        (ETH, (SOL,)),
+        (ETH, (BTC, SOL)),
+        (SOL, ()),
+        (SOL, (BTC,)),
+        (SOL, (ETH,)),
+        (SOL, (BTC, ETH)),
+    ]
+    assert [(t.pair, t.benchmarks) for t in tools] == expected
+    for entry in tools:
+        assert entry.definitions == tuple(
+            tool.identity for tool in tool_definitions(entry.pair, entry.benchmarks)
+        )
+        assert len(entry.definitions) == (7 if entry.benchmarks else 6)
 
 
 def test_source_and_acquisition_binding_are_exact(tmp_path: Path) -> None:

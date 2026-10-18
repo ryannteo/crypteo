@@ -39,6 +39,7 @@ from crypteo.domain.replay_research import (
     research_run_id,
 )
 from crypteo.domain.research import Opportunity
+from crypteo.domain.research_workflow import ModelCallRecord
 from crypteo.domain.risk import RiskRejection, TradeProposal
 from crypteo.domain.trade_terms import TradeTerms
 from crypteo.execution import SimulatedBroker
@@ -254,6 +255,32 @@ def test_baseline_fresh_frozen_economics_and_zero_frozen_research(
     assert load_research_replay(first.canonical_bytes(), store=store) == first
     assert "research_metrics" not in baseline.model_dump()
     assert baseline.manifest.schema_version == "1"
+
+
+def test_single_pair_window_offers_no_relative_strength_and_reproduces(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    captured = execute(store)
+    records = payloads(captured, ReplayResearchRecord)
+    assert len(records) == 1
+    result = store.load_terminal(records[0].research_run_id).result
+    assert result.context.benchmarks == ()
+    investigations = [
+        r.request
+        for r in result.trace
+        if isinstance(r, ModelCallRecord) and r.request.stage == "investigate"
+    ]
+    assert investigations and all(r.tools for r in investigations)
+    assert all(
+        "relative_strength" not in [t.name for t in r.tools] for r in investigations
+    )
+    first = execute(store, settings=frozen(captured))
+    assert payloads(first, ReplayResearchRecord) == records
+    assert economics(first) == economics(captured)
+    assert execute(store, settings=frozen(captured)).canonical_bytes() == (
+        first.canonical_bytes()
+    )
 
 
 @pytest.mark.parametrize("case", ["terms", "risk", "entry"])

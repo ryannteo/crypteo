@@ -244,7 +244,10 @@ class _ResearchRuntime:
             messages=prompt_messages(stage, data),
             prompt_identity=prompt_identity(stage),
             # Code owns the tool budget: offer no tool the model may not use.
-            tools=tool_definitions(state["context"].request.opportunity.pair)
+            tools=tool_definitions(
+                state["context"].request.opportunity.pair,
+                state["context"].benchmarks,
+            )
             if stage == "investigate" and data["attempts_remaining"] > 0
             else (),
             output_schema=structured_schema(stage),
@@ -478,7 +481,9 @@ class _ResearchRuntime:
         )
         query_or_rejection = (
             bind_tool_request(
-                action.requests, state["context"].request.opportunity.pair
+                action.requests,
+                state["context"].request.opportunity.pair,
+                state["context"].benchmarks,
             )
             if admitted
             else ToolRejection(
@@ -658,11 +663,17 @@ def _research_inputs(
     provider = ProviderIdentity.model_validate(model.identity)
     if provider.provider != configuration.model.provider:
         raise ValueError("configured provider differs from model adapter")
+    bindings = service.source_bindings
+    bound_pairs = {binding.pair for binding in bindings}
     context = OpportunityResearchContext(
         request=request,
         research_at=service.now,
-        benchmarks=tuple(p for p in BENCHMARK_ORDER if p != request.opportunity.pair),
-        source_bindings=service.source_bindings,
+        benchmarks=tuple(
+            p
+            for p in BENCHMARK_ORDER
+            if p != request.opportunity.pair and p in bound_pairs
+        ),
+        source_bindings=bindings,
     )
     return request, configuration, provider, context
 

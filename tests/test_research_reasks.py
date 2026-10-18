@@ -12,6 +12,7 @@ import httpx2
 import pytest
 from research_support import (
     CODE,
+    ETH,
     ScriptedModel,
     anthropic_research,
     assessment,
@@ -172,7 +173,9 @@ def test_empty_reply_then_valid_reask_completes(stage: str) -> None:
     assert reask.prompt_identity == first.prompt_identity
     assert reask.output_schema == first.output_schema
     assert reask.tools == first.tools
-    assert reask.tools == (tool_definitions(opportunity().pair) if index == 1 else ())
+    assert reask.tools == (
+        tool_definitions(opportunity().pair, (ETH,)) if index == 1 else ()
+    )
     # The rejected reply stays in the trace as an ordinary model call record.
     calls = [r for r in result.trace if isinstance(r, ModelCallRecord)]
     assert calls[index].reply == empty(stage)

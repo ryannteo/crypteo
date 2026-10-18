@@ -11,9 +11,13 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic import ValidationError
 from research_support import (
+    BTC,
     CODE,
+    ETH,
     MODEL,
+    SOL,
     Handler,
     ScriptedModel,
     anthropic_research,
@@ -27,20 +31,24 @@ from research_support import (
     tool,
     workflow_config,
 )
+from test_research_journal_claude import rewrite
 
 import crypteo.research_workflow as workflow
+from crypteo.domain.market import TradingPair
 from crypteo.domain.research_journal import (
     AbortDiagnostic,
     EventEnvelope,
+    ModelRequestPrepared,
     ModelResponseObserved,
     ResearchArtifact,
     ResearchRunHeader,
     RunAborted,
 )
 from crypteo.domain.research_workflow import (
-    BENCHMARK_ORDER,
+    ModelCallRecord,
     OpportunityResearchContext,
     OpportunityResearchRequest,
+    ToolRecord,
 )
 from crypteo.research_journal import (
     ResearchStorageError,
@@ -54,8 +62,11 @@ from crypteo.research_model import (
     ProviderFailureCode,
     RefusalReply,
     ResponseObserver,
+    render_json,
 )
 from crypteo.research_persistence import ResearchStore
+from crypteo.research_tools import tool_definitions
+from crypteo.research_validation import ResearchValidationError
 from crypteo.research_workflow import run_durable_opportunity_research
 
 
@@ -121,7 +132,7 @@ def header(run_id: str = "run-1") -> ResearchRunHeader:
         context=OpportunityResearchContext(
             request=request,
             research_at=svc.now,
-            benchmarks=BENCHMARK_ORDER[1:],
+            benchmarks=(ETH,),
             source_bindings=svc.source_bindings,
         ),
         configuration=workflow_config(),
@@ -129,6 +140,101 @@ def header(run_id: str = "run-1") -> ResearchRunHeader:
         provider=ObservedModel().identity,
         langgraph_version=version("langgraph"),
     )
+
+
+def btc_only_durable(store: ResearchStore) -> ResearchArtifact:
+    model = ObservedModel([tool("relative_strength", {"benchmark": "ETH-USD"}), tool()])
+    return asyncio.run(
+        run_durable_opportunity_research(
+            OpportunityResearchRequest(
+                research_run_id="run-1", opportunity=opportunity()
+            ),
+            service(pairs=(BTC,)),
+            model,
+            workflow_config(model.provider),
+            store=store,
+            code=CODE,
+        )
+    )
+
+
+def test_btc_only_durable_run_rejects_relative_strength_and_loads(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = btc_only_durable(store)
+    result = artifact.result
+    assert result.status == "COMPLETED" and result.context.benchmarks == ()
+    attempts = [r for r in result.trace if isinstance(r, ToolRecord)]
+    assert attempts[0].admitted and attempts[0].rejection is not None
+    assert attempts[0].rejection.code == "INVALID_TOOL_REQUEST"
+    assert attempts[1].result is not None
+    offered = [
+        r.request.tools
+        for r in result.trace
+        if isinstance(r, ModelCallRecord) and r.request.stage == "investigate"
+    ]
+    assert offered and all(tools == tool_definitions(BTC, ()) for tools in offered)
+    assert store.load_terminal("run-1") == artifact
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").state == "COMPLETED"
+
+
+def test_stored_relative_strength_offer_without_bound_benchmark_fails_load(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    btc_only_durable(store)
+    with closing(sqlite3.connect(store.path)) as connection:
+        ((sequence,),) = connection.execute(
+            "SELECT sequence FROM research_events_v1 "
+            "WHERE kind='MODEL_REQUEST_PREPARED' ORDER BY sequence LIMIT 1"
+        ).fetchall()
+
+    def offer_relative_strength(envelope: EventEnvelope) -> EventEnvelope:
+        assert isinstance(envelope.event, ModelRequestPrepared)
+        request = envelope.event.request.model_copy(
+            update={"tools": tool_definitions(BTC, (ETH,)), "prepared_input_json": None}
+        )
+        request = request.model_copy(
+            update={"prepared_input_json": render_json(request)}
+        )
+        return envelope.model_copy(
+            update={"event": envelope.event.model_copy(update={"request": request})}
+        )
+
+    rewrite(store, sequence, offer_relative_strength)
+    for load in (store.load_terminal, store.inspect_run):
+        with pytest.raises(ResearchStorageError) as raised:
+            load("run-1")
+        assert isinstance(raised.value.__cause__, ResearchValidationError)
+        assert str(raised.value.__cause__) == (
+            "request differs from accumulated context/policy"
+        )
+
+
+@pytest.mark.parametrize(
+    "pairs,benchmarks",
+    [
+        ((BTC,), (ETH,)),
+        ((BTC, ETH), ()),
+        ((BTC, ETH, SOL), (ETH,)),
+        ((BTC, ETH), (ETH, SOL)),
+    ],
+)
+def test_context_benchmarks_are_exactly_the_bound_other_pairs(
+    pairs: tuple[TradingPair, ...], benchmarks: tuple[TradingPair, ...]
+) -> None:
+    svc = service(pairs=pairs)
+    with pytest.raises(ValidationError, match="bound source"):
+        OpportunityResearchContext(
+            request=OpportunityResearchRequest(
+                research_run_id="run-1", opportunity=opportunity()
+            ),
+            research_at=svc.now,
+            benchmarks=benchmarks,
+            source_bindings=svc.source_bindings,
+        )
 
 
 def test_pragmas_verified_and_immutable_schema(tmp_path: Path) -> None:

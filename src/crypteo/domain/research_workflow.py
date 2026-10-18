@@ -104,15 +104,15 @@ class OpportunityResearchContext(ModelContract):
         opportunity, now = self.request.opportunity, self.research_at
         if opportunity.observed_at != now or opportunity.available_at > now:
             raise ValueError("opportunity must be current and available at research T")
-        if self.benchmarks != tuple(
-            p for p in BENCHMARK_ORDER if p != opportunity.pair
-        ):
-            raise ValueError(
-                "benchmarks must follow the deterministic two-asset policy"
-            )
         pairs = tuple(s.pair for s in self.source_bindings)
         if pairs != tuple(p for p in BENCHMARK_ORDER if p in pairs):
             raise ValueError("source bindings must be unique and canonically ordered")
+        if self.benchmarks != tuple(
+            p for p in BENCHMARK_ORDER if p != opportunity.pair and p in pairs
+        ):
+            raise ValueError(
+                "benchmarks must be every other pair with a bound source, in order"
+            )
         return self
 
 

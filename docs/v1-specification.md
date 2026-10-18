@@ -548,7 +548,9 @@ dataset identities and matching source bindings, research settings, and research
 policy identity. It binds scanner, trade-terms, risk, execution, admission, and
 failure policies. Research policy contains the workflow and market-research
 versions, configuration digest, prompt and structured-schema identities for each
-model stage, and tool-definition identities per subject pair. Validation requires
+model stage, and tool-definition identities for every subject pair and every
+benchmark subset that pair can be offered: per pair in BTC, ETH, SOL order, no
+benchmark, each other pair alone, then both (12 entries). Validation requires
 the currently implemented policy identities.
 
 Fresh semantic identity depends on configured inputs, including requested model
@@ -1078,14 +1080,21 @@ Model inference remains subject to the
 
 The runtime-enforced policy is `bounded_research_v2`. Budget and operational
 limits are validated literal configuration values, not freely tunable overrides.
-Exactly seven deterministic
-capabilities are exposed: `trend`, `momentum`, `volatility`, `bollinger_position`,
-`levels`, `volume_context`, and `relative_strength`. Runtime binds the subject;
-the six single-asset tools accept empty arguments. Relative-strength `benchmark`
-is the only model-selectable research argument. Permitted benchmarks are the
-other two supported BTC/ETH/SOL USD pairs, in deterministic BTC, ETH, SOL order.
-They are offered even if a source is absent; the service then returns typed
-unavailability. Venue, timeframe, cutoff, and windows are runtime-owned.
+Seven deterministic capabilities exist: `trend`, `momentum`, `volatility`,
+`bollinger_position`, `levels`, `volume_context`, and `relative_strength`.
+Runtime binds the subject; the six single-asset tools accept empty arguments and
+are offered regardless of source bindings. Relative-strength `benchmark` is the
+only model-selectable research argument. The run context's benchmarks are exactly the other supported
+BTC/ETH/SOL USD pairs that have a bound source, in deterministic BTC, ETH, SOL
+order, and `relative_strength` is offered with only those benchmarks. When no
+other pair is bound, `relative_strength` is not offered and requesting it is an
+invalid tool request ("relative_strength is not offered without a bound
+benchmark"); naming a benchmark outside the context's benchmarks is likewise an
+invalid tool request. Neither dispatches. Venue, timeframe, cutoff, and windows
+are runtime-owned. Each tool definition carries a fixed description of its window
+and measurements, ending with the shared statement that it reads completed
+Coinbase hourly candles visible at T and that venue, timeframe, window and cutoff
+are runtime-owned. Tool definitions are versioned `bounded_market_tools_v2`.
 
 | Bound | Current policy |
 | --- | --- |

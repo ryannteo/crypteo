@@ -337,7 +337,7 @@ class JournalProjection:
             configuration=config.model,
             messages=prompt_messages(request.stage, data),
             prompt_identity=prompt_identity(request.stage),
-            tools=tool_definitions(context.request.opportunity.pair)
+            tools=tool_definitions(context.request.opportunity.pair, context.benchmarks)
             if request.stage == "investigate" and data["attempts_remaining"] > 0
             else (),
             output_schema=structured_schema(request.stage),
@@ -503,7 +503,9 @@ class JournalProjection:
             admitted = sum(r.admitted for r in history) < 8
             bound = (
                 bind_tool_request(
-                    record.requests, self.header.context.request.opportunity.pair
+                    record.requests,
+                    self.header.context.request.opportunity.pair,
+                    self.header.context.benchmarks,
                 )
                 if admitted
                 else ToolRejection(

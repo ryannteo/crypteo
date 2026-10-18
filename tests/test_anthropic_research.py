@@ -1165,7 +1165,8 @@ def test_all_stage_and_tool_wire_schemas_have_no_unsupported_constraints() -> No
         schema = structured_schema(stage).model_dump(mode="json")["json_schema"]
         assert not constraint_keywords(render_anthropic_schema(schema))
     for pair in TradingPair:
-        for definition in tool_definitions(pair):
+        others = tuple(p for p in TradingPair if p != pair)
+        for definition in tool_definitions(pair, others):
             parameters = definition.model_dump(mode="json")["parameters"]
             assert render_anthropic_schema(parameters) == parameters
     requests = synthesis_requests()

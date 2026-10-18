@@ -1,39 +1,150 @@
 """Tool identity snapshots and read-only deterministic service access."""
 
+from itertools import combinations
+
 import pytest
 from pydantic import ValidationError
-from research_support import BTC, ETH, T, service, tool
+from research_support import BTC, ETH, SOL, T, service, tool
 
+from crypteo.domain.market import TradingPair
 from crypteo.domain.market_research import (
     MarketResearchCapability,
+    MarketResearchPolicy,
     MarketResearchQuery,
     ResearchToolSuccess,
     ResearchToolUnavailable,
 )
-from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
+from crypteo.domain.research_workflow import BENCHMARK_ORDER, ToolRejection
+from crypteo.research_tools import (
+    TOOL_DESCRIPTIONS,
+    TOOL_VERSION,
+    bind_tool_request,
+    dispatch_tool,
+    tool_definitions,
+)
+
+SINGLE_ASSET_DIGESTS = {
+    "trend": "c82ce9d8d550c9eaec0538a25ab1b2a0ddb6ea078312b0f0ea2d5dc4799832fa",
+    "momentum": "c285f89a3f66a0d9369c80020160e3125fc61bddfa0e244b0623f5e243052527",
+    "volatility": "bf2c13e00d2dc3817f747a1b2172d2d2c660f6ad0a53343bbff4f5b6bd782754",
+    "bollinger_position": (
+        "2ce528d4ff1ee46edb66400cf8a3122386c93d666eb019ef1dcfecbed0ffba6f"
+    ),
+    "levels": "758f241968e9fa5b3ac066a8a51ee419da10764a505e4b1ebad9b7c040af6c3b",
+    "volume_context": (
+        "7cfcd4a8d2474c18dcd7a7b4ba011d6f5925cffc96f1bd4e72b12f32c5c10db1"
+    ),
+}
 
 
-def test_v1_tool_identity_snapshots() -> None:
-    expected = {
-        "trend": "9d73e13f74517c14d51d5b20df71da3fb304f8bfb6df44c2b34edc71746691b5",
-        "momentum": "cd98d18e279f4fd77aed0cafb5e286d6f5341e700bb4090f6b9842c4cf8b41ce",
-        "volatility": (
-            "6709e3b1d5375680cac046e8aee5aa402ca5e269788025066059b7948e37b39f"
-        ),
-        "bollinger_position": (
-            "dea163c1b3f4cefd0cbb3af42777e73bf74c256d87fb1fb83cf3283ffa7da229"
-        ),
-        "levels": "7f1b416a37b833674a40adae5b001460d68fc5a06187ffcecb8bc609a6e03408",
-        "volume_context": (
-            "8506f7b56a739fc0be616a9f0d8fcba40440732e11b35e5b88ac13a5290e7165"
-        ),
-        "relative_strength": (
-            "abe019c1c8f28b7a1e5c702778514294be60320d6667e2206b54fc94af8d3707"
-        ),
+def digests(benchmarks: tuple[TradingPair, ...]) -> dict[str, str]:
+    return {
+        t.name: t.identity.digest.removeprefix("sha256:")
+        for t in tool_definitions(BTC, benchmarks)
     }
-    assert {
-        t.name: t.identity.digest.removeprefix("sha256:") for t in tool_definitions(BTC)
-    } == expected
+
+
+def test_v2_tool_identity_snapshots() -> None:
+    assert digests((ETH, SOL)) == SINGLE_ASSET_DIGESTS | {
+        "relative_strength": (
+            "46a313cda8bdbe314a3d64119ffde3c0aaadeb92169c5f3e0e95a47ab35c55ca"
+        )
+    }
+    # Without a bound benchmark, relative strength is not offered at all.
+    assert digests(()) == SINGLE_ASSET_DIGESTS
+    assert TOOL_VERSION == "bounded_market_tools_v2"
+    assert {t.identity.version for t in tool_definitions(BTC, ())} == {TOOL_VERSION}
+
+
+@pytest.mark.parametrize("subject", tuple(TradingPair))
+@pytest.mark.parametrize("size", [0, 1, 2])
+def test_tools_offer_relative_strength_only_for_given_benchmarks(
+    subject: TradingPair, size: int
+) -> None:
+    others = tuple(p for p in BENCHMARK_ORDER if p != subject)
+    for benchmarks in combinations(others, size):
+        definitions = tool_definitions(subject, benchmarks)
+        names = [c.value for c in MarketResearchCapability]
+        assert [t.name for t in definitions] == (names if benchmarks else names[:-1])
+        for t in definitions:
+            parameters = t.model_dump(mode="json")["parameters"]
+            if t.name == "relative_strength":
+                assert parameters["properties"]["benchmark"]["enum"] == [
+                    p.value for p in benchmarks
+                ]
+                assert parameters["required"] == ["benchmark"]
+            else:
+                assert parameters == {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                }
+
+
+@pytest.mark.parametrize(
+    "benchmarks,message",
+    [
+        ((BTC,), "subject"),
+        ((ETH, BTC), "subject"),
+        ((ETH, ETH), "repeat"),
+        ((SOL, ETH), "BENCHMARK_ORDER"),
+    ],
+)
+def test_invalid_benchmark_offers_raise(
+    benchmarks: tuple[TradingPair, ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        tool_definitions(BTC, benchmarks)
+    with pytest.raises(ValueError, match=message):
+        bind_tool_request(tool().requests, BTC, benchmarks)
+
+
+@pytest.mark.parametrize("capability", MarketResearchCapability)
+def test_every_capability_has_a_fixed_window_description(
+    capability: MarketResearchCapability,
+) -> None:
+    assert set(TOOL_DESCRIPTIONS) == set(MarketResearchCapability)
+    suffix = (
+        " Completed Coinbase hourly candles visible at T; venue, timeframe, window "
+        "and cutoff are runtime-owned."
+    )
+    definition = next(
+        t for t in tool_definitions(BTC, (ETH,)) if t.name == capability.value
+    )
+    assert definition.description == TOOL_DESCRIPTIONS[capability] + suffix
+    assert definition.description.endswith(suffix)
+    bars = MarketResearchPolicy().required_bars(capability)
+    assert str(bars) in TOOL_DESCRIPTIONS[capability]
+
+
+@pytest.mark.parametrize(
+    "benchmarks,requested,message",
+    [
+        ((), "ETH-USD", "relative_strength is not offered without a bound benchmark"),
+        ((), "SOL-USD", "relative_strength is not offered without a bound benchmark"),
+        ((ETH,), "SOL-USD", "relative_strength requires only a permitted benchmark"),
+        ((SOL,), "ETH-USD", "relative_strength requires only a permitted benchmark"),
+    ],
+)
+def test_relative_strength_binds_only_given_benchmarks(
+    benchmarks: tuple[TradingPair, ...], requested: str, message: str
+) -> None:
+    request = tool("relative_strength", {"benchmark": requested}).requests
+    assert bind_tool_request(request, BTC, benchmarks) == ToolRejection(
+        code="INVALID_TOOL_REQUEST", message=message
+    )
+    if benchmarks:
+        query = bind_tool_request(
+            tool("relative_strength", {"benchmark": benchmarks[0].value}).requests,
+            BTC,
+            benchmarks,
+        )
+        assert query == MarketResearchQuery(
+            capability=MarketResearchCapability.RELATIVE_STRENGTH,
+            pair=BTC,
+            benchmark=benchmarks[0],
+        )
 
 
 def test_service_accessors_are_read_only_and_canonically_ordered() -> None:
@@ -55,7 +166,7 @@ def test_bound_query_dispatch_preserves_capability_output(
     svc = service(delayed=59 if unavailable else None)
     relative = capability is MarketResearchCapability.RELATIVE_STRENGTH
     request = tool(capability.value, {"benchmark": ETH.value} if relative else {})
-    query = bind_tool_request(request.requests, BTC)
+    query = bind_tool_request(request.requests, BTC, (ETH,))
     assert isinstance(query, MarketResearchQuery)
     expected = (
         svc.relative_strength(BTC, ETH)

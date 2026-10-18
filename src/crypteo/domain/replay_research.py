@@ -11,7 +11,7 @@ from pydantic import Field, field_validator, model_validator
 from crypteo.domain.market import NonNegativeDecimal, TradingPair
 from crypteo.domain.market_research import HourlyDatetime, MarketSourceBinding
 from crypteo.domain.research import DecisionOutcome, NonBlankText, Opportunity
-from crypteo.domain.research_workflow import ResearchWorkflowConfig
+from crypteo.domain.research_workflow import BENCHMARK_ORDER, ResearchWorkflowConfig
 from crypteo.domain.risk import TradeProposal
 from crypteo.experiment import (
     SCANNER_POLICY,
@@ -29,6 +29,7 @@ _SCANNER_POLICY = SCANNER_POLICY.removesuffix("; valid terms always selected.")
 
 class SubjectToolIdentity(ModelContract):
     pair: TradingPair
+    benchmarks: tuple[TradingPair, ...]
     definitions: tuple[ContentIdentity, ...]
 
 
@@ -47,6 +48,10 @@ def research_policy(configuration: ResearchWorkflowConfig) -> ResearchPolicyIden
     from crypteo.research_tools import tool_definitions
 
     stages = ("investigate", "draft_thesis", "critique", "final_assessment")
+    offers: list[tuple[TradingPair, tuple[TradingPair, ...]]] = []
+    for pair in TradingPair:
+        a, b = (p for p in BENCHMARK_ORDER if p != pair)
+        offers += [(pair, subset) for subset in ((), (a,), (b,), (a, b))]
     return ResearchPolicyIdentity(
         configuration_digest=identity(configuration),
         prompts=tuple(prompt_identity(stage) for stage in stages),
@@ -54,9 +59,12 @@ def research_policy(configuration: ResearchWorkflowConfig) -> ResearchPolicyIden
         tools=tuple(
             SubjectToolIdentity(
                 pair=pair,
-                definitions=tuple(tool.identity for tool in tool_definitions(pair)),
+                benchmarks=benchmarks,
+                definitions=tuple(
+                    tool.identity for tool in tool_definitions(pair, benchmarks)
+                ),
             )
-            for pair in TradingPair
+            for pair, benchmarks in offers
         ),
     )
 
