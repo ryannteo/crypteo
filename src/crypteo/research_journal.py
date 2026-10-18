@@ -318,7 +318,7 @@ class JournalProjection:
             messages=prompt_messages(request.stage, data),
             prompt_identity=prompt_identity(request.stage),
             tools=tool_definitions(context.request.opportunity.pair)
-            if request.stage == "investigate"
+            if request.stage == "investigate" and data["attempts_remaining"] > 0
             else (),
             output_schema=structured_schema(request.stage),
             max_output_tokens=config.investigation_output_cap

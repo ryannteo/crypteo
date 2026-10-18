@@ -1106,6 +1106,12 @@ produce typed rejection feedback. The first invalid request allows another
 investigation response within remaining budgets. The second interrupts. A tool
 request after all admitted attempts are consumed interrupts with
 `TOOL_BUDGET_EXHAUSTED`; the investigator may instead complete on its ninth call.
+Investigation requests offer the tool definitions only while `attempts_remaining`
+is positive. The final investigation call, when no tool attempts remain, offers
+no tools, so its only expected response is the structured completion; a tool
+request returned there anyway is still rejected unadmitted as
+`TOOL_BUDGET_EXHAUSTED`. The journal rebuilds every expected request with the
+same rule.
 
 The graph sequence is
 `investigate --tool request--> execute_tool --result--> investigate`;

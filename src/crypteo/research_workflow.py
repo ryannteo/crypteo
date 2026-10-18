@@ -215,14 +215,16 @@ class _ResearchRuntime:
         call_id = (
             f"{state['context'].request.research_run_id}/model/{len(previous) + 1:04d}"
         )
+        data = self.data(state, stage)
         request = ModelRequest(
             call_id=call_id,
             stage=stage,
             configuration=self.config.model,
-            messages=prompt_messages(stage, self.data(state, stage)),
+            messages=prompt_messages(stage, data),
             prompt_identity=prompt_identity(stage),
+            # Code owns the tool budget: offer no tool the model may not use.
             tools=tool_definitions(state["context"].request.opportunity.pair)
-            if stage == "investigate"
+            if stage == "investigate" and data["attempts_remaining"] > 0
             else (),
             output_schema=structured_schema(stage),
             max_output_tokens=self.config.investigation_output_cap

@@ -16,8 +16,8 @@ from crypteo.research_prompts import (
     [
         (
             "investigate",
-            "investigate_prompt_v2",
-            "1585db9721caa5abca802a4cd80634af72d8e7c1bba30db07201712988c4574e",
+            "investigate_prompt_v3",
+            "bb8387954ea1ede2d2f1c0c23497c2116f40fe8ffdeae6fe29d06fb8027a96e3",
             "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
         ),
         (
@@ -53,4 +53,5 @@ def test_investigation_requires_nonblank_summary_at_budget_boundary() -> None:
     assert system == SHARED_POLICY + "\n\n" + INVESTIGATION_INSTRUCTIONS
     assert "summary must be a nonblank synthesis of the evidence" in system
     assert "even when stopping because attempts_remaining is zero" in system
-    assert "When attempts_remaining is zero you must complete without" in system
+    assert "When attempts_remaining is zero no tools are offered; return" in system
+    assert "you must complete without requesting a tool" not in system

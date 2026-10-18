@@ -34,8 +34,8 @@ cached results and consume budget. When complete, return the structured completi
 summary must be a nonblank synthesis of the evidence collected so far; cite the
 relevant successful evidence IDs in relevant_evidence_ids and list remaining_gaps.
 This applies even when stopping because attempts_remaining is zero. Do not assess
-outcome or confidence. When attempts_remaining is zero you must complete without
-requesting a tool."""
+outcome or confidence. When attempts_remaining is zero no tools are offered; return
+the structured completion."""
 
 THESIS_INSTRUCTIONS = """Draft the structured thesis using collected evidence
 and the investigation completion. Present bull and bear cases, grounded supporting
@@ -63,7 +63,7 @@ _INSTRUCTIONS = {
     "final_assessment": ASSESSMENT_INSTRUCTIONS,
 }
 _PROMPT_VERSIONS = {
-    "investigate": "investigate_prompt_v2",
+    "investigate": "investigate_prompt_v3",
     "draft_thesis": "draft_thesis_prompt_v1",
     "critique": "critique_prompt_v1",
     "final_assessment": "final_assessment_prompt_v1",

@@ -181,6 +181,27 @@ def test_eight_attempts_and_ninth_completion_twelve_calls_cache_linkage(
     assert len(collected_evidence(result.trace)) == 1
 
 
+def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> None:
+    model = ScriptedModel([tool()] * 8)
+    result = run(model)
+    assert result.status == "COMPLETED" and result.investigation is not None
+    investigations = [r for r in model.requests if r.stage == "investigate"]
+    assert len(investigations) == 9
+    for request in investigations[:8]:
+        assert data(request)["attempts_remaining"] > 0
+        assert request.tools == tool_definitions(BTC)
+    final = investigations[8]
+    assert data(final)["attempts_remaining"] == 0
+    assert final.tools == ()
+    assert final.messages[0].content == SHARED_POLICY + "\n\n" + (
+        INVESTIGATION_INSTRUCTIONS
+    )
+    assert "no tools are offered; return" in final.messages[0].content
+    assert final.prompt_identity == prompt_identity("investigate")
+    assert final.prompt_identity.version == "investigate_prompt_v3"
+    assert all(r.tools == () for r in model.requests[9:])
+
+
 def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -> None:
     empty = '{"summary":"","relevant_evidence_ids":[],"remaining_gaps":[]}'
     model = ScriptedModel([tool()] * 8 + [StructuredReply(content=empty)])
@@ -188,6 +209,7 @@ def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -
     final = model.requests[-1]
     assert len(model.requests) == 9 and len(records(result)) == 8
     assert data(final)["attempts_remaining"] == 0
+    assert final.tools == ()
     assert final.messages[0].content == SHARED_POLICY + "\n\n" + (
         INVESTIGATION_INSTRUCTIONS
     )
@@ -218,6 +240,14 @@ def test_ninth_tool_request_interrupts_without_dispatch(
     result = run(model)
     assert count == 1
     assert len(model.requests) == 9
+    # The ninth call offers no tools; a tool request there is still rejected by
+    # the budget check, never dispatched, accepted or converted into completion.
+    assert model.requests[8].tools == ()
+    assert all(r.tools == tool_definitions(BTC) for r in model.requests[:8])
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.investigation is None
+    rejection = records(result)[-1].rejection
+    assert rejection is not None and rejection.code == "TOOL_BUDGET_EXHAUSTED"
     assert sum(r.admitted for r in records(result)) == 8
     assert not records(result)[-1].admitted
     assert result.failure is not None
@@ -260,6 +290,11 @@ def test_first_invalid_request_can_recover_and_complete() -> None:
     assert records(result)[0].rejection is not None
     assert records(result)[1].result is not None
     assert data(model.requests[2])["attempts_remaining"] == 6
+    assert all(
+        r.tools == tool_definitions(BTC)
+        for r in model.requests
+        if r.stage == "investigate"
+    )
 
 
 @pytest.mark.parametrize("subject", tuple(TradingPair))
@@ -892,6 +927,10 @@ def test_eighth_invalid_attempt_consumed_then_ninth_completes() -> None:
     assert len(model.requests) == 12 and len(records(result)) == 8
     assert records(result)[-1].rejection is not None
     assert data(model.requests[8])["attempts_remaining"] == 0
+    # An admitted invalid request consumes an attempt, so the rule follows
+    # attempts_remaining: the ninth call offers no tools here too.
+    assert model.requests[7].tools == tool_definitions(BTC)
+    assert model.requests[8].tools == ()
 
 
 def test_all_eight_distinct_queries_preserve_deterministic_results() -> None:

@@ -14,8 +14,10 @@ import pytest
 from research_support import (
     CODE,
     MODEL,
+    Handler,
     ScriptedModel,
     anthropic_research,
+    assessment,
     completion,
     critique,
     opportunity,
@@ -1096,6 +1098,144 @@ def test_loader_rejects_relational_tampering_with_valid_checksums(
         store.inspect_run("run-1")
     # The relationship fails before artifact reconciliation; valid hashes do not help.
     assert isinstance(raised.value.__cause__, ValueError)
+
+
+def test_final_investigation_without_tools_reloads_and_inspects(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    model = ObservedModel([tool()] * 8)
+    artifact = asyncio.run(execute(store, model))
+    assert artifact.result.status == "COMPLETED"
+    investigations = [r for r in model.requests if r.stage == "investigate"]
+    assert len(investigations) == 9
+    assert all(r.tools for r in investigations[:8]) and investigations[8].tools == ()
+    assert store.load_terminal("run-1") == artifact
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    inspection = store.inspect_run("run-1")
+    assert inspection.state == "COMPLETED" and inspection.pending_boundaries == ()
+    prepared = [
+        e.event.request
+        for e in inspection.events
+        if e.event.kind == "MODEL_REQUEST_PREPARED"
+    ]
+    assert prepared == model.requests
+
+
+def _claude_budget_handler(ninth_tool: bool, bodies: list[dict[str, Any]]) -> Handler:
+    """Claude replies: eight tool uses, then a ninth tool use or a full completion."""
+    import json
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        data = json.loads(body["messages"][-1]["content"])["research_data"]
+        ids = tuple(e["evidence_id"] for e in data["evidence"])
+        n = len(bodies)
+        message: dict[str, Any] = {
+            "id": f"msg-budget-{n}",
+            "type": "message",
+            "role": "assistant",
+            "model": body["model"],
+            "stop_sequence": None,
+            "usage": {"input_tokens": 8, "output_tokens": 12},
+        }
+        if n <= 8 or (ninth_tool and n == 9):
+            tool_use = {"type": "tool_use", "id": f"toolu-{n}", "name": "trend"}
+            message["content"] = [tool_use | {"input": {}}]
+            message["stop_reason"] = "tool_use"
+        else:
+            output = (
+                completion(ids),
+                structured(thesis(ids)),
+                structured(critique()),
+                structured(assessment("TRADE", ids)),
+            )[n - 9]
+            message["content"] = [{"type": "text", "text": output.content}]
+            message["stop_reason"] = "end_turn"
+        return httpx2.Response(200, json=message, headers={"request-id": f"req-{n}"})
+
+    return handle
+
+
+@pytest.mark.parametrize("ninth_tool", [False, True])
+def test_claude_final_investigation_body_has_no_tools_and_journal_loads(
+    tmp_path: Path, ninth_tool: bool
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    bodies: list[dict[str, Any]] = []
+    artifact = anthropic_research(
+        _claude_budget_handler(ninth_tool, bodies),
+        OpportunityResearchRequest(research_run_id="run-1", opportunity=opportunity()),
+        store,
+    )
+    assert all("tools" in b and "tool_choice" in b for b in bodies[:8])
+    assert "tools" not in bodies[8] and "tool_choice" not in bodies[8]
+    assert bodies[8]["output_config"]["format"]["type"] == "json_schema"
+    result = artifact.result
+    if ninth_tool:
+        # A tool use on the no-tools call decodes as a tool reply, then the
+        # budget check rejects it unadmitted: nothing dispatches or completes.
+        assert len(bodies) == 9
+        assert result.status == "INTERRUPTED" and result.investigation is None
+        assert result.failure is not None
+        assert result.failure.code.value == "TOOL_BUDGET_EXHAUSTED"
+    else:
+        assert len(bodies) == 12
+        assert result.status == "COMPLETED"
+        assert result.assessment.outcome.value == "TRADE"
+    assert store.load_terminal("run-1") == artifact
+    inspection = store.inspect_run("run-1")
+    assert inspection.state == ("INTERRUPTED" if ninth_tool else "COMPLETED")
+    assert inspection.pending_boundaries == ()
+
+
+@pytest.mark.parametrize("mutation", ["add_final_tools", "remove_earlier_tools"])
+def test_loader_rejects_investigation_tools_differing_from_budget_rule(
+    tmp_path: Path, mutation: str
+) -> None:
+    import json
+
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel([tool()] * 8)))
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as connection:
+        rows = connection.execute(
+            "SELECT envelope_json FROM research_events_v1 ORDER BY sequence"
+        ).fetchall()
+        events = [json.loads(raw) for (raw,) in rows]
+        prepared = [
+            e
+            for e in events
+            if e["event"]["kind"] == "MODEL_REQUEST_PREPARED"
+            and e["event"]["request"]["stage"] == "investigate"
+        ]
+        assert len(prepared) == 9
+        assert prepared[8]["event"]["request"]["tools"] == []
+        value = prepared[8] if mutation == "add_final_tools" else prepared[7]
+        value["event"]["request"]["tools"] = (
+            prepared[0]["event"]["request"]["tools"]
+            if mutation == "add_final_tools"
+            else []
+        )
+        raw = canonical_bytes(value)
+        checksum = framed_digest("crypteo.research.event.v1", raw, b"absent", b"")
+        trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name='research_events_v1_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER research_events_v1_update")
+        connection.execute(
+            "UPDATE research_events_v1 SET envelope_json=?, checksum=? "
+            "WHERE sequence=?",
+            (raw, checksum, value["sequence"]),
+        )
+        connection.execute(trigger)
+    for load in (store.inspect_run, store.load_terminal):
+        with pytest.raises(ResearchStorageError) as raised:
+            load("run-1")
+        assert isinstance(raised.value.__cause__, ValueError)
+        assert "request differs from accumulated context/policy" in str(
+            raised.value.__cause__
+        )
 
 
 def _process_workflow(path: str, run_id: str) -> str:

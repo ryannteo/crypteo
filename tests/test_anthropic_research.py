@@ -296,6 +296,25 @@ def test_structured_completion_uses_json_schema_output_config() -> None:
     assert "effort" not in sent[0]["output_config"]
 
 
+def test_final_investigation_wire_has_no_tools_or_tool_choice() -> None:
+    model = ScriptedModel([tool()] * 8, provider="anthropic")
+    run(model)
+    request = model.requests[8]
+    assert request.stage == "investigate" and request.tools == ()
+    wire = render_anthropic_request(request)
+    assert set(wire) == {"model", "max_tokens", "system", "messages", "output_config"}
+    assert wire["max_tokens"] == 8192
+    assert wire["output_config"] == {
+        "format": {
+            "type": "json_schema",
+            "schema": render_anthropic_schema(
+                request.output_schema.model_dump(mode="json")["json_schema"]
+            ),
+        }
+    }
+    assert "tools" in render_anthropic_request(model.requests[7])
+
+
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_synthesis_wire_has_no_tools_and_maps_effort(effort: str) -> None:
     for request in synthesis_requests(effort=effort):
