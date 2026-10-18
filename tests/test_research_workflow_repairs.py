@@ -229,9 +229,11 @@ def test_parser_failures_have_typed_validation_semantics(
 ) -> None:
     steps = [completion(), structured(thesis()), structured(critique()), completion()]
     index = ["investigate", "draft_thesis", "critique", "final_assessment"].index(stage)
-    steps[index] = StructuredReply(content=content)
-    result = run(ScriptedModel(steps))
+    steps[index : index + 1] = [StructuredReply(content=content)] * 2
+    model = ScriptedModel(steps)
+    result = run(model)
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
+    assert len(model.requests) == index + 2
     assert result.assessment.abstention_reasons[0].value == "VALIDATION_FAILURE"
     result.model_dump_json().encode("utf-8")
 
@@ -244,7 +246,7 @@ def test_surrogate_inside_otherwise_valid_thesis_never_enters_state(
     value = thesis().model_dump(mode="json")
     value[field] = [scalar] if field == "assumptions" else scalar
     result = run(
-        ScriptedModel([completion(), StructuredReply(content=json.dumps(value))])
+        ScriptedModel([completion()] + [StructuredReply(content=json.dumps(value))] * 2)
     )
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
     assert result.thesis is None

@@ -104,6 +104,8 @@ through those common contracts.
 `investigate --tool request--> execute_tool --result--> investigate`;
 only investigation completion advances through
 `investigate --complete--> draft_thesis → critique → final_assessment`.
+A structured reply that fails validation transitions its node to itself for one
+bounded re-ask carrying code-computed problems; a failed re-ask interrupts.
 The investigator chooses among seven deterministic market capabilities; the tool
 adapter binds the opportunity's subject and allows only a relative-strength
 benchmark argument. Software enforces tool-attempt, invalid-request, model-call,

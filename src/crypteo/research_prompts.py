@@ -24,7 +24,9 @@ successful evidence supplied in this run. Surface uncertainty and counterevidenc
 TRADE supports further consideration; NO_TRADE rejects the candidate; ABSTAIN
 means a reliable research conclusion could not be formed. Confidence is a
 self-assessment of research quality, not a calibrated probability of profit.
-Return concise observable research content, not hidden reasoning."""
+Return concise observable research content, not hidden reasoning. When
+output_rejection is present, your previous output for this stage was rejected for
+the listed problems; return a complete, corrected output."""
 
 INVESTIGATION_INSTRUCTIONS = """Choose at most one permitted deterministic tool
 per response, adaptively deciding which missing evidence matters. Only relative
@@ -63,10 +65,10 @@ _INSTRUCTIONS = {
     "final_assessment": ASSESSMENT_INSTRUCTIONS,
 }
 _PROMPT_VERSIONS = {
-    "investigate": "investigate_prompt_v3",
-    "draft_thesis": "draft_thesis_prompt_v1",
-    "critique": "critique_prompt_v1",
-    "final_assessment": "final_assessment_prompt_v1",
+    "investigate": "investigate_prompt_v4",
+    "draft_thesis": "draft_thesis_prompt_v2",
+    "critique": "critique_prompt_v2",
+    "final_assessment": "final_assessment_prompt_v2",
 }
 _SCHEMAS: dict[str, type[BaseModel]] = {
     "investigate": InvestigationCompletion,

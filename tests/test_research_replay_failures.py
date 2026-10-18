@@ -94,7 +94,8 @@ def test_provider_interruption_aborts_and_remains_inspectable(
             datasets=[dataset(pair=p) for p in (BTC, ETH)],
             model=model,
         )
-    assert len(model.requests) == 1
+    # Only an invalid structured reply is re-asked, once; it fails again.
+    assert len(model.requests) == (2 if isinstance(reply, StructuredReply) else 1)
     with sqlite3.connect(store.path) as conn:
         run_ids = conn.execute(
             "SELECT research_run_id FROM research_runs_v1"

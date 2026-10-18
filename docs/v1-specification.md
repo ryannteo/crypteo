@@ -1076,7 +1076,7 @@ Model inference remains subject to the
 
 ### Investigation policy and graph
 
-The runtime-enforced policy is `bounded_research_v1`. Budget and operational
+The runtime-enforced policy is `bounded_research_v2`. Budget and operational
 limits are validated literal configuration values, not freely tunable overrides.
 Exactly seven deterministic
 capabilities are exposed: `trend`, `momentum`, `volatility`, `bollinger_position`,
@@ -1091,9 +1091,10 @@ unavailability. Venue, timeframe, cutoff, and windows are runtime-owned.
 | --- | --- |
 | Admitted tool attempts | At most 8 per run |
 | Tool requests per investigation response | Exactly 1 for a tool response; completion requests none |
-| Investigation model calls | At most 9 |
-| Thesis, critic, final assessment calls | Exactly 1 each in a completed run |
-| Total model calls | At most 12 |
+| Investigation model calls | At most 9, excluding re-asks |
+| Thesis, critic, final assessment calls | Exactly 1 each in a completed run, excluding re-asks |
+| Output re-asks | At most 1 per stage invocation and 2 per run |
+| Total model calls | At most 14, including re-asks |
 | Invalid tool requests | First permits recovery; second interrupts |
 | Automatic provider and graph retries | 0 |
 | Graph recursion limit | 24, a defensive guard rather than the primary budget |
@@ -1126,6 +1127,36 @@ filled by runtime. Synthesis stages have no tools.
 A completed run cannot skip critic; interruptions terminate without requiring
 later stages to execute. Outputs must contain exactly the declared structured
 schema fields; the runtime does not repair malformed output or fill missing fields.
+
+A structured reply on any stage that fails project validation with
+`INVALID_MODEL_OUTPUT` or `UNKNOWN_EVIDENCE_REFERENCE` is re-asked once: the node
+transitions to itself (`investigate → investigate`, `draft_thesis → draft_thesis`,
+and so on) and makes one more call of the same stage. The re-ask request is the
+stage's normal request, with the same prompt, schema and tools rule (an
+investigation re-ask offers tools only while `attempts_remaining` is positive),
+plus a `research_data.output_rejection` object naming the rejected `call_id` and
+a deterministic list of `problems` computed by code from the rejected reply, for
+example `"summary: text must be nonblank"`, `"missing_evidence.0: text must be
+nonblank"`, `"rationale: missing"` or
+`"relevant_evidence_ids: unknown evidence id <id>"`. Each problem is the field
+location with the project validator or JSON-decoder message, or the Pydantic
+error type for other errors. The shared policy tells the model that this field means its
+previous output for the stage was rejected for those reasons and that it must
+return a complete, corrected output. The rejected reply stays in the trace as an
+ordinary model call record; the model supplies all corrected content and the
+runtime still fills or repairs nothing. A valid re-ask continues the run as if the
+stage had succeeded first time, and later stages see only that output.
+
+A re-ask counts toward the total model-call limit and the two-per-run re-ask
+limit, not toward per-stage limits. A re-ask is never itself re-asked. When a
+re-ask fails validation, or a further invalid structured reply arrives after both
+re-asks are spent, the run is `INTERRUPTED` with that reply's failure code and
+call ID. Provider failures, timeouts, incomplete output, refusals, a tool reply on
+a synthesis stage, invalid tool requests and tool-budget rejections are never
+re-asked. The worst case is 8 tool calls, 9 investigation calls, 3 synthesis calls
+and 2 re-asks: 14 model calls and 22 node executions. LangGraph 1.2 completes N
+node executions only when N is at most the recursion limit minus one, so the
+limit of 24 covers it.
 
 ### Model boundary and operational limits
 
@@ -1475,6 +1506,13 @@ Loading validates relationships as well as schemas and checksums:
   source bindings; evidence identity/content consistency and grounded references.
 - Prepared provider JSON versus normalized request, and requests versus accumulated
   context, evidence, request history, prompts, schemas, and tool definitions.
+  The projection independently decides when a re-ask is due (the last retained
+  call is an invalid structured first reply, fewer than 2 re-asks and 14 model
+  calls so far) and then requires the next request of that stage to carry
+  the `output_rejection` recomputed from the stored reply. It rejects a re-ask
+  that is missing, extra, names another call or lists other problems; a
+  self-transition without a due re-ask; and any termination other than
+  `WORKFLOW_TIMEOUT` while a re-ask is due.
   Provider `anthropic` is the only provider with a registered journal codec: its
   prepared body must equal the Claude adapter's pure request renderer output,
   including stripped wire schemas. Other providers compare against the

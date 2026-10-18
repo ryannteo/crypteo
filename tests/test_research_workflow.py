@@ -198,17 +198,22 @@ def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> No
     )
     assert "no tools are offered; return" in final.messages[0].content
     assert final.prompt_identity == prompt_identity("investigate")
-    assert final.prompt_identity.version == "investigate_prompt_v3"
+    assert final.prompt_identity.version == "investigate_prompt_v4"
     assert all(r.tools == () for r in model.requests[9:])
 
 
 def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -> None:
     empty = '{"summary":"","relevant_evidence_ids":[],"remaining_gaps":[]}'
-    model = ScriptedModel([tool()] * 8 + [StructuredReply(content=empty)])
+    model = ScriptedModel([tool()] * 8 + [StructuredReply(content=empty)] * 2)
     result = run(model)
     final = model.requests[-1]
-    assert len(model.requests) == 9 and len(records(result)) == 8
+    # The one re-ask is a new recorded call; its blank reply is never filled.
+    assert len(model.requests) == 10 and len(records(result)) == 8
     assert data(final)["attempts_remaining"] == 0
+    assert data(final)["output_rejection"] == {
+        "call_id": "run-1/model/0009",
+        "problems": ["summary: text must be nonblank"],
+    }
     assert final.tools == ()
     assert final.messages[0].content == SHARED_POLICY + "\n\n" + (
         INVESTIGATION_INSTRUCTIONS
@@ -485,8 +490,10 @@ def test_unknown_or_unavailable_evidence_citations_interrupt(stage: str) -> None
             structured(critique()),
             structured(assessment("TRADE", (bad_id,))),
         ]
-    result = run(ScriptedModel(steps))
+    model = ScriptedModel(steps + steps[-1:])
+    result = run(model)
     assert result.failure and result.failure.code == "UNKNOWN_EVIDENCE_REFERENCE"
+    assert result.failure.call_id == model.requests[-1].call_id
     assert result.assessment.abstention_reasons == (
         AbstentionReason.VALIDATION_FAILURE,
     )
@@ -507,11 +514,12 @@ def test_invalid_structured_output_no_repair_or_retry(stage: str, bad: str) -> N
     index = {"investigate": 1, "draft_thesis": 2, "critique": 3, "final_assessment": 4}[
         stage
     ]
-    steps[index] = StructuredReply(content=bad)
+    # The invalid reply repeats on its single re-ask; nothing is repaired.
+    steps[index : index + 1] = [StructuredReply(content=bad)] * 2
     model = ScriptedModel(steps)
     result = run(model)
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
-    assert len(model.requests) == index + 1
+    assert len(model.requests) == index + 2
     assert result.assessment.outcome.value == "ABSTAIN"
 
 
@@ -537,10 +545,12 @@ def test_invalid_final_assessment_never_coerced(change: dict[str, Any]) -> None:
                 structured(thesis()),
                 structured(critique()),
                 structured(bad),
+                structured(bad),
             ]
         )
     )
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
+    assert result.failure.call_id == "run-1/model/0005"
 
 
 @pytest.mark.parametrize(
@@ -1076,7 +1086,7 @@ def test_exact_audit_metadata_request_and_id_retention() -> None:
     assert calls[0].request == model.requests[0]
     assert calls[0].request.call_id == "run-1/model/0001"
     assert calls[0].reply.metadata.response_id == "provider-response"
-    assert result.configuration.budget.policy_id == "bounded_research_v1"
+    assert result.configuration.budget.policy_id == "bounded_research_v2"
     assert (
         result.provider == model.identity
         and result.context.request.research_run_id == "run-1"

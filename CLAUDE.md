@@ -65,7 +65,7 @@ Do not fork this lifecycle per mode. `ReplayResult`'s validator re-runs `replay_
 
 `research_workflow._run_opportunity_research` compiles a 5-node LangGraph per run. Nodes decide their own target and append a `NodeTransition` to the trace; `route()` just reads the last transition (edges have no static path map). Budgets and limits are `Literal`-typed in `ResearchBudgetPolicy` and `ResearchWorkflowConfig`, so they are not tunable.
 
-`run_durable_opportunity_research` injects a `ResearchJournal`. Every append re-projects and validates the full event history through `research_journal.project()`. `JournalProjection.apply` independently re-encodes the graph transition map and the budget numbers (8, 9, 2). Changing graph shape or budgets requires changing both files.
+`run_durable_opportunity_research` injects a `ResearchJournal`. Every append re-projects and validates the full event history through `research_journal.project()`. `JournalProjection.apply` independently re-encodes the graph transition map (including the re-ask self-transitions) and the budget numbers (8 tool attempts, 9 investigation calls, 2 invalid tool requests, 2 output re-asks, 14 model calls). Changing graph shape or budgets requires changing both files.
 
 ### Stored research is validated against current code
 

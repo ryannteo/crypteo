@@ -80,7 +80,11 @@ from crypteo.research_prompts import prompt_identity, prompt_messages, structure
 from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_definitions
 from crypteo.research_validation import ResearchInvariantError as ResearchInvariantError
 from crypteo.research_validation import collected_evidence as collected_evidence
-from crypteo.research_validation import research_data, validate_stage_output
+from crypteo.research_validation import (
+    request_rejection,
+    research_data,
+    validate_stage_output,
+)
 
 _OVERDUE_MODEL_TASKS: set[asyncio.Task[ModelReply]] = set()
 
@@ -107,6 +111,8 @@ class ResearchState(TypedDict):
     critique: Critique | None
     assessment: TradeDecision | None
     failure: ResearchFailure | None
+    # An invalid structured reply that the next call of its stage re-asks.
+    rejected: ModelCallRecord | None
 
 
 def _tools(state: ResearchState) -> tuple[ToolRecord, ...]:
@@ -115,6 +121,10 @@ def _tools(state: ResearchState) -> tuple[ToolRecord, ...]:
 
 def _models(state: ResearchState) -> tuple[ModelCallRecord, ...]:
     return tuple(r for r in state["trace"] if isinstance(r, ModelCallRecord))
+
+
+def _reasks(state: ResearchState) -> tuple[ModelCallRecord, ...]:
+    return tuple(r for r in _models(state) if request_rejection(r.request) is not None)
 
 
 def _failure(
@@ -133,6 +143,7 @@ def _failure(
         **state,
         "failure": failure,
         "action": None,
+        "rejected": None,
         "assessment": TradeDecision(
             outcome=DecisionOutcome.ABSTAIN,
             rationale=message,
@@ -173,7 +184,12 @@ class _ResearchRuntime:
             )
         return state
 
-    def data(self, state: ResearchState, stage: str) -> dict[str, Any]:
+    def data(
+        self,
+        state: ResearchState,
+        stage: str,
+        rejected: ModelCallRecord | None,
+    ) -> dict[str, Any]:
         return research_data(
             state["context"],
             state["trace"],
@@ -188,6 +204,7 @@ class _ResearchRuntime:
                 )
                 if value is not None
             },
+            rejected,
         )
 
     async def call(
@@ -198,14 +215,18 @@ class _ResearchRuntime:
         state = self.guard_deadline(state)
         if state["failure"] is not None:
             return state, None
+        rejected, state = state["rejected"], {**state, "rejected": None}
         previous = _models(state)
-        stage_count = sum(r.request.stage == stage for r in previous)
+        # Re-asks are budgeted by max_output_reasks, not by per-stage limits.
+        stage_count = sum(
+            r.request.stage == stage and request_rejection(r.request) is None
+            for r in previous
+        )
         max_stage = (
             self.config.budget.max_investigation_calls if stage == "investigate" else 1
         )
-        if (
-            len(previous) >= self.config.budget.max_model_calls
-            or stage_count >= max_stage
+        if len(previous) >= self.config.budget.max_model_calls or (
+            rejected is None and stage_count >= max_stage
         ):
             return _failure(
                 state,
@@ -215,7 +236,7 @@ class _ResearchRuntime:
         call_id = (
             f"{state['context'].request.research_run_id}/model/{len(previous) + 1:04d}"
         )
-        data = self.data(state, stage)
+        data = self.data(state, stage, rejected)
         request = ModelRequest(
             call_id=call_id,
             stage=stage,
@@ -400,7 +421,7 @@ class _ResearchRuntime:
             raise ResearchInvariantError("unexpected model reply variant")
         output = validate_stage_output(state["trace"], reply, InvestigationCompletion)
         if isinstance(output, ResearchFailureCode):
-            return self.invalid_output(state, output)
+            return self.reask_or_fail(state, output)
         if not isinstance(output, InvestigationCompletion):
             raise ResearchInvariantError("unexpected investigation schema")
         self.emit(
@@ -420,6 +441,20 @@ class _ResearchRuntime:
             "model output failed structured validation or evidence grounding",
             _models(state)[-1].request.call_id,
         )
+
+    def reask_or_fail(
+        self, state: ResearchState, code: ResearchFailureCode
+    ) -> ResearchState:
+        """Re-ask an invalid structured first reply once, within the run budget."""
+        budget, record = self.config.budget, _models(state)[-1]
+        reasks = _reasks(state)
+        if (
+            request_rejection(record.request) is not None
+            or len(reasks) >= budget.max_output_reasks
+            or len(_models(state)) >= budget.max_model_calls
+        ):
+            return self.invalid_output(state, code)
+        return {**state, "rejected": record}
 
     async def execute_tool(self, state: ResearchState) -> ResearchState:
         state = self.guard_deadline(state)
@@ -543,7 +578,7 @@ class _ResearchRuntime:
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
         output = validate_stage_output(state["trace"], reply, ResearchThesis)
         if isinstance(output, ResearchFailureCode):
-            return self.invalid_output(state, output)
+            return self.reask_or_fail(state, output)
         if not isinstance(output, ResearchThesis):
             raise ResearchInvariantError("unexpected thesis schema")
         self.emit(
@@ -562,7 +597,7 @@ class _ResearchRuntime:
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
         output = validate_stage_output(state["trace"], reply, Critique)
         if isinstance(output, ResearchFailureCode):
-            return self.invalid_output(state, output)
+            return self.reask_or_fail(state, output)
         if not isinstance(output, Critique):
             raise ResearchInvariantError("unexpected critique schema")
         self.emit(
@@ -581,7 +616,7 @@ class _ResearchRuntime:
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
         output = validate_stage_output(state["trace"], reply, TradeDecision)
         if isinstance(output, ResearchFailureCode):
-            return self.invalid_output(state, output)
+            return self.reask_or_fail(state, output)
         if not isinstance(output, TradeDecision):
             raise ResearchInvariantError("unexpected assessment schema")
         self.emit(
@@ -654,6 +689,7 @@ async def _run_opportunity_research(
         "critique": None,
         "assessment": None,
         "failure": None,
+        "rejected": None,
     }
     state = runtime.transition(state, START, "investigate")
     graph = StateGraph(ResearchState)
@@ -663,6 +699,8 @@ async def _run_opportunity_research(
         target = (
             END
             if state["failure"]
+            else "investigate"
+            if state["rejected"]
             else "execute_tool"
             if state["action"]
             else "draft_thesis"
@@ -677,20 +715,34 @@ async def _run_opportunity_research(
 
     async def draft_thesis(state: ResearchState) -> ResearchState:
         state = await runtime.draft_thesis(state)
-        return runtime.transition(
-            state, "draft_thesis", END if state["failure"] else "critique"
+        target = (
+            END
+            if state["failure"]
+            else "draft_thesis"
+            if state["rejected"]
+            else "critique"
         )
+        return runtime.transition(state, "draft_thesis", target)
 
     async def critique(state: ResearchState) -> ResearchState:
         state = await runtime.critique(state)
-        return runtime.transition(
-            state, "critique", END if state["failure"] else "final_assessment"
+        target = (
+            END
+            if state["failure"]
+            else "critique"
+            if state["rejected"]
+            else "final_assessment"
         )
+        return runtime.transition(state, "critique", target)
 
     async def final_assessment(state: ResearchState) -> ResearchState:
         state = await runtime.final_assessment(state)
         state = runtime.guard_deadline(state)
-        return runtime.transition(state, "final_assessment", END)
+        return runtime.transition(
+            state,
+            "final_assessment",
+            "final_assessment" if state["rejected"] else END,
+        )
 
     graph.add_node("investigate", investigate)
     graph.add_node("execute_tool", execute_tool)

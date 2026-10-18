@@ -1099,10 +1099,11 @@ def test_complete_graph_with_mocked_anthropic_transport() -> None:
 def test_invalid_json_schema_interrupted_without_retry(content: str) -> None:
     reply = invoke(lambda request: httpx2.Response(200, json=envelope([text(content)])))
     assert isinstance(reply, StructuredReply) and reply.content == content
-    model = ScriptedModel([reply])
+    model = ScriptedModel([reply, reply])
     result = run(model)
     assert result.failure and result.failure.code == "INVALID_MODEL_OUTPUT"
-    assert len(model.requests) == 1
+    # One bounded re-ask, never a provider retry.
+    assert len(model.requests) == 2
 
 
 STAGES = ("investigate", "draft_thesis", "critique", "final_assessment")
@@ -1268,6 +1269,7 @@ def test_deep_schema_renders_without_recursion() -> None:
 
 def test_out_of_range_confidence_is_still_rejected_by_project_validation() -> None:
     responses = graph_responses(confidence=150)
+    responses.append(responses[-1])  # The single re-ask repeats the invalid value.
     bodies: list[dict[str, Any]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:

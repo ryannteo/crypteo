@@ -4,9 +4,15 @@ import re
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+from pydantic_core import ErrorDetails
 
 from crypteo.domain.market_research import MarketResearchCapability, ResearchToolSuccess
-from crypteo.domain.research import EvidenceItem, ResearchThesis, TradeDecision
+from crypteo.domain.research import (
+    Critique,
+    EvidenceItem,
+    ResearchThesis,
+    TradeDecision,
+)
 from crypteo.domain.research_workflow import (
     BENCHMARK_ORDER,
     InvestigationCompletion,
@@ -21,6 +27,7 @@ from crypteo.domain.research_workflow import (
 )
 from crypteo.research_model import (
     ModelOutputError,
+    ModelRequest,
     StructuredReply,
     parse_json,
     render_json,
@@ -43,6 +50,7 @@ def validate_trace_relationships(
     evidence: dict[str, EvidenceItem] = {}
     model_ids: set[str] = set()
     tools: dict[str, ToolRecord] = {}
+    last_work: TraceRecord | None = None
 
     def local_id(identifier: str, kind: str) -> None:
         if re.fullmatch(re.escape(run_id) + f"/{kind}/[0-9]{{4}}", identifier) is None:
@@ -55,7 +63,7 @@ def validate_trace_relationships(
             local_id(failure.call_id, "model")
 
     failure_id(failure)
-    for record in trace:
+    for index, record in enumerate(trace):
         if isinstance(record, (ModelCallRecord, ModelRequestRejection)):
             request = record.request
             local_id(request.call_id, "model")
@@ -107,6 +115,24 @@ def validate_trace_relationships(
                 raise ResearchValidationError(
                     "retained request history differs from tool trace"
                 )
+            # Only the call after an invalid structured first reply re-asks it.
+            rejected = None
+            if isinstance(last_work, ModelCallRecord):
+                rejected = output_rejection(trace[:index], last_work)
+                if rejected is not None and (
+                    request_rejection(last_work.request) is not None
+                    or last_work.request.stage != request.stage
+                ):
+                    raise ResearchValidationError(
+                        "model call after an unrecoverable invalid reply"
+                    )
+            if ("output_rejection" in data) != (rejected is not None) or data.get(
+                "output_rejection"
+            ) != rejected:
+                raise ResearchValidationError(
+                    "output rejection differs from preceding structured reply"
+                )
+            last_work = record
             continue
         if not isinstance(record, ToolRecord):
             continue
@@ -172,6 +198,7 @@ def validate_trace_relationships(
                     "cache linkage differs from earlier retained result"
                 )
         tools[record.attempt_id] = record
+        last_work = record
 
 
 class ResearchInvariantError(ValueError):
@@ -202,34 +229,94 @@ def collected_evidence(trace: tuple[TraceRecord, ...]) -> tuple[EvidenceItem, ..
     )
 
 
+_OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
+    "investigate": InvestigationCompletion,
+    "draft_thesis": ResearchThesis,
+    "critique": Critique,
+    "final_assessment": TradeDecision,
+}
+
+
+def _problem(error: ErrorDetails) -> str:
+    location = ".".join(str(part) for part in error["loc"]) or "output"
+    cause = error.get("ctx", {}).get("error")
+    # Project validator messages and pydantic error types, never provider text.
+    return f"{location}: {cause if cause is not None else error['type']}"
+
+
+def _check_stage_output(
+    trace: tuple[TraceRecord, ...],
+    reply: StructuredReply,
+    schema: type[BaseModel],
+) -> BaseModel | tuple[ResearchFailureCode, tuple[str, ...]]:
+    invalid = ResearchFailureCode.INVALID_MODEL_OUTPUT
+    try:
+        parsed = parse_json(reply.content)
+    except ModelOutputError as error:
+        return invalid, (f"output: {error}",)
+    if not isinstance(parsed, dict):
+        return invalid, ("output: must be a JSON object",)
+    # Wire schemas require every field. Local providers/fakes are held to the
+    # same contract rather than silently filling domain defaults.
+    fields = tuple(schema.model_fields)
+    problems = tuple(f"{name}: missing" for name in fields if name not in parsed)
+    problems += tuple(
+        f"{name}: unexpected field" for name in sorted(set(parsed) - set(fields))
+    )
+    if problems:
+        return invalid, problems
+    try:
+        output = schema.model_validate(parsed)
+    except ValidationError as error:
+        return invalid, tuple(_problem(e) for e in error.errors(include_url=False))
+    reference_fields: tuple[str, ...] = ()
+    if isinstance(output, InvestigationCompletion):
+        reference_fields = ("relevant_evidence_ids",)
+    elif isinstance(output, (ResearchThesis, TradeDecision)):
+        reference_fields = ("supporting_evidence_ids", "counterevidence_ids")
+    known = {e.evidence_id for e in collected_evidence(trace)}
+    unknown = tuple(
+        f"{name}: unknown evidence id {reference}"
+        for name in reference_fields
+        for reference in getattr(output, name)
+        if reference not in known
+    )
+    problems = unknown
+    if isinstance(output, TradeDecision) and output.critic_response is None:
+        problems += ("critic_response: required for every outcome",)
+    if unknown:
+        return ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE, problems
+    return (invalid, problems) if problems else output
+
+
 def validate_stage_output(
     trace: tuple[TraceRecord, ...],
     reply: StructuredReply,
     schema: type[BaseModel],
 ) -> BaseModel | ResearchFailureCode:
-    try:
-        parsed = parse_json(reply.content)
-        # Wire schemas require every field. Local providers/fakes are held to the
-        # same contract rather than silently filling domain defaults.
-        if not isinstance(parsed, dict) or set(parsed) != set(schema.model_fields):
-            raise ModelOutputError(
-                "output must contain exactly the structured schema fields"
-            )
-        output = schema.model_validate(parsed)
-        references: tuple[str, ...] = ()
-        if isinstance(output, InvestigationCompletion):
-            references = output.relevant_evidence_ids
-        elif isinstance(output, (ResearchThesis, TradeDecision)):
-            references = output.supporting_evidence_ids + output.counterevidence_ids
-        if set(references) - {e.evidence_id for e in collected_evidence(trace)}:
-            return ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE
-        if isinstance(output, TradeDecision) and output.critic_response is None:
-            raise ModelOutputError(
-                "completed assessment requires nonblank critic_response"
-            )
-        return output
-    except (ModelOutputError, ValidationError):
-        return ResearchFailureCode.INVALID_MODEL_OUTPUT
+    checked = _check_stage_output(trace, reply, schema)
+    return checked[0] if isinstance(checked, tuple) else checked
+
+
+def output_rejection(
+    trace: tuple[TraceRecord, ...], record: ModelCallRecord
+) -> dict[str, Any] | None:
+    """Code-derived re-ask feedback for a structured reply failing validation."""
+    if not isinstance(record.reply, StructuredReply):
+        return None
+    checked = _check_stage_output(
+        trace, record.reply, _OUTPUT_SCHEMAS[record.request.stage]
+    )
+    if not isinstance(checked, tuple):
+        return None
+    return {"call_id": record.request.call_id, "problems": list(checked[1])}
+
+
+def request_rejection(request: ModelRequest) -> Any:
+    """The output_rejection a retained request carries, or None for a first ask."""
+    content = parse_json(request.messages[-1].content)
+    data = content.get("research_data") if isinstance(content, dict) else None
+    return data.get("output_rejection") if isinstance(data, dict) else None
 
 
 def research_data(
@@ -238,7 +325,9 @@ def research_data(
     configuration: ResearchWorkflowConfig,
     stage: str,
     stages: dict[str, BaseModel],
+    rejected: ModelCallRecord | None = None,
 ) -> dict[str, Any]:
+    """Stage request data; ``rejected`` makes it a re-ask of that invalid reply."""
     tools = tuple(r for r in trace if isinstance(r, ToolRecord))
     data: dict[str, Any] = {
         "context": context.model_dump(mode="json"),
@@ -259,4 +348,9 @@ def research_data(
         if prerequisite not in stages:
             raise ResearchInvariantError("stage lacks validated prerequisite")
         data[key] = stages[prerequisite].model_dump(mode="json")
+    if rejected is not None:
+        rejection = output_rejection(trace, rejected)
+        if rejection is None or rejected.request.stage != stage:
+            raise ResearchInvariantError("re-ask lacks a rejected structured reply")
+        data["output_rejection"] = rejection
     return data

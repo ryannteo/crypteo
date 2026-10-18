@@ -61,6 +61,8 @@ from crypteo.research_prompts import prompt_identity, prompt_messages, structure
 from crypteo.research_tools import bind_tool_request, tool_definitions
 from crypteo.research_validation import (
     ResearchValidationError,
+    output_rejection,
+    request_rejection,
     research_data,
     validate_stage_output,
     validate_trace_relationships,
@@ -290,6 +292,22 @@ class JournalProjection:
             if isinstance(r, (ModelCallRecord, ModelRequestRejection, ToolRecord))
         ]
 
+    def rejected_call(self) -> ModelCallRecord | None:
+        """Invalid structured first reply that the next call must re-ask, if any."""
+        records = self.work
+        record = records[-1] if records else None
+        if not isinstance(record, ModelCallRecord) or (
+            request_rejection(record.request) is not None
+        ):
+            return None
+        reasks = sum(
+            isinstance(r, ModelCallRecord) and request_rejection(r.request) is not None
+            for r in self.trace
+        )
+        if reasks >= 2 or self.calls >= 14:
+            return None
+        return record if output_rejection(self.trace, record) is not None else None
+
     def validate_request(self, request: ModelRequest) -> None:
         config, context = self.header.configuration, self.header.context
         if request.stage != self.node or self.node_work:
@@ -299,9 +317,10 @@ class JournalProjection:
             != f"{self.header.research_run_id}/model/{self.calls + 1:04d}"
         ):
             raise ResearchValidationError("model call identity/sequence mismatch")
+        rejected = self.rejected_call()
         count = self.counts.get(request.stage, 0)
-        if self.calls >= config.budget.max_model_calls or count >= (
-            9 if request.stage == "investigate" else 1
+        if self.calls >= 14 or (
+            rejected is None and count >= (9 if request.stage == "investigate" else 1)
         ):
             raise ResearchValidationError("model call budget exceeded")
         data = research_data(
@@ -310,6 +329,7 @@ class JournalProjection:
             config,
             request.stage,
             {stage: value.output for stage, value in self.stages.items()},
+            rejected,
         )
         expected = ModelRequest(
             call_id=request.call_id,
@@ -371,7 +391,11 @@ class JournalProjection:
             "final_assessment": TradeDecision,
         }
         output = validate_stage_output(self.trace, reply, schemas[record.request.stage])
-        return output.value if isinstance(output, ResearchFailureCode) else None
+        if not isinstance(output, ResearchFailureCode) or (
+            self.rejected_call() is not None
+        ):
+            return None
+        return output.value
 
     def apply(self, envelope: EventEnvelope) -> None:
         event = envelope.event
@@ -426,9 +450,10 @@ class JournalProjection:
                 )
                 self.last_call = event.record
                 self.calls += 1
-                self.counts[self.prepared.stage] = (
-                    self.counts.get(self.prepared.stage, 0) + 1
-                )
+                if request_rejection(self.prepared) is None:
+                    self.counts[self.prepared.stage] = (
+                        self.counts.get(self.prepared.stage, 0) + 1
+                    )
             elif (
                 self.started
                 or event.record.failure.code
@@ -571,15 +596,20 @@ class JournalProjection:
                     "initial transition must enter investigation"
                 )
             elif transition.target != "__end__":
-                target = {
-                    "__start__": "investigate",
-                    "execute_tool": "investigate",
-                    "draft_thesis": "critique",
-                    "critique": "final_assessment",
-                    "investigate": "draft_thesis"
-                    if "investigate" in self.stages
-                    else "execute_tool",
-                }.get(self.node)
+                reask = self.rejected_call() is not None
+                target = (
+                    self.node
+                    if reask
+                    else {
+                        "__start__": "investigate",
+                        "execute_tool": "investigate",
+                        "draft_thesis": "critique",
+                        "critique": "final_assessment",
+                        "investigate": "draft_thesis"
+                        if "investigate" in self.stages
+                        else "execute_tool",
+                    }.get(self.node)
+                )
                 if (
                     transition.target != target
                     or transition.termination_reason is not None
@@ -590,6 +620,7 @@ class JournalProjection:
                 if (
                     self.node in ("draft_thesis", "critique")
                     and self.node not in self.stages
+                    and not reask
                 ):
                     raise ResearchValidationError("transition without validated stage")
                 if (

@@ -32,6 +32,7 @@ from crypteo.research_workflow import ResearchState, _failure
         "critic_calls",
         "assessment_calls",
         "max_model_calls",
+        "max_output_reasks",
         "max_invalid_tool_requests",
         "provider_retries",
         "graph_retries",
@@ -154,6 +155,7 @@ def test_runtime_failure_derives_category_and_retained_mismatches_reject(
         critique=None,
         assessment=None,
         failure=None,
+        rejected=None,
     )
     result = _failure(state, code, "failure", "call-1")
     failure, decision = result["failure"], result["assessment"]
