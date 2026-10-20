@@ -23,7 +23,8 @@ from crypteo.research_tools import (
     tool_definitions,
 )
 
-SINGLE_ASSET_DIGESTS = {
+# Unchanged since bounded_market_tools_v3; v4 changed only lower_band_crossings.
+UNCHANGED_SINCE_V3 = {
     "trend": "c82ce9d8d550c9eaec0538a25ab1b2a0ddb6ea078312b0f0ea2d5dc4799832fa",
     "momentum": "c285f89a3f66a0d9369c80020160e3125fc61bddfa0e244b0623f5e243052527",
     "volatility": "bf2c13e00d2dc3817f747a1b2172d2d2c660f6ad0a53343bbff4f5b6bd782754",
@@ -40,10 +41,22 @@ SINGLE_ASSET_DIGESTS = {
     "higher_timeframe": (
         "bf9f4be59991949bdeba8845050aa465c12ec169a8d769079ecacac873939a5b"
     ),
+}
+SINGLE_ASSET_DIGESTS = UNCHANGED_SINCE_V3 | {
     "lower_band_crossings": (
-        "0990d9006a7d9ec3c2e13886b3c81c9f9b1a44cfa009b1c1593f4d2c7faccca0"
+        "e198511f1cc7c38926c9817d8a682ab30e9450b20c75f54605bd7ea8b2c15ada"
     ),
 }
+V3_LOWER_BAND_CROSSINGS = (
+    "0990d9006a7d9ec3c2e13886b3c81c9f9b1a44cfa009b1c1593f4d2c7faccca0"
+)
+RELATIVE_STRENGTH_DIGEST = (
+    "46a313cda8bdbe314a3d64119ffde3c0aaadeb92169c5f3e0e95a47ab35c55ca"
+)
+PENDING_RULE = (
+    "Crossings whose next 6 candles have not all closed by T, including any "
+    "crossing on the candle ending at T, are counted only in pending_count."
+)
 
 
 def digests(benchmarks: tuple[TradingPair, ...]) -> dict[str, str]:
@@ -53,15 +66,19 @@ def digests(benchmarks: tuple[TradingPair, ...]) -> dict[str, str]:
     }
 
 
-def test_v3_tool_identity_snapshots() -> None:
+def test_v4_tool_identity_snapshots() -> None:
     assert digests((ETH, SOL)) == SINGLE_ASSET_DIGESTS | {
-        "relative_strength": (
-            "46a313cda8bdbe314a3d64119ffde3c0aaadeb92169c5f3e0e95a47ab35c55ca"
-        )
+        "relative_strength": RELATIVE_STRENGTH_DIGEST
     }
     # Without a bound benchmark, relative strength is not offered at all.
     assert digests(()) == SINGLE_ASSET_DIGESTS
-    assert TOOL_VERSION == "bounded_market_tools_v3"
+    # Only the lower_band_crossings description changed from v3.
+    current = digests((ETH, SOL))
+    assert current.pop("lower_band_crossings") != V3_LOWER_BAND_CROSSINGS
+    assert current == UNCHANGED_SINCE_V3 | {
+        "relative_strength": RELATIVE_STRENGTH_DIGEST
+    }
+    assert TOOL_VERSION == "bounded_market_tools_v4"
     assert {t.identity.version for t in tool_definitions(BTC, ())} == {TOOL_VERSION}
 
 
@@ -148,6 +165,12 @@ def test_every_capability_has_a_fixed_window_description(
     assert definition.description.endswith(suffix)
     bars = MarketResearchPolicy().required_bars(capability)
     assert str(bars) in TOOL_DESCRIPTIONS[capability]
+
+
+def test_lower_band_crossings_states_the_pending_rule() -> None:
+    description = TOOL_DESCRIPTIONS[MarketResearchCapability.LOWER_BAND_CROSSINGS]
+    assert description.endswith(PENDING_RULE)
+    assert "Later crossings are counted as pending." not in description
 
 
 @pytest.mark.parametrize(

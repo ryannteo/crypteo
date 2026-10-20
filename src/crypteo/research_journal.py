@@ -61,6 +61,7 @@ from crypteo.research_prompts import prompt_identity, prompt_messages, structure
 from crypteo.research_tools import bind_tool_request, tool_definitions
 from crypteo.research_validation import (
     ResearchValidationError,
+    offers_tools,
     output_rejection,
     request_rejection,
     research_data,
@@ -338,7 +339,7 @@ class JournalProjection:
             messages=prompt_messages(request.stage, data),
             prompt_identity=prompt_identity(request.stage),
             tools=tool_definitions(context.request.opportunity.pair, context.benchmarks)
-            if request.stage == "investigate" and data["attempts_remaining"] > 0
+            if offers_tools(request.stage, data)
             else (),
             output_schema=structured_schema(request.stage),
             max_output_tokens=config.investigation_output_cap

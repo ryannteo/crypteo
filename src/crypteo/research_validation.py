@@ -1,6 +1,7 @@
 """Pure shared research relationship checks; no inference or market reads."""
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -36,6 +37,7 @@ from crypteo.research_model import (
     parse_json,
     render_json,
 )
+from crypteo.research_tools import tool_definitions
 
 
 class ResearchValidationError(ValueError):
@@ -104,6 +106,14 @@ def validate_trace_relationships(
             ):
                 raise ResearchValidationError(
                     "retained request history differs from tool trace"
+                )
+            # Requests offering no tools carry the run's definitions as data.
+            definitions = None if request.tools else tool_definitions_view(context)
+            if ("tool_definitions" in data) != (definitions is not None) or render_json(
+                data.get("tool_definitions")
+            ) != render_json(definitions):
+                raise ResearchValidationError(
+                    "retained tool definitions differ from offered tools"
                 )
             # Only the call after an invalid structured first reply re-asks it.
             rejected = None
@@ -363,6 +373,19 @@ def request_rejection(request: ModelRequest) -> Any:
     return data.get("output_rejection") if isinstance(data, dict) else None
 
 
+def offers_tools(stage: str, data: Mapping[str, Any]) -> bool:
+    """Code owns the tool budget: offer no tool the model may not use."""
+    return stage == "investigate" and data["attempts_remaining"] > 0
+
+
+def tool_definitions_view(context: OpportunityResearchContext) -> list[dict[str, Any]]:
+    """The run's tool names and descriptions, in offer order, as read-only data."""
+    return [
+        {"name": t.name, "description": t.description}
+        for t in tool_definitions(context.request.opportunity.pair, context.benchmarks)
+    ]
+
+
 def research_data(
     context: OpportunityResearchContext,
     trace: tuple[TraceRecord, ...],
@@ -382,6 +405,8 @@ def research_data(
         data["attempts_remaining"] = configuration.budget.max_tool_attempts - sum(
             r.admitted for r in tools
         )
+    if not offers_tools(stage, data):
+        data["tool_definitions"] = tool_definitions_view(context)
     required = {
         "investigate": (),
         "draft_thesis": (("investigate", "investigation_completion"),),

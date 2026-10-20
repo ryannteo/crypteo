@@ -23,7 +23,7 @@ from crypteo.research_model import (
     render_json,
 )
 
-TOOL_VERSION = "bounded_market_tools_v3"
+TOOL_VERSION = "bounded_market_tools_v4"
 
 _DESCRIPTION_SUFFIX = (
     "Completed Coinbase hourly candles visible at T; venue, timeframe, window and "
@@ -84,8 +84,9 @@ TOOL_DESCRIPTIONS: Mapping[MarketResearchCapability, str] = MappingProxyType(
             "Only crossings whose next 6 candles all closed by T are sampled: "
             "counts and fractions reaching the trigger's SMA20 intrabar and closing "
             "higher after 6 hours, close-return mean, median and range, and mean "
-            "adverse and favorable excursions. Later crossings are counted as "
-            "pending."
+            "adverse and favorable excursions. Crossings whose next 6 candles have "
+            "not all closed by T, including any crossing on the candle ending at T, "
+            "are counted only in pending_count."
         ),
         MarketResearchCapability.RELATIVE_STRENGTH: (
             "Subject minus benchmark close-to-close returns over 6h and 24h from "

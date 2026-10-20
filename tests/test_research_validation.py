@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from research_support import (
     BTC,
     CODE,
+    ETH,
+    SOL,
     ScriptedModel,
     opportunity,
     run,
@@ -21,7 +23,11 @@ from research_support import (
 from test_research_journal_claude import rewrite
 from test_research_persistence import ObservedModel
 
-from crypteo.domain.market_research import ResearchToolSuccess
+from crypteo.domain.market import TradingPair
+from crypteo.domain.market_research import (
+    MarketResearchCapability,
+    ResearchToolSuccess,
+)
 from crypteo.domain.research_journal import EventEnvelope, ModelRequestPrepared
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
@@ -32,6 +38,7 @@ from crypteo.domain.research_workflow import (
 from crypteo.research_journal import ResearchStorageError
 from crypteo.research_model import ModelRequest, ToolReply, render_json
 from crypteo.research_persistence import ResearchStore
+from crypteo.research_tools import tool_definitions
 from crypteo.research_validation import (
     ResearchInvariantError,
     ResearchValidationError,
@@ -264,14 +271,12 @@ def trace_json(trace: list[Any]) -> list[Any]:
     return [r.model_dump(mode="json") for r in trace]
 
 
-def tampered(
-    request: ModelRequest, mutation: str, trace: tuple[Any, ...]
+def rerender(
+    request: ModelRequest, change: Callable[[dict[str, Any]], None]
 ) -> ModelRequest:
     """Re-render one request's research data as a self-consistent forgery."""
     content = json.loads(request.messages[-1].content)
-    data = content["research_data"]
-    assert len(data["evidence"]) == 2 and len(data["request_history"]) == 3
-    (MUTATIONS[mutation][1] if mutation in MUTATIONS else unchanged)(data, trace)
+    change(content["research_data"])
     message = request.messages[-1].model_copy(update={"content": render_json(content)})
     changed = request.model_copy(
         update={"messages": request.messages[:-1] + (message,)}
@@ -283,6 +288,16 @@ def tampered(
             )
         }
     )
+
+
+def tampered(
+    request: ModelRequest, mutation: str, trace: tuple[Any, ...]
+) -> ModelRequest:
+    def change(data: dict[str, Any]) -> None:
+        assert len(data["evidence"]) == 2 and len(data["request_history"]) == 3
+        (MUTATIONS[mutation][1] if mutation in MUTATIONS else unchanged)(data, trace)
+
+    return rerender(request, change)
 
 
 @pytest.mark.parametrize("mutation", MUTATIONS)
@@ -365,3 +380,143 @@ def test_unchanged_rerender_reproduces_request() -> None:
     record = trace[index]
     assert isinstance(record, ModelCallRecord)
     assert tampered(record.request, "unchanged", tuple(trace[:index])) == record.request
+
+
+def definitions_view(benchmarks: tuple[TradingPair, ...]) -> list[dict[str, str]]:
+    return [
+        {"name": t.name, "description": t.description}
+        for t in tool_definitions(BTC, benchmarks)
+    ]
+
+
+EIGHT_TOOLS = (
+    *(tool(name) for name in BTC_TOOLS),
+    tool("candle_structure"),
+    tool("relative_strength", {"benchmark": "ETH-USD"}),
+)
+
+
+def test_requests_offering_no_tools_carry_tool_definitions() -> None:
+    model = ScriptedModel(EIGHT_TOOLS)
+    result = run(model)
+    assert result.status == "COMPLETED"
+    stages = [r.stage for r in model.requests]
+    assert stages == ["investigate"] * 9 + [
+        "draft_thesis",
+        "critique",
+        "final_assessment",
+    ]
+    offered = tool_definitions(BTC, (ETH,))
+    expected = definitions_view((ETH,))
+    # Names and full descriptions (suffix included) in offer order.
+    assert expected == [{"name": t.name, "description": t.description} for t in offered]
+    assert [d["name"] for d in expected] == [c.value for c in MarketResearchCapability]
+    for attempts, request in zip(range(8, 0, -1), model.requests[:8], strict=True):
+        data = research(request)
+        assert data["attempts_remaining"] == attempts
+        assert request.tools == offered and "tool_definitions" not in data
+    # The ninth investigation call has no attempts left and offers no tools.
+    for request in model.requests[8:]:
+        data = research(request)
+        assert request.tools == () and data["tool_definitions"] == expected
+    assert research(model.requests[8])["attempts_remaining"] == 0
+
+
+@pytest.mark.parametrize(
+    "pairs,benchmarks",
+    [((BTC,), ()), ((BTC, ETH), (ETH,)), ((BTC, ETH, SOL), (ETH, SOL))],
+)
+def test_tool_definitions_follow_bound_benchmarks(
+    pairs: tuple[TradingPair, ...], benchmarks: tuple[TradingPair, ...]
+) -> None:
+    model = ScriptedModel([tool()])
+    assert run(model, service(pairs=pairs)).status == "COMPLETED"
+    definitions = research(model.requests[-1])["tool_definitions"]
+    assert definitions == definitions_view(benchmarks)
+    assert ("relative_strength" in [d["name"] for d in definitions]) == bool(benchmarks)
+
+
+DEFINITIONS_MISMATCH = "retained tool definitions differ from offered tools"
+THESIS_CALL = "run-1/model/0005"
+
+
+def edit_description(data: dict[str, Any]) -> None:
+    data["tool_definitions"][0]["description"] += " Edited."
+
+
+DEFINITION_FORGERIES: dict[str, tuple[str, Callable[[dict[str, Any]], None]]] = {
+    "changed_description": (THESIS_CALL, edit_description),
+    "missing_entry": (THESIS_CALL, lambda data: data["tool_definitions"].pop()),
+    "reordered": (THESIS_CALL, lambda data: data["tool_definitions"].reverse()),
+    "removed": (THESIS_CALL, lambda data: data.pop("tool_definitions")),
+    "added_with_tools": (
+        TAMPERED_CALL,
+        lambda data: data.update(tool_definitions=definitions_view((ETH,))),
+    ),
+}
+
+
+@pytest.mark.parametrize("forgery", DEFINITION_FORGERIES)
+def test_in_memory_result_rejects_forged_tool_definitions(forgery: str) -> None:
+    call_id, change = DEFINITION_FORGERIES[forgery]
+    result = run(ScriptedModel([tool(name) for name in SCRIPT]))
+    trace = list(result.trace)
+    index = next(
+        i
+        for i, r in enumerate(trace)
+        if isinstance(r, ModelCallRecord) and r.request.call_id == call_id
+    )
+    record = trace[index]
+    assert isinstance(record, ModelCallRecord)
+    assert bool(record.request.tools) == (call_id == TAMPERED_CALL)
+    trace[index] = record.model_copy(
+        update={"request": rerender(record.request, change)}
+    )
+    forged = {**dict(result), "trace": tuple(trace)}
+    with pytest.raises(ValidationError, match=DEFINITIONS_MISMATCH):
+        ResearchRunResult.model_validate(forged)
+    with pytest.raises(ValidationError, match=DEFINITIONS_MISMATCH):
+        ResearchRunResult.model_validate_json(
+            render_json({**result.model_dump(mode="json"), "trace": trace_json(trace)})
+        )
+
+
+@pytest.mark.parametrize("forgery", DEFINITION_FORGERIES)
+def test_journal_rejects_forged_tool_definitions(tmp_path: Path, forgery: str) -> None:
+    call_id, change = DEFINITION_FORGERIES[forgery]
+    store = ResearchStore(tmp_path / "r.sqlite")
+    model = ObservedModel([tool(name) for name in SCRIPT])
+    asyncio.run(
+        run_durable_opportunity_research(
+            OpportunityResearchRequest(
+                research_run_id="run-1", opportunity=opportunity()
+            ),
+            service(),
+            model,
+            workflow_config(model.provider),
+            store=store,
+            code=CODE,
+        )
+    )
+    sequence = next(
+        e.sequence
+        for e in store.inspect_run("run-1").events
+        if isinstance(e.event, ModelRequestPrepared)
+        and e.event.request.call_id == call_id
+    )
+
+    def forge(envelope: EventEnvelope) -> EventEnvelope:
+        assert isinstance(envelope.event, ModelRequestPrepared)
+        request = rerender(envelope.event.request, change)
+        return envelope.model_copy(
+            update={"event": envelope.event.model_copy(update={"request": request})}
+        )
+
+    rewrite(store, sequence, forge)
+    for load in (store.load_terminal, store.inspect_run):
+        with pytest.raises(ResearchStorageError) as raised:
+            load("run-1")
+        assert isinstance(raised.value.__cause__, ResearchValidationError)
+        assert str(raised.value.__cause__) == (
+            "request differs from accumulated context/policy"
+        )

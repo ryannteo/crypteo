@@ -81,6 +81,7 @@ from crypteo.research_tools import bind_tool_request, dispatch_tool, tool_defini
 from crypteo.research_validation import ResearchInvariantError as ResearchInvariantError
 from crypteo.research_validation import collected_evidence as collected_evidence
 from crypteo.research_validation import (
+    offers_tools,
     request_rejection,
     research_data,
     validate_stage_output,
@@ -248,7 +249,7 @@ class _ResearchRuntime:
                 state["context"].request.opportunity.pair,
                 state["context"].benchmarks,
             )
-            if stage == "investigate" and data["attempts_remaining"] > 0
+            if offers_tools(stage, data)
             else (),
             output_schema=structured_schema(stage),
             max_output_tokens=self.config.investigation_output_cap

@@ -193,6 +193,27 @@ def test_empty_reply_then_valid_reask_completes(stage: str) -> None:
 
 
 @pytest.mark.parametrize("stage", STAGES)
+def test_reask_carries_tool_definitions_only_without_tools(stage: str) -> None:
+    model = ScriptedModel(reask_steps(stage))
+    assert run(model).status == "COMPLETED"
+    index = 1 + STAGES.index(stage)
+    first, reask = model.requests[index], model.requests[index + 1]
+    assert "output_rejection" in data(reask)
+    offered = tool_definitions(opportunity().pair, (ETH,))
+    for request in (first, reask):
+        if stage == "investigate":
+            # One tool call precedes it, so seven attempts remain.
+            assert data(request)["attempts_remaining"] == 7
+            assert request.tools == offered
+            assert "tool_definitions" not in data(request)
+        else:
+            assert request.tools == ()
+            assert data(request)["tool_definitions"] == [
+                {"name": t.name, "description": t.description} for t in offered
+            ]
+
+
+@pytest.mark.parametrize("stage", STAGES)
 def test_empty_reask_interrupts_without_further_calls(stage: str) -> None:
     model = ScriptedModel(reask_steps(stage, empty(stage)))
     result = run(model)

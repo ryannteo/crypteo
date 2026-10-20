@@ -124,7 +124,7 @@ ending at `T`, including the current candle. Returns and distances are fractions
 | Volume context | 25 | Current base-asset volume `V0`, previous 24-bar mean `mean(V1..V24)`, and `volume_ratio = V0 / mean(V1..V24)`. |
 | Candle structure | 22 | Current `O0`, `H0`, `L0`, `C0`; `range = H0 - L0`; signed `body = C0 - O0`; `upper_wick = H0 - max(O0, C0)`; `lower_wick = min(O0, C0) - L0`; `body_fraction = abs(body) / range`, `upper_wick_fraction = upper_wick / range`, `lower_wick_fraction = lower_wick / range`, `close_location = (C0 - L0) / range`; `previous_mean_true_range = mean(TR1..TR20)`, seeded by `C21`; `range_vs_mean_true_range = range / previous_mean_true_range`. |
 | Higher timeframe | 600 | Sections `four_hour` (`block_hours = 4`) and `daily` (`block_hours = 24`), each from the last `25 * h` candles split into 25 consecutive `h`-hour blocks ending at `T` (block 0 newest; not calendar-aligned). Block close is its last candle's close, high the maximum high, low the minimum low. Per section, with `Bk` the close of block `k`: `close = B0`; `sma20 = mean(B0..B19)`; `previous_sma20 = mean(B5..B24)`; `close_vs_sma20 = close / sma20 - 1`; `sma20_change = sma20 / previous_sma20 - 1`; `close_5_blocks_ago = B5`; `return_5_blocks = close / close_5_blocks_ago - 1`; `range_high` and `range_low` are the highest high and lowest low of blocks 1..20; `range_high_distance = close / range_high - 1`; `range_low_distance = close / range_low - 1`. Both sections share `close`. |
-| Lower-band crossings | 720 | Window candles indexed `0..719` in time order (719 ends at `T`) with scanner-identical rolling Bollinger statistics computed over the window alone. A crossing is an index `i` with both `i - 1` and `i` statistics defined, `C(i-1) >= lower(i-1)` and `C(i) < lower(i)` (the scanner rule). It is a sample when `i + 6 <= 719`; otherwise it counts only in `pending_count`. Per sample: reached SMA20 when any `H(i+1..i+6) >= SMA20(i)`; `close_return = C(i+6) / C(i) - 1`; adverse excursion `min(L(i+1..i+6)) / C(i) - 1`; favorable excursion `max(H(i+1..i+6)) / C(i) - 1`. Payload: `lookback_bars = 720`, `horizon_bars = 6`, `sample_count`, `pending_count`, `reached_sma20_count`, `positive_close_count` (`close_return > 0`), their fractions of `sample_count`, and the mean, median (mean of the two middle values for an even count), minimum and maximum close return and the mean adverse and favorable excursions, all `null` exactly when `sample_count = 0`. |
+| Lower-band crossings | 720 | Window candles indexed `0..719` in time order (719 ends at `T`) with scanner-identical rolling Bollinger statistics computed over the window alone. A crossing is an index `i` with both `i - 1` and `i` statistics defined, `C(i-1) >= lower(i-1)` and `C(i) < lower(i)` (the scanner rule). It is a sample when `i + 6 <= 719`; otherwise its six outcome candles have not all closed by `T` and it counts only in `pending_count`, so a crossing at `i = 719` (the candle ending at `T`) is always pending. The tool description states this rule. Per sample: reached SMA20 when any `H(i+1..i+6) >= SMA20(i)`; `close_return = C(i+6) / C(i) - 1`; adverse excursion `min(L(i+1..i+6)) / C(i) - 1`; favorable excursion `max(H(i+1..i+6)) / C(i) - 1`. Payload: `lookback_bars = 720`, `horizon_bars = 6`, `sample_count`, `pending_count`, `reached_sma20_count`, `positive_close_count` (`close_return > 0`), their fractions of `sample_count`, and the mean, median (mean of the two middle values for an even count), minimum and maximum close return and the mean adverse and favorable excursions, all `null` exactly when `sample_count = 0`. |
 | Relative strength | 25 per market | Subject and benchmark simple returns `C0 / C6 - 1` and `C0 / C24 - 1`; each spread is subject return minus benchmark return at the same horizon. The payload names its `subject_pair` and `benchmark_pair`. |
 
 Volatility reuses existing `mean_true_range` for two non-overlapping sets of 20
@@ -569,7 +569,7 @@ Research settings/contracts live in
 dataset identities and matching source bindings, research settings, and research
 policy identity. It binds scanner, trade-terms, risk, execution, admission, and
 failure policies. Research policy contains the workflow and market-research
-versions, the model-request view (`model_view`, `compact_research_view_v1`),
+versions, the model-request view (`model_view`, `compact_research_view_v2`),
 configuration digest, prompt and structured-schema identities for each
 model stage, and tool-definition identities for every subject pair and every
 benchmark subset that pair can be offered: per pair in BTC, ETH, SOL order, no
@@ -1119,8 +1119,15 @@ Neither dispatches. Venue, timeframe, cutoff, and windows are runtime-owned.
 Each tool definition carries a fixed description of its window and measurements,
 ending with the shared statement that it reads completed Coinbase hourly candles
 visible at T and that venue, timeframe, window and cutoff are runtime-owned.
-Tool definitions are versioned `bounded_market_tools_v3`. A single-pair run is
-offered nine tools within its eight admitted tool attempts.
+Tool definitions are versioned `bounded_market_tools_v4`. A single-pair run is
+offered nine tools within its eight admitted tool attempts. Every request that
+offers no tools (thesis, critique, final assessment, and an investigation call
+with no attempts remaining, first asks and re-asks alike) instead carries
+`research_data.tool_definitions`: the run's tool definitions as read-only data,
+one `{name, description}` object per tool in offer order, with the full
+description including the shared suffix and the same relative-strength rule. A
+request that offers tools omits the key. The definitions document what the
+evidence windows measure; they grant no tool and no parameter.
 
 | Bound | Current policy |
 | --- | --- |
@@ -1142,7 +1149,7 @@ produce typed rejection feedback. The first invalid request allows another
 investigation response within remaining budgets. The second interrupts. A tool
 request after all admitted attempts are consumed interrupts with
 `TOOL_BUDGET_EXHAUSTED`; the investigator may instead complete on its ninth call.
-Investigation requests offer the tool definitions only while `attempts_remaining`
+Investigation requests offer tools only while `attempts_remaining`
 is positive. The final investigation call, when no tool attempts remain, offers
 no tools, so its only expected response is the structured completion; a tool
 request returned there anyway is still rejected unadmitted as
@@ -1265,15 +1272,18 @@ Only successful runtime-produced `EvidenceItem`s are citeable. Typed unavailable
 results are retained as missing evidence, not converted into `EvidenceItem`s.
 Collected evidence IDs are deduplicated with full-content consistency: an ID
 repeated with different content raises. Presentation order is capability order
-(trend, momentum, volatility, Bollinger position, levels, volume context, relative
-strength), then benchmark order, then evidence ID. Exact deterministic structured
-values are preserved in model context; Decimal values remain strings rather than
-being rounded or converted to binary floats. Raw candle datasets stay outside
-workflow state.
+(trend, momentum, volatility, Bollinger position, levels, volume context, candle
+structure, higher timeframe, lower-band crossings, relative strength), then
+benchmark order, then evidence ID. Exact deterministic structured values are
+preserved in model context; Decimal values remain strings rather than being
+rounded or converted to binary floats. Raw candle datasets stay outside workflow
+state.
 
-Model requests carry a compact view (`compact_research_view_v1`) of evidence and
-tool history; the trace and journal retain full `EvidenceItem` envelopes and
-`ToolRecord`s. Each successful evidence item appears, in presentation order, as
+Model requests carry a compact view (`compact_research_view_v2`) of evidence and
+tool history, plus the run's tool names and descriptions on every request that
+offers no tools (`tool_definitions`, see
+[Investigation policy and graph](#investigation-policy-and-graph)); the trace
+and journal retain full `EvidenceItem` envelopes and `ToolRecord`s. Each successful evidence item appears, in presentation order, as
 exactly `evidence_id`, `category`, `evidence_type`, `source`, `observed_at`,
 `available_at`, and the unchanged `payload`; provenance, summary, relevance and
 quality stay in the trace. The request history has one entry per tool record in
@@ -1284,7 +1294,9 @@ and `message`. A cache hit adds `cached_from_attempt`, the position of the
 earlier record it reuses; a cache link to no earlier record raises
 `ResearchInvariantError`. Queries, results, contexts and cache attempt IDs are
 not sent. Validation recomputes both views from the trace before each request
-and requires exact equality.
+and requires exact equality; retained-result validation also requires
+`tool_definitions` to equal the run's definitions exactly when a request offers
+no tools and to be absent when it offers tools.
 
 Investigation, thesis, and final assessment evidence references must belong to
 successful evidence collected in that run. Critique is structured textual content

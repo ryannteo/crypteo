@@ -110,8 +110,10 @@ bounded re-ask carrying code-computed problems; a failed re-ask interrupts.
 The investigator chooses among ten deterministic market capabilities, each
 described by a fixed statement of its window and measurements; relative strength
 is offered only against other pairs with a bound source, so a single-pair run
-sees nine tools. The tool adapter binds the opportunity's subject and allows
-only a relative-strength benchmark argument. Software enforces tool-attempt,
+sees nine tools. Stages offered no tools (synthesis, and the last investigation
+call once attempts are exhausted) receive the tool names and descriptions as
+read-only data instead. The tool adapter binds the opportunity's subject and
+allows only a relative-strength benchmark argument. Software enforces tool-attempt,
 invalid-request, model-call, output, provider-input, and deadline budgets. The
 graph recursion limit is a secondary guard. Exact limits live in the
 [specification](v1-specification.md#bounded-model-backed-research).
