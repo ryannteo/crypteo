@@ -55,7 +55,7 @@ def research_policy(configuration: ResearchWorkflowConfig) -> ResearchPolicyIden
         offers += [(pair, subset) for subset in ((), (a,), (b,), (a, b))]
     return ResearchPolicyIdentity(
         configuration_digest=identity(configuration),
-        prompts=tuple(prompt_identity(stage) for stage in stages),
+        prompts=tuple(prompt_identity(stage, "opportunity") for stage in stages),
         schemas=tuple(structured_schema(stage).identity for stage in stages),
         tools=tuple(
             SubjectToolIdentity(

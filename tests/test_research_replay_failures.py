@@ -39,6 +39,7 @@ from crypteo.domain.research_journal import (
     ResearchRunHeader,
 )
 from crypteo.domain.research_workflow import (
+    OpportunityResearchContext,
     OpportunityResearchRequest,
     ResearchWorkflowConfig,
 )
@@ -105,6 +106,7 @@ def test_provider_interruption_aborts_and_remains_inspectable(
     assert artifact.result.status == "INTERRUPTED"
     assert artifact.result.assessment_origin == "RUNTIME"
     assert artifact.result.assessment.outcome == "ABSTAIN"
+    assert isinstance(artifact.result.context, OpportunityResearchContext)
     opportunity = artifact.result.context.request.opportunity
     cfg = config(assets=(BTC, ETH), end=T + H)
     _, dataset_ids = _inputs(cfg.assets, [dataset(pair=p) for p in (BTC, ETH)])

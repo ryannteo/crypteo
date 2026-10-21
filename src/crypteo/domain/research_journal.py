@@ -17,7 +17,7 @@ from crypteo.domain.research_workflow import (
     ModelCallRecord,
     ModelRequestRejection,
     NodeTransition,
-    OpportunityResearchContext,
+    ResearchContext,
     ResearchFailure,
     ResearchRunResult,
     ResearchRunStatus,
@@ -38,7 +38,7 @@ Stage = Literal["investigate", "draft_thesis", "critique", "final_assessment"]
 
 class ResearchRunHeader(ModelContract):
     schema_version: Literal["1"] = "1"
-    context: OpportunityResearchContext
+    context: ResearchContext
     configuration: ResearchWorkflowConfig
     code: CodeIdentity
     provider: ProviderIdentity

@@ -23,7 +23,7 @@ from crypteo.domain.research_workflow import (
     InvestigationCompletion,
     ModelCallRecord,
     ModelRequestRejection,
-    OpportunityResearchContext,
+    ResearchContext,
     ResearchFailure,
     ResearchFailureCode,
     ResearchWorkflowConfig,
@@ -45,7 +45,7 @@ class ResearchValidationError(ValueError):
 
 
 def validate_trace_relationships(
-    context: OpportunityResearchContext,
+    context: ResearchContext,
     trace: tuple[TraceRecord, ...],
     failure: ResearchFailure | None = None,
 ) -> None:
@@ -378,7 +378,7 @@ def offers_tools(stage: str, data: Mapping[str, Any]) -> bool:
     return stage == "investigate" and data["attempts_remaining"] > 0
 
 
-def tool_definitions_view(context: OpportunityResearchContext) -> list[dict[str, Any]]:
+def tool_definitions_view(context: ResearchContext) -> list[dict[str, Any]]:
     """The run's tool names and descriptions, in offer order, as read-only data."""
     return [
         {"name": t.name, "description": t.description}
@@ -387,7 +387,7 @@ def tool_definitions_view(context: OpportunityResearchContext) -> list[dict[str,
 
 
 def research_data(
-    context: OpportunityResearchContext,
+    context: ResearchContext,
     trace: tuple[TraceRecord, ...],
     configuration: ResearchWorkflowConfig,
     stage: str,

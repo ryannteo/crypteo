@@ -336,8 +336,8 @@ class JournalProjection:
             call_id=request.call_id,
             stage=request.stage,
             configuration=config.model,
-            messages=prompt_messages(request.stage, data),
-            prompt_identity=prompt_identity(request.stage),
+            messages=prompt_messages(request.stage, data, context.entry),
+            prompt_identity=prompt_identity(request.stage, context.entry),
             tools=tool_definitions(context.subject, context.benchmarks)
             if offers_tools(request.stage, data)
             else (),

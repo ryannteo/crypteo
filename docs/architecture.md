@@ -101,7 +101,9 @@ through those common contracts.
 
 ## Model-backed research
 
-`run_opportunity_research` compiles a five-node typed LangGraph workflow:
+`run_opportunity_research` and `run_trader_research` (and their durable
+counterparts) build a research context and run one shared private workflow, which
+compiles a five-node typed LangGraph graph:
 `investigate --tool request--> execute_tool --result--> investigate`;
 only investigation completion advances through
 `investigate --complete--> draft_thesis → critique → final_assessment`.
@@ -112,8 +114,9 @@ described by a fixed statement of its window and measurements; relative strength
 is offered only against other pairs with a bound source, so a single-pair run
 sees nine tools. Stages offered no tools (synthesis, and the last investigation
 call once attempts are exhausted) receive the tool names and descriptions as
-read-only data instead. The tool adapter binds the opportunity's subject and
-allows only a relative-strength benchmark argument. Software enforces tool-attempt,
+read-only data instead. The tool adapter binds the context's subject (the
+opportunity's pair, or the trader's structured `pair`) and allows only a
+relative-strength benchmark argument. Software enforces tool-attempt,
 invalid-request, model-call, output, provider-input, and deadline budgets. The
 graph recursion limit is a secondary guard. Exact limits live in the
 [specification](v1-specification.md#bounded-model-backed-research).
@@ -131,8 +134,8 @@ digests. The adapter's observable invocation boundary exposes client-visible
 HTTP entity bytes before project decoding; durable hooks persist those
 observations separately from normalized project-owned replies.
 
-The runtime captures one research time from the executing `MarketResearchService`
-and requires the opportunity's observation time to match it. The service binds
+The runtime captures one research time from the executing `MarketResearchService`;
+opportunity-led runs also require the opportunity's observation time to match it. The service binds
 all reads to its authoritative gateway; models cannot choose cutoffs or windows.
 Clock checks surround model/tool/cache boundaries and return. Replay checks T again
 after durable publication/loading before financial preparation; awaiting inference
@@ -294,10 +297,19 @@ Exact contracts live in the
 
 ## Research extension boundary
 
-Opportunity-led model research is implemented. Future trader-led interactive
-research should converge on the same evidence, thesis, critique, and assessment
-engine; deterministic tools already operate without requiring an `Opportunity`.
-Research assessment stays separate from deterministic authorization.
+Two entries share one evidence, thesis, critique, and assessment engine
+([ADR-014](decisions/ADR-014-trader-led-research.md)). Opportunity-led research
+starts from a scanner `Opportunity`. Standalone trader-led research starts from a
+`TraderResearchRequest`: a run ID, a supported pair and a question. The question
+is untrusted data in the model's context, never evidence or a binding, and the run
+assesses only a LONG position in that pair at T. `OpportunityResearchContext` and
+`TraderResearchContext` form one discriminated `ResearchContext`; workflow, journal
+and validation code read the subject pair and entry kind from it, and prompts are
+chosen by entry. Trader-led prompts use their own shared policy and versions;
+opportunity-led prompts and replay policy identity are unchanged. Replay admission
+rejects trader-led artifacts, so they never reach evaluation. Interactive chat,
+follow-ups, memory, live mode, and short or neutral assessments are not
+implemented. Research assessment stays separate from deterministic authorization.
 
 Future research domains should emit normalized evidence. Sources require credible
 historical availability to be replay safe; live-only sources cannot enter historical

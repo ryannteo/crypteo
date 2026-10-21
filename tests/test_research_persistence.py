@@ -124,14 +124,15 @@ def test_completed_exact_reload(tmp_path: Path, outcome: str) -> None:
         ).fetchone() == (1,)
 
 
+def opportunity_request(run_id: str = "run-1") -> OpportunityResearchRequest:
+    return OpportunityResearchRequest(research_run_id=run_id, opportunity=opportunity())
+
+
 def header(run_id: str = "run-1") -> ResearchRunHeader:
     svc = service()
-    request = OpportunityResearchRequest(
-        research_run_id=run_id, opportunity=opportunity()
-    )
     return ResearchRunHeader(
         context=OpportunityResearchContext(
-            request=request,
+            request=opportunity_request(run_id),
             research_at=svc.now,
             benchmarks=(ETH,),
             source_bindings=svc.source_bindings,
@@ -565,7 +566,7 @@ def test_exact_raw_body_commits_before_decoder(
 
     artifact = anthropic_research(
         lambda request: httpx2.Response(status, content=body),
-        header().context.request,
+        opportunity_request(),
         store,
     )
     monkeypatch.setattr(adapter, "decode_response_entity", original)
@@ -731,7 +732,7 @@ def test_observation_storage_error_stops_decoder(
     with pytest.raises(ResearchStorageError):
         anthropic_research(
             lambda request: httpx2.Response(200, content=b"{}"),
-            header().context.request,
+            opportunity_request(),
             store,
         )
     inspection = store.inspect_run("run-1")
@@ -980,7 +981,7 @@ def test_claude_completed_observed_body_reconciliation(tmp_path: Path) -> None:
 
     artifact = anthropic_research(
         lambda request: httpx2.Response(200, content=remaining.pop(0)),
-        header().context.request,
+        opportunity_request(),
         store,
     )
     assert artifact.result.status == "COMPLETED"

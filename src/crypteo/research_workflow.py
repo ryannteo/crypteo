@@ -1,4 +1,4 @@
-"""Five-node bounded opportunity research, isolated from trading and replay."""
+"""Five-node bounded research, isolated from trading and replay."""
 
 import asyncio
 import json
@@ -48,6 +48,7 @@ from crypteo.domain.research_workflow import (
     NodeTransition,
     OpportunityResearchContext,
     OpportunityResearchRequest,
+    ResearchContext,
     ResearchFailure,
     ResearchFailureCode,
     ResearchRunResult,
@@ -56,6 +57,8 @@ from crypteo.domain.research_workflow import (
     ToolRecord,
     ToolRejection,
     TraceRecord,
+    TraderResearchContext,
+    TraderResearchRequest,
     _abstention_reason,
 )
 from crypteo.experiment import CodeIdentity, current_code_identity
@@ -104,7 +107,7 @@ def _cancel_and_observe(task: asyncio.Task[ModelReply]) -> None:
 
 
 class ResearchState(TypedDict):
-    context: OpportunityResearchContext
+    context: ResearchContext
     trace: tuple[TraceRecord, ...]
     action: ToolReply | None
     investigation: InvestigationCompletion | None
@@ -242,8 +245,8 @@ class _ResearchRuntime:
             call_id=call_id,
             stage=stage,
             configuration=self.config.model,
-            messages=prompt_messages(stage, data),
-            prompt_identity=prompt_identity(stage),
+            messages=prompt_messages(stage, data, state["context"].entry),
+            prompt_identity=prompt_identity(stage, state["context"].entry),
             # Code owns the tool budget: offer no tool the model may not use.
             tools=tool_definitions(
                 state["context"].subject,
@@ -648,39 +651,50 @@ class _ResearchRuntime:
         return {**state, "trace": state["trace"] + (record,)}
 
 
+type _Request = OpportunityResearchRequest | TraderResearchRequest
+
+
 def _research_inputs(
-    request: OpportunityResearchRequest,
+    kind: type[_Request],
+    request: _Request,
     service: MarketResearchService,
     model: ResearchModel,
     configuration: ResearchWorkflowConfig,
-) -> tuple[
-    OpportunityResearchRequest,
-    ResearchWorkflowConfig,
-    ProviderIdentity,
-    OpportunityResearchContext,
-]:
-    request = OpportunityResearchRequest.model_validate(request)
+) -> tuple[ResearchWorkflowConfig, ProviderIdentity, ResearchContext]:
+    """Validate ``request`` as its entry point's ``kind`` and bind it to T."""
+    request = kind.model_validate(request)
     configuration = ResearchWorkflowConfig.model_validate(configuration)
     provider = ProviderIdentity.model_validate(model.identity)
     if provider.provider != configuration.model.provider:
         raise ValueError("configured provider differs from model adapter")
     bindings = service.source_bindings
     bound_pairs = {binding.pair for binding in bindings}
-    context = OpportunityResearchContext(
-        request=request,
-        research_at=service.now,
-        benchmarks=tuple(
-            p
-            for p in BENCHMARK_ORDER
-            if p != request.opportunity.pair and p in bound_pairs
-        ),
-        source_bindings=bindings,
+    subject = (
+        request.opportunity.pair
+        if isinstance(request, OpportunityResearchRequest)
+        else request.pair
     )
-    return request, configuration, provider, context
+    benchmarks = tuple(p for p in BENCHMARK_ORDER if p != subject and p in bound_pairs)
+    context: ResearchContext
+    if isinstance(request, OpportunityResearchRequest):
+        context = OpportunityResearchContext(
+            request=request,
+            research_at=service.now,
+            benchmarks=benchmarks,
+            source_bindings=bindings,
+        )
+    else:
+        context = TraderResearchContext(
+            request=request,
+            research_at=service.now,
+            benchmarks=benchmarks,
+            source_bindings=bindings,
+        )
+    return configuration, provider, context
 
 
-async def _run_opportunity_research(
-    context: OpportunityResearchContext,
+async def _run_research(
+    context: ResearchContext,
     service: MarketResearchService,
     model: ResearchModel,
     configuration: ResearchWorkflowConfig,
@@ -843,10 +857,27 @@ async def run_opportunity_research(
     code: CodeIdentity | None = None,
 ) -> ResearchRunResult:
     """Existing in-memory research entrypoint; no persistence is implied."""
-    _, configuration, provider, context = _research_inputs(
-        request, service, model, configuration
+    configuration, provider, context = _research_inputs(
+        OpportunityResearchRequest, request, service, model, configuration
     )
-    return await _run_opportunity_research(
+    return await _run_research(
+        context, service, model, configuration, provider, code=code
+    )
+
+
+async def run_trader_research(
+    request: TraderResearchRequest,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    *,
+    code: CodeIdentity | None = None,
+) -> ResearchRunResult:
+    """Standalone trader-led research in memory; never enters replay/evaluation."""
+    configuration, provider, context = _research_inputs(
+        TraderResearchRequest, request, service, model, configuration
+    )
+    return await _run_research(
         context, service, model, configuration, provider, code=code
     )
 
@@ -861,10 +892,52 @@ async def run_durable_opportunity_research(
     code: CodeIdentity | None = None,
 ) -> ResearchArtifact:
     """Commit lifecycle boundaries and atomically publish; never resume or retry."""
+    return await _run_durable_research(
+        OpportunityResearchRequest,
+        request,
+        service,
+        model,
+        configuration,
+        store=store,
+        code=code,
+    )
+
+
+async def run_durable_trader_research(
+    request: TraderResearchRequest,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    *,
+    store: ResearchStore,
+    code: CodeIdentity | None = None,
+) -> ResearchArtifact:
+    """Durable standalone trader-led research; never enters replay/evaluation."""
+    return await _run_durable_research(
+        TraderResearchRequest,
+        request,
+        service,
+        model,
+        configuration,
+        store=store,
+        code=code,
+    )
+
+
+async def _run_durable_research(
+    kind: type[_Request],
+    request: _Request,
+    service: MarketResearchService,
+    model: ResearchModel,
+    configuration: ResearchWorkflowConfig,
+    *,
+    store: ResearchStore,
+    code: CodeIdentity | None,
+) -> ResearchArtifact:
     if not isinstance(model, ObservableResearchModel):
         raise ValueError("durable research requires a provider observation boundary")
-    _, configuration, provider, context = _research_inputs(
-        request, service, model, configuration
+    configuration, provider, context = _research_inputs(
+        kind, request, service, model, configuration
     )
     header = ResearchRunHeader(
         context=context,
@@ -875,7 +948,7 @@ async def run_durable_opportunity_research(
     )
     journal = store.create_run(header)
     try:
-        result = await _run_opportunity_research(
+        result = await _run_research(
             context,
             service,
             model,

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from research_support import (
     ScriptedModel,
     T,
@@ -23,11 +23,14 @@ from crypteo.domain.research_workflow import (
     OpportunityResearchContext,
     OpportunityResearchRequest,
     ResearchBudgetPolicy,
+    ResearchContext,
     ResearchFailure,
     ResearchFailureCode,
     ResearchRunResult,
     ResearchWorkflowConfig,
     ToolRecord,
+    TraderResearchContext,
+    TraderResearchRequest,
 )
 from crypteo.research_model import ModelConfiguration, RefusalReply
 from crypteo.research_workflow import ResearchState, _failure
@@ -305,6 +308,7 @@ def test_run_relational_corruption_rejected_on_every_input_path(
         case "cache_id":
             attempts[1]["cached_from"] = "foreign/tool/0001"
         case "foreign_tool_trace":
+            assert isinstance(cached_result.context, OpportunityResearchContext)
             other = run(
                 ScriptedModel([tool()]),
                 request=cached_result.context.request.model_copy(
@@ -374,3 +378,186 @@ def test_context_subject_is_read_only() -> None:
     with pytest.raises(ValidationError, match="frozen"):
         context.subject = TradingPair.ETH_USD  # type: ignore[misc]
     assert context.subject == TradingPair.BTC_USD
+
+
+def trader_context(pair: TradingPair = TradingPair.BTC_USD) -> TraderResearchContext:
+    svc = service(pairs=BENCHMARK_ORDER)
+    return TraderResearchContext(
+        request=TraderResearchRequest(
+            research_run_id="run-1", pair=pair, question="Is a long supported?"
+        ),
+        research_at=svc.now,
+        benchmarks=tuple(p for p in BENCHMARK_ORDER if p != pair),
+        source_bindings=svc.source_bindings,
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"question": ""},
+        {"question": " \n\t"},
+        {"question": "x" * 2001},
+        {"question": 7},
+        {"pair": "DOGE-USD"},
+        {"pair": "BTC-EUR"},
+        {"research_run_id": " "},
+        {"direction": "SHORT"},
+        {"research_at": T.isoformat()},
+    ],
+)
+def test_trader_request_rejects_invalid_fields(change: dict[str, Any]) -> None:
+    valid = {"research_run_id": "run-1", "pair": "BTC-USD", "question": "Long?"}
+    with pytest.raises(ValidationError):
+        TraderResearchRequest.model_validate(valid | change)
+
+
+def test_trader_request_accepts_a_2000_character_question() -> None:
+    request = TraderResearchRequest(
+        research_run_id="run-1", pair=TradingPair.SOL_USD, question="q" * 2000
+    )
+    assert len(request.question) == 2000
+    assert set(TraderResearchRequest.model_fields) == {
+        "research_run_id",
+        "pair",
+        "question",
+    }
+
+
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        (
+            lambda c: {"source_bindings": c["source_bindings"][::-1]},
+            "source bindings must be unique and canonically ordered",
+        ),
+        (
+            lambda c: {"source_bindings": c["source_bindings"][:1] * 2},
+            "source bindings must be unique and canonically ordered",
+        ),
+        (
+            lambda c: {"benchmarks": c["benchmarks"][::-1]},
+            "benchmarks must be every other pair with a bound source, in order",
+        ),
+        (
+            lambda c: {"benchmarks": c["benchmarks"][:1]},
+            "benchmarks must be every other pair with a bound source, in order",
+        ),
+        (
+            lambda c: {"benchmarks": ["BTC-USD", *c["benchmarks"]]},
+            "benchmarks must be every other pair with a bound source, in order",
+        ),
+    ],
+)
+@pytest.mark.parametrize("kind", ["opportunity", "trader"])
+def test_both_contexts_share_binding_and_benchmark_errors(
+    kind: str, change: Any, message: str
+) -> None:
+    context: OpportunityResearchContext | TraderResearchContext = (
+        research_context(TradingPair.BTC_USD)
+        if kind == "opportunity"
+        else trader_context()
+    )
+    data = context.model_dump()
+    with pytest.raises(ValidationError, match=message):
+        type(context).model_validate(data | change(data))
+
+
+def test_trader_context_has_no_time_check_beyond_hourly_t() -> None:
+    data = trader_context().model_dump()
+    later = T + timedelta(days=400)
+    assert TraderResearchContext.model_validate(data | {"research_at": later})
+    with pytest.raises(ValidationError):
+        TraderResearchContext.model_validate(
+            data | {"research_at": T + timedelta(minutes=1)}
+        )
+
+
+@pytest.mark.parametrize("pair", list(TradingPair))
+def test_context_subject_and_entry(pair: TradingPair) -> None:
+    opportunity_led, trader_led = research_context(pair), trader_context(pair)
+    assert (opportunity_led.subject, opportunity_led.entry) == (pair, "opportunity")
+    assert (trader_led.subject, trader_led.entry) == (pair, "trader")
+    assert vars(TraderResearchContext)["subject"].__doc__ == (
+        vars(OpportunityResearchContext)["subject"].__doc__
+    )
+
+
+@pytest.mark.parametrize("kind", [OpportunityResearchContext, TraderResearchContext])
+def test_subject_and_entry_are_plain_unserialized_properties(
+    kind: type[OpportunityResearchContext | TraderResearchContext],
+) -> None:
+    context = (
+        research_context(TradingPair.BTC_USD)
+        if kind is OpportunityResearchContext
+        else trader_context()
+    )
+    schema = kind.model_json_schema()
+    for name in ("subject", "entry"):
+        assert isinstance(vars(kind)[name], property)
+        assert name not in context.model_dump()
+        assert name not in context.model_dump(mode="json")
+        assert name not in schema["properties"]
+    assert kind.model_computed_fields == {}
+    assert set(context.model_dump()) == {
+        "request",
+        "research_at",
+        "benchmarks",
+        "source_bindings",
+    }
+
+
+_CONTEXT: TypeAdapter[OpportunityResearchContext | TraderResearchContext] = TypeAdapter(
+    ResearchContext
+)
+
+
+def test_union_parses_each_context_from_its_stored_json() -> None:
+    for context in (research_context(TradingPair.ETH_USD), trader_context()):
+        raw = context.model_dump_json()
+        parsed = _CONTEXT.validate_json(raw)
+        assert type(parsed) is type(context) and parsed == context
+        assert _CONTEXT.dump_json(parsed) == raw.encode()
+        assert _CONTEXT.validate_python(context.model_dump()) == context
+        assert _CONTEXT.validate_python(context) == context
+        assert type(context).model_validate(context.model_dump()) == context
+
+
+def test_union_rejects_json_with_neither_or_mismatched_request_keys() -> None:
+    opportunity_led = research_context(TradingPair.BTC_USD).model_dump()
+    trader_led = trader_context().model_dump()
+    neither = opportunity_led | {"request": {"research_run_id": "run-1"}}
+    both = trader_led | {
+        "request": trader_led["request"]
+        | {"opportunity": opportunity_led["request"]["opportunity"]}
+    }
+    invalid: tuple[object, ...] = (neither, both, {"benchmarks": []}, None, "trader")
+    for data in invalid:
+        with pytest.raises(ValidationError):
+            _CONTEXT.validate_python(data)
+    with pytest.raises(ValidationError, match="Unable to extract tag"):
+        _CONTEXT.validate_json(
+            json.dumps(
+                research_context(TradingPair.BTC_USD).model_dump(mode="json")
+                | {"request": {"research_run_id": "run-1"}}
+            )
+        )
+
+
+def test_result_union_round_trips_both_contexts(
+    cached_result: ResearchRunResult,
+) -> None:
+    trader_led = trader_context()
+    data = cached_result.model_dump(mode="json")
+    assert type(ResearchRunResult.model_validate_json(json.dumps(data)).context) is (
+        OpportunityResearchContext
+    )
+    assert (
+        ResearchRunResult.model_validate_json(cached_result.model_dump_json())
+        == cached_result
+    )
+    with pytest.raises(ValidationError):
+        # Every retained request renders its run's context; a swap is rejected.
+        ResearchRunResult.model_validate_json(
+            json.dumps(data | {"context": trader_led.model_dump(mode="json")})
+        )

@@ -1,9 +1,17 @@
-"""Immutable opportunity-led workflow inputs, retained policy, and audit records."""
+"""Immutable research workflow inputs, retained policy, and audit records."""
 
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    Discriminator,
+    Field,
+    Tag,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from crypteo.domain.market import TradingPair
 from crypteo.domain.market_research import (
@@ -40,10 +48,18 @@ BENCHMARK_ORDER = (
     TradingPair.SOL_USD,
 )
 
+ResearchEntry = Literal["opportunity", "trader"]
+
 
 class OpportunityResearchRequest(ModelContract):
     research_run_id: NonBlankText
     opportunity: Opportunity
+
+
+class TraderResearchRequest(ModelContract):
+    research_run_id: NonBlankText
+    pair: TradingPair
+    question: Annotated[NonBlankText, Field(max_length=2000)]
 
 
 class ResearchBudgetPolicy(ModelContract):
@@ -93,6 +109,20 @@ class ResearchWorkflowConfig(ModelContract):
         return value
 
 
+def _validate_sources(
+    subject: TradingPair,
+    benchmarks: tuple[TradingPair, ...],
+    source_bindings: tuple[MarketSourceBinding, ...],
+) -> None:
+    pairs = tuple(s.pair for s in source_bindings)
+    if pairs != tuple(p for p in BENCHMARK_ORDER if p in pairs):
+        raise ValueError("source bindings must be unique and canonically ordered")
+    if benchmarks != tuple(p for p in BENCHMARK_ORDER if p != subject and p in pairs):
+        raise ValueError(
+            "benchmarks must be every other pair with a bound source, in order"
+        )
+
+
 class OpportunityResearchContext(ModelContract):
     request: OpportunityResearchRequest
     research_at: HourlyDatetime
@@ -104,21 +134,64 @@ class OpportunityResearchContext(ModelContract):
         """The pair this run researches; runtime-bound, never model-chosen."""
         return self.request.opportunity.pair
 
+    @property
+    def entry(self) -> ResearchEntry:
+        return "opportunity"
+
     @model_validator(mode="after")
     def validate_context(self) -> Self:
         opportunity, now = self.request.opportunity, self.research_at
         if opportunity.observed_at != now or opportunity.available_at > now:
             raise ValueError("opportunity must be current and available at research T")
-        pairs = tuple(s.pair for s in self.source_bindings)
-        if pairs != tuple(p for p in BENCHMARK_ORDER if p in pairs):
-            raise ValueError("source bindings must be unique and canonically ordered")
-        if self.benchmarks != tuple(
-            p for p in BENCHMARK_ORDER if p != opportunity.pair and p in pairs
-        ):
-            raise ValueError(
-                "benchmarks must be every other pair with a bound source, in order"
-            )
+        _validate_sources(opportunity.pair, self.benchmarks, self.source_bindings)
         return self
+
+
+class TraderResearchContext(ModelContract):
+    request: TraderResearchRequest
+    research_at: HourlyDatetime
+    benchmarks: tuple[TradingPair, ...]
+    source_bindings: tuple[MarketSourceBinding, ...]
+
+    @property
+    def subject(self) -> TradingPair:
+        """The pair this run researches; runtime-bound, never model-chosen."""
+        return self.request.pair
+
+    @property
+    def entry(self) -> ResearchEntry:
+        return "trader"
+
+    @model_validator(mode="after")
+    def validate_context(self) -> Self:
+        _validate_sources(self.request.pair, self.benchmarks, self.source_bindings)
+        return self
+
+
+def _context_entry(context: Any) -> ResearchEntry | None:
+    """Select the context kind from its request's fields; adds nothing to dumps."""
+    request = (
+        context.get("request")
+        if isinstance(context, Mapping)
+        else getattr(context, "request", None)
+    )
+    fields = (
+        request
+        if isinstance(request, Mapping)
+        else getattr(type(request), "model_fields", {})
+    )
+    if "opportunity" in fields:
+        return "opportunity"
+    if "question" in fields:
+        return "trader"
+    return None
+
+
+ResearchContext = Annotated[
+    Annotated[OpportunityResearchContext, Tag("opportunity")]
+    | Annotated[TraderResearchContext, Tag("trader")],
+    Discriminator(_context_entry),
+]
 
 
 class InvestigationCompletion(ModelContract):
@@ -253,7 +326,7 @@ class AssessmentOrigin(StrEnum):
 class ResearchRunResult(ModelContract):
     status: ResearchRunStatus
     assessment_origin: AssessmentOrigin
-    context: OpportunityResearchContext
+    context: ResearchContext
     configuration: ResearchWorkflowConfig
     code: CodeIdentity
     provider: ProviderIdentity

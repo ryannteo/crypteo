@@ -44,6 +44,7 @@ from crypteo.domain.research_workflow import (
     ModelCallRecord,
     ModelRequestRejection,
     NodeTransition,
+    OpportunityResearchContext,
     OpportunityResearchRequest,
     ResearchFailureCode,
     ResearchRunResult,
@@ -217,7 +218,7 @@ def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> No
         INVESTIGATION_INSTRUCTIONS
     )
     assert "no tools are offered; return" in final.messages[0].content
-    assert final.prompt_identity == prompt_identity("investigate")
+    assert final.prompt_identity == prompt_identity("investigate", "opportunity")
     assert final.prompt_identity.version == "investigate_prompt_v4"
     assert all(r.tools == () for r in model.requests[9:])
 
@@ -239,7 +240,7 @@ def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -
         INVESTIGATION_INSTRUCTIONS
     )
     assert "summary must be a nonblank synthesis" in final.messages[0].content
-    assert final.prompt_identity == prompt_identity("investigate")
+    assert final.prompt_identity == prompt_identity("investigate", "opportunity")
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert result.failure is not None
     assert result.failure.code == ResearchFailureCode.INVALID_MODEL_OUTPUT
@@ -1166,6 +1167,8 @@ def test_fresh_run_ids_are_explicit_and_distinct_for_same_context() -> None:
             research_run_id="fresh-2", opportunity=opportunity()
         ),
     )
+    assert isinstance(first.context, OpportunityResearchContext)
+    assert isinstance(second.context, OpportunityResearchContext)
     assert first.context.request.opportunity == second.context.request.opportunity
     assert collected_evidence(first.trace) == collected_evidence(second.trace)
     assert isinstance(second.trace[1], ModelCallRecord)

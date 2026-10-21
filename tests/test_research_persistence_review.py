@@ -23,7 +23,12 @@ from research_support import (
     workflow_config,
 )
 from test_anthropic_research import envelope, invoke, text
-from test_research_persistence import ObservedModel, execute, header
+from test_research_persistence import (
+    ObservedModel,
+    execute,
+    header,
+    opportunity_request,
+)
 
 import crypteo.research_persistence as persistence
 import crypteo.research_workflow as workflow
@@ -136,7 +141,7 @@ def test_f2_live_and_reconstruction_share_strict_utf8(
         calls += 1
         return response
 
-    artifact = anthropic_research(transport, header().context.request, store)
+    artifact = anthropic_research(transport, opportunity_request(), store)
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
     result = artifact.result
     if valid:
@@ -255,7 +260,7 @@ def test_f3_scheduled_provider_checks_deadline_before_invocation(
     async def scenario() -> ResearchRunResult:
         async with anthropic_client(transport) as client:
             artifact = await workflow.run_durable_opportunity_research(
-                header().context.request,
+                opportunity_request(),
                 service(),
                 CountingClaudeModel(client),
                 workflow_config("anthropic"),

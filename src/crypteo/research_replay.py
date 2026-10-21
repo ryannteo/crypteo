@@ -26,7 +26,10 @@ from crypteo.domain.replay_research import (
 )
 from crypteo.domain.research import Opportunity
 from crypteo.domain.research_journal import ResearchArtifact
-from crypteo.domain.research_workflow import OpportunityResearchRequest
+from crypteo.domain.research_workflow import (
+    OpportunityResearchContext,
+    OpportunityResearchRequest,
+)
 from crypteo.experiment import (
     CodeIdentity,
     ReplayConfig,
@@ -129,6 +132,8 @@ def _admit_artifact(
     """Replay association only; the caller must first use store.load_terminal()."""
     result = artifact.result
     context = result.context
+    if not isinstance(context, OpportunityResearchContext):
+        raise ResearchAdmissionError("trader-led research cannot enter replay")
     opportunity = Opportunity.model_validate(opportunity)
     retained_opportunity = Opportunity.model_validate(context.request.opportunity)
     candidate_digest = opportunity_context_digest(opportunity)

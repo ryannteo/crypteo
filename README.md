@@ -21,9 +21,11 @@ The repository implements deterministic foundations and bounded AI research:
 - Ten deterministic market-research tools producing point-in-time evidence:
   trend, momentum, volatility, Bollinger position, recent levels, volume context,
   candle structure, higher timeframe, lower-band crossings, and relative strength.
-- Bounded opportunity-led model research: the model chooses deterministic tools,
-  then produces a structured thesis, a separate critique, and a final research
-  assessment. A Claude adapter implements the provider boundary; see the
+- Bounded model research, led either by a scanner opportunity or by a trader's
+  question about a LONG in one pair: the model chooses deterministic tools, then
+  produces a structured thesis, a separate critique, and a final research
+  assessment. Trader-led runs are standalone and never enter replay or
+  evaluation. A Claude adapter implements the provider boundary; see the
   [workflow specification](docs/v1-specification.md#bounded-model-backed-research).
 - Durable research lifecycle persistence in SQLite, retaining provider observations,
   tool resolutions, and stage outputs with immutable terminal research artifacts.
@@ -72,9 +74,9 @@ artifacts improve reproducibility without resolving that limitation.
   OHLCV candles in UTC; LONG positions only.
 - Market-derived research and one shared deterministic scanner and financial
   lifecycle across replay modes.
-- One bounded opportunity-led research workflow is implemented. Trader-led
-  interactive research/chat, live mode, UI, non-market research, specialist agents,
-  and memory/RAG are deferred.
+- One bounded research workflow serves opportunity-led and standalone trader-led
+  research. Interactive research/chat, live mode, UI, non-market research,
+  specialist agents, and memory/RAG are deferred.
 - No integrated evaluation/reporting harness, statistical model-performance
   evaluation, or automatic replay crash resume. A paired baseline/research
   comparison artifact, a mechanical single-candidate evaluation window planner,
@@ -157,8 +159,17 @@ is async and requires an explicit research-run ID, a current `Opportunity`, and 
 `MarketResearchService` whose authoritative clock matches the opportunity's
 observation time. It returns a validated in-memory `ResearchRunResult`.
 
+`run_trader_research(request, service, model, configuration)` is the trader-led
+counterpart. A `TraderResearchRequest` supplies a research-run ID, a supported
+`pair` and a `question` of at most 2,000 characters. The same bounded workflow
+assesses only whether a LONG position in that pair at the service's current time
+is supported; the question is untrusted data, never evidence. Trader-led results,
+in memory or durable, never enter replay or evaluation: replay admission rejects
+them.
+
 `run_durable_opportunity_research(request, service, model, configuration, *, store=...)`
-uses the same bounded workflow with lifecycle events committed to SQLite. Supply
+and `run_durable_trader_research(request, service, model, configuration, *, store=...)`
+use the same bounded workflow with lifecycle events committed to SQLite. Supply
 `crypteo.research_persistence.ResearchStore(path)` with a caller-owned database path
 in an existing writable directory and an adapter supporting provider observation,
 such as `AnthropicResearchModel`. Completed or operationally interrupted runs publish
