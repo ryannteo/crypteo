@@ -1,6 +1,6 @@
-# Crypteo V1 Behavioral Specification
+# Crypteo Behavioral Specification
 
-This is the authoritative specification of current V1 behavior at HEAD. The
+This is the authoritative specification of current behavior at HEAD. The
 [architecture overview](architecture.md) explains component boundaries; the
 [data pipeline](data-pipeline.md) defines acquisition and storage semantics.
 Durable architectural changes require an [ADR](decisions/README.md).

@@ -5,7 +5,7 @@ research platform with canonical market data, controlled historical visibility,
 deterministic opportunity discovery and evidence, bounded model-backed research,
 and deterministic simulated trade terms, risk, execution, accounting, and shared
 baseline/fresh/frozen historical replay. The [README](../README.md) describes the
-product; the [V1 specification](v1-specification.md) defines exact behavioral
+product; the [behavioral specification](v1-specification.md) defines exact behavioral
 semantics.
 
 ## Component flow

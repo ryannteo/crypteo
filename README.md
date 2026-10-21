@@ -38,6 +38,17 @@ The repository implements deterministic foundations and bounded AI research:
 - Mandatory durable research journaling and an explicit positive research-run cap
   for fresh replay; strict provenance-compatible frozen reproduction.
 
+## V2 release run
+
+V2 was verified end to end at the `v2.0.0` tag on the same Coinbase data and
+candidate as the V1 release. A fresh download reproduced V1's dataset versions
+exactly. Claude Opus 5.5 assessed the scanner candidate in an evaluation window,
+and an exact frozen reproduction with no API key matched it. The same hour was
+also researched from a trader's question, on Opus and on Haiku. All three runs
+returned NO_TRADE, and a fresh clone of the tag reproduced their code identity.
+These are three decisions on one candidate, not a performance result. See the
+[release-run record](docs/releases/v2.0.0.md).
+
 ## V1 release run
 
 V1 was verified end to end at the `v1.0.0` tag on real Coinbase Exchange hourly
@@ -68,7 +79,7 @@ historically pure: fresh replay is auditable and point-in-time data-controlled,
 but lacks a purely deterministic strategy's historical-purity guarantee. Frozen
 artifacts improve reproducibility without resolving that limitation.
 
-## V1 scope
+## Scope
 
 - Coinbase Exchange spot: `BTC-USD`, `ETH-USD`, and `SOL-USD`; completed 1-hour
   OHLCV candles in UTC; LONG positions only.
@@ -225,11 +236,13 @@ ADRs preserve rationale for durable architectural decisions.
 Git preserves implementation history.
 
 - [Architecture](docs/architecture.md): current components, boundaries, and flow.
-- [V1 specification](docs/v1-specification.md): authoritative behavioral contracts,
-  formulas, temporal rules, risk, execution, and replay semantics.
+- [Behavioral specification](docs/v1-specification.md): authoritative behavioral
+  contracts, formulas, temporal rules, risk, execution, and replay semantics.
 - [Data pipeline](docs/data-pipeline.md): Coinbase acquisition, identity,
   provenance, persistence, and failure behavior.
 - [ADRs](docs/decisions/README.md): durable decisions, rationale, and trade-offs.
+- [V2 release run](docs/releases/v2.0.0.md): the `v2.0.0` end-to-end run on the V1
+  release candidate, its checks, identities, and limitations.
 - [V1 release run](docs/releases/v1.0.0.md): the `v1.0.0` end-to-end run on real
   data, its checks, identities, and limitations.
 

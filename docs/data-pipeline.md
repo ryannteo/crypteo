@@ -3,7 +3,7 @@
 This document describes the implemented Coinbase acquisition and local persistence
 path. Coinbase supplies the supported USD spot pairs and hourly aggregation
 without multi-venue reconciliation. The
-[V1 specification](v1-specification.md#canonical-historical-data) defines the
+[behavioral specification](v1-specification.md#canonical-historical-data) defines the
 historical-data scope; [ADR-003](decisions/ADR-003-canonical-data-and-acquisition-provenance.md)
 records why raw captures, canonical datasets, and acquisition records have separate
 identities. Scanner-only replay consumes explicitly supplied canonical datasets;
