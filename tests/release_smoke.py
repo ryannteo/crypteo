@@ -76,7 +76,7 @@ from crypteo.research_replay import (
 from crypteo.research_workflow import run_durable_opportunity_research
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 CODE = CodeIdentity(git_commit="5" * 40, source_digest="sha256:" + "5" * 64)
 T = datetime(2023, 1, 2, tzinfo=UTC)
 H = timedelta(hours=1)

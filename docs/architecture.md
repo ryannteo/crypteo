@@ -135,10 +135,10 @@ HTTP entity bytes before project decoding; durable hooks persist those
 observations separately from normalized project-owned replies.
 
 The runtime captures one research time from the executing `MarketResearchService`;
-opportunity-led runs also require the opportunity's observation time to match it. The service binds
-all reads to its authoritative gateway; models cannot choose cutoffs or windows.
-Clock checks surround model/tool/cache boundaries and return. Replay checks T again
-after durable publication/loading before financial preparation; awaiting inference
+opportunity-led runs also require the opportunity's observation time to match it. The
+service binds all reads to its authoritative gateway; models cannot choose cutoffs or
+windows. Clock checks surround model/tool/cache boundaries and return. Replay checks T
+again after durable publication/loading before financial preparation; awaiting inference
 does not advance simulated time. Point-in-time data access cannot prove historical
 purity of model parametric knowledge, including when assessments are frozen.
 Successful evidence is deduplicated consistently, and research references must

@@ -15,7 +15,7 @@ from crypteo.domain.time import UtcDatetime
 COINBASE_EXCHANGE_API = "https://api.exchange.coinbase.com"
 COINBASE_MAX_CANDLES_PER_REQUEST = 300
 COINBASE_HOURLY_GRANULARITY_SECONDS = 3600
-COINBASE_USER_AGENT = "crypteo/1.0.0"
+COINBASE_USER_AGENT = "crypteo/2.0.0"
 
 _UTC_DATETIME_ADAPTER = TypeAdapter(UtcDatetime)
 

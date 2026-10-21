@@ -8,4 +8,4 @@ def test_package_imports() -> None:
 
 
 def test_installed_package_version() -> None:
-    assert version("crypteo") == "1.0.0"
+    assert version("crypteo") == "2.0.0"
