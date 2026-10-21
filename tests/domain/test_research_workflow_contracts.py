@@ -6,10 +6,21 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from research_support import ScriptedModel, T, assessment, opportunity, run, tool
+from research_support import (
+    ScriptedModel,
+    T,
+    assessment,
+    opportunity,
+    run,
+    service,
+    tool,
+)
 
+from crypteo.domain.market import TradingPair
 from crypteo.domain.research import AbstentionReason, DecisionOutcome
 from crypteo.domain.research_workflow import (
+    BENCHMARK_ORDER,
+    OpportunityResearchContext,
     OpportunityResearchRequest,
     ResearchBudgetPolicy,
     ResearchFailure,
@@ -330,3 +341,36 @@ def test_interrupted_failure_call_id_must_belong_to_run(path: str) -> None:
     data["failure"]["call_id"] = "foreign/model/0001"
     with pytest.raises(ValidationError):
         reconstruct(result, data, path)
+
+
+def research_context(pair: TradingPair) -> OpportunityResearchContext:
+    svc = service(pairs=BENCHMARK_ORDER)
+    return OpportunityResearchContext(
+        request=OpportunityResearchRequest(
+            research_run_id="run-1", opportunity=opportunity(pair)
+        ),
+        research_at=svc.now,
+        benchmarks=tuple(p for p in BENCHMARK_ORDER if p != pair),
+        source_bindings=svc.source_bindings,
+    )
+
+
+@pytest.mark.parametrize("pair", list(TradingPair))
+def test_context_subject_is_the_opportunity_pair(pair: TradingPair) -> None:
+    context = research_context(pair)
+    assert context.subject == context.request.opportunity.pair == pair
+
+
+def test_context_subject_is_not_serialized_or_in_the_schema() -> None:
+    context = research_context(TradingPair.BTC_USD)
+    assert "subject" not in context.model_dump(mode="json")
+    assert "subject" not in OpportunityResearchContext.model_json_schema()["properties"]
+
+
+def test_context_subject_is_read_only() -> None:
+    context = research_context(TradingPair.BTC_USD)
+    accessor = vars(OpportunityResearchContext)["subject"]
+    assert isinstance(accessor, property) and accessor.fset is None
+    with pytest.raises(ValidationError, match="frozen"):
+        context.subject = TradingPair.ETH_USD  # type: ignore[misc]
+    assert context.subject == TradingPair.BTC_USD

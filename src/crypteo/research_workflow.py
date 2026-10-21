@@ -246,7 +246,7 @@ class _ResearchRuntime:
             prompt_identity=prompt_identity(stage),
             # Code owns the tool budget: offer no tool the model may not use.
             tools=tool_definitions(
-                state["context"].request.opportunity.pair,
+                state["context"].subject,
                 state["context"].benchmarks,
             )
             if offers_tools(stage, data)
@@ -483,7 +483,7 @@ class _ResearchRuntime:
         query_or_rejection = (
             bind_tool_request(
                 action.requests,
-                state["context"].request.opportunity.pair,
+                state["context"].subject,
                 state["context"].benchmarks,
             )
             if admitted

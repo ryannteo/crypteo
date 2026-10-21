@@ -338,7 +338,7 @@ class JournalProjection:
             configuration=config.model,
             messages=prompt_messages(request.stage, data),
             prompt_identity=prompt_identity(request.stage),
-            tools=tool_definitions(context.request.opportunity.pair, context.benchmarks)
+            tools=tool_definitions(context.subject, context.benchmarks)
             if offers_tools(request.stage, data)
             else (),
             output_schema=structured_schema(request.stage),
@@ -505,7 +505,7 @@ class JournalProjection:
             bound = (
                 bind_tool_request(
                     record.requests,
-                    self.header.context.request.opportunity.pair,
+                    self.header.context.subject,
                     self.header.context.benchmarks,
                 )
                 if admitted

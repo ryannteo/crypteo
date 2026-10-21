@@ -50,7 +50,7 @@ def validate_trace_relationships(
     failure: ResearchFailure | None = None,
 ) -> None:
     run_id = context.request.research_run_id
-    subject = context.request.opportunity.pair
+    subject = context.subject
     now = context.research_at
     sources = {s.pair: s.model_dump() for s in context.source_bindings}
     evidence: dict[str, EvidenceItem] = {}
@@ -382,7 +382,7 @@ def tool_definitions_view(context: OpportunityResearchContext) -> list[dict[str,
     """The run's tool names and descriptions, in offer order, as read-only data."""
     return [
         {"name": t.name, "description": t.description}
-        for t in tool_definitions(context.request.opportunity.pair, context.benchmarks)
+        for t in tool_definitions(context.subject, context.benchmarks)
     ]
 
 

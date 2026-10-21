@@ -99,6 +99,11 @@ class OpportunityResearchContext(ModelContract):
     benchmarks: tuple[TradingPair, ...]
     source_bindings: tuple[MarketSourceBinding, ...]
 
+    @property
+    def subject(self) -> TradingPair:
+        """The pair this run researches; runtime-bound, never model-chosen."""
+        return self.request.opportunity.pair
+
     @model_validator(mode="after")
     def validate_context(self) -> Self:
         opportunity, now = self.request.opportunity, self.research_at
