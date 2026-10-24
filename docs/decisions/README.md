@@ -58,3 +58,4 @@ durable decision actually changes.
 | [012](ADR-012-claude-research-provider.md) | Claude as the durable research provider | Accepted |
 | [013](ADR-013-v2-evaluation-scope.md) | V2 evaluates research selection on post-cutoff data | Accepted |
 | [014](ADR-014-trader-led-research.md) | Trader-led research shares the bounded workflow and stays outside evaluation | Accepted |
+| [015](ADR-015-pre-registered-crossing-base-rates.md) | Lower-band crossing base rates use pre-registered conditioning | Accepted |
