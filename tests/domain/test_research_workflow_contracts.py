@@ -205,10 +205,22 @@ def reconstruct(
         if isinstance(value, dict):
             return {
                 key: datetime.fromisoformat(item)
-                if key in {"observed_at", "available_at", "research_at", "start", "end"}
+                if key
+                in {
+                    "observed_at",
+                    "available_at",
+                    "research_at",
+                    "start",
+                    "end",
+                    "first_close_time",
+                    "last_close_time",
+                }
                 and isinstance(item, str)
                 else item
+                # Canonical evidence JSON stays as is; typed tool payloads sit
+                # beside their research context and hold datetimes.
                 if key in {"query_params", "payload", "trigger_payload"}
+                and not (key == "payload" and "context" in value)
                 else python_input(item)
                 for key, item in value.items()
             }

@@ -9,9 +9,13 @@ import pytest
 from pydantic import ValidationError
 from test_market_research import (
     BTC,
+    CAPABILITIES,
     ORACLE,
     T,
+    assert_rejected,
     candle,
+    candle_span,
+    hours_before_t,
     service,
     success,
 )
@@ -97,8 +101,10 @@ def test_candle_structure_golden() -> None:
     assert payload.lower_wick_fraction == ResearchRatio(value=Decimal("0.4"))
     assert payload.close_location == ResearchRatio(value=Decimal("0.7"))
     # Twenty prior true ranges of 4; the current candle's range is excluded.
-    assert payload.previous_mean_true_range == 4
-    assert payload.range_vs_mean_true_range == ResearchRatio(value=Decimal("2.5"))
+    assert payload.baseline_mean_true_range == 4
+    assert payload.range_vs_baseline_mean_true_range == ResearchRatio(
+        value=Decimal("2.5")
+    )
 
 
 @pytest.mark.parametrize(
@@ -138,7 +144,7 @@ def test_candle_structure_shapes(
     assert actual == tuple(
         ratio(*f.split("/")) if "/" in f else ratio(f, 1) for f in fractions
     )
-    assert payload.range_vs_mean_true_range == ratio(span, 4)
+    assert payload.range_vs_baseline_mean_true_range == ratio(span, 4)
 
 
 def test_zero_range_candle_has_undefined_fractions() -> None:
@@ -153,7 +159,7 @@ def test_zero_range_candle_has_undefined_fractions() -> None:
         payload.close_location,
     ):
         assert value == undefined(UndefinedReason.ZERO_RANGE)
-    assert payload.range_vs_mean_true_range == ResearchRatio(value=Decimal(0))
+    assert payload.range_vs_baseline_mean_true_range == ResearchRatio(value=Decimal(0))
 
 
 def test_zero_mean_true_range_is_undefined() -> None:
@@ -161,8 +167,8 @@ def test_zero_mean_true_range_is_undefined() -> None:
     payload = structure(
         ("100", "106", "96", "103"), **{f"h{i}": zero for i in range(38, 59)}
     )
-    assert payload.previous_mean_true_range == 0
-    assert payload.range_vs_mean_true_range == undefined(
+    assert payload.baseline_mean_true_range == 0
+    assert payload.range_vs_baseline_mean_true_range == undefined(
         UndefinedReason.ZERO_MEAN_TRUE_RANGE
     )
     assert payload.close_location == ResearchRatio(value=Decimal("0.7"))
@@ -172,7 +178,7 @@ def test_mean_true_range_is_seeded_by_oldest_window_candle_only() -> None:
     current = ("100", "106", "96", "103")
     # Hour 38 only seeds hour 39's true range: max(4, |102 - 90|, |98 - 90|) = 12.
     seeded = structure(current, h38=("90", "92", "88", "90"))
-    assert seeded.previous_mean_true_range == Decimal("4.4")
+    assert seeded.baseline_mean_true_range == Decimal("4.4")
     assert structure(current, h37=("1", "1000", "1", "1")) == structure(current)
 
 
@@ -187,8 +193,11 @@ def test_mean_true_range_is_seeded_by_oldest_window_candle_only() -> None:
         ("upper_wick_fraction", ResearchRatio(value=Decimal("0.29"))),
         ("lower_wick_fraction", undefined(UndefinedReason.ZERO_RANGE)),
         ("close_location", ResearchRatio(value=Decimal("0.3"))),
-        ("previous_mean_true_range", Decimal(5)),
-        ("range_vs_mean_true_range", undefined(UndefinedReason.ZERO_MEAN_TRUE_RANGE)),
+        ("baseline_mean_true_range", Decimal(5)),
+        (
+            "range_vs_baseline_mean_true_range",
+            undefined(UndefinedReason.ZERO_MEAN_TRUE_RANGE),
+        ),
         ("high", Decimal(102)),
         ("low", Decimal(104)),
     ],
@@ -235,6 +244,60 @@ def test_higher_timeframe_golden() -> None:
         assert (section.range_high, section.range_low) == (Decimal(3000), low)
         assert section.range_high_distance == returned(1599, 3000)
         assert section.range_low_distance == returned(1599, low)
+        # Window index j closes 599 - j hours before T.
+        assert section.close_5_blocks_ago_close_time == hours_before_t(5 * step)
+        assert section.range_high_close_time == hours_before_t(79)
+        assert section.range_low_close_time == hours_before_t(83 if step == 4 else 84)
+        assert (
+            section.sma20_candles,
+            section.previous_sma20_candles,
+            section.range_candles,
+        ) == (
+            candle_span(20 * step - 1, 0, 20 * step),
+            candle_span(25 * step - 1, 5 * step, 20 * step),
+            candle_span(21 * step - 1, step, 20 * step),
+        )
+
+
+def test_four_hour_range_can_extend_below_and_above_the_daily_range() -> None:
+    # The release puzzle: T-10h and T-12h lie in 4h blocks 1..20 (T-83h..T-4h)
+    # but before daily block 1 (T-503h..T-24h), so only the 4h range sees them.
+    payload = higher(j589=("1589", "5", "1590"), j587=("1587", "1586", "9000"))
+    four_hour, daily = payload.four_hour, payload.daily
+    assert (four_hour.range_low, four_hour.range_low_close_time) == (
+        Decimal(5),
+        hours_before_t(10),
+    )
+    assert (four_hour.range_high, four_hour.range_high_close_time) == (
+        Decimal(9000),
+        hours_before_t(12),
+    )
+    assert (daily.range_low, daily.range_low_close_time) == (
+        Decimal(10),
+        hours_before_t(84),
+    )
+    assert (daily.range_high, daily.range_high_close_time) == (
+        Decimal(3000),
+        hours_before_t(79),
+    )
+    assert daily.range_low > four_hour.range_low
+    assert daily.range_high < four_hour.range_high
+
+
+def test_range_extreme_ties_select_the_most_recent_candle() -> None:
+    # Equal 4h extremes at T-69h and T-39h. More extreme equal daily ones at
+    # T-499h and T-99h lie before 4h block 20, so each view resolves its own tie.
+    tied = {f"j{j}": ("1500", "3", "7000") for j in (530, 560)}
+    tied |= {f"j{j}": ("1500", "2", "8000") for j in (100, 500)}
+    payload = higher(**tied)
+    assert payload.four_hour.range_low_close_time == hours_before_t(39)
+    assert payload.four_hour.range_high_close_time == hours_before_t(39)
+    assert payload.daily.range_low_close_time == hours_before_t(99)
+    assert payload.daily.range_high_close_time == hours_before_t(99)
+    assert (payload.daily.range_low, payload.daily.range_high) == (
+        Decimal(2),
+        Decimal(8000),
+    )
 
 
 def test_higher_timeframe_blocks_end_at_t() -> None:
@@ -417,6 +480,67 @@ def test_planted_future_candles_leave_crossing_evidence_identical() -> None:
     assert planted.evidence.evidence_id == original.evidence.evidence_id
 
 
+PENDING = {714: (UP,) * 4, 719: ()}
+
+
+@pytest.mark.parametrize(
+    "events,times,current",
+    [
+        ({}, (), False),
+        ({713: EVENTS[713]}, (), False),
+        ({719: ()}, (0,), True),
+        ({716: (UP,) * 3}, (3,), False),
+        (PENDING, (5, 0), True),
+    ],
+)
+def test_pending_crossings_are_named_by_close_time(
+    events: dict[int, tuple[tuple[str, str, str], ...]],
+    times: tuple[int, ...],
+    current: bool,
+) -> None:
+    result = crossings(events)
+    payload = payload_of(result)
+    assert payload.lookback_candles == candle_span(719, 0, 720)
+    assert payload.pending_close_times == tuple(hours_before_t(h) for h in times)
+    assert payload.pending_count == len(times)
+    assert payload.current_candle_crossed is current
+    # Window index w closes 719 - w hours before T; T-6h is sampled, not pending.
+    assert payload.sample_count == (1 if 713 in events else 0)
+    planted = crossings(events, (("80", "79", "81"),) + (UP,) * 8)
+    assert planted.payload == result.payload
+    assert planted.context.inputs[0].window_digest == (
+        result.context.inputs[0].window_digest
+    )
+    assert planted.evidence.evidence_id == result.evidence.evidence_id
+
+
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({"pending_count": 1}, "pending crossing"),
+        ({"pending_close_times": (T, hours_before_t(5))}, "pending crossing"),
+        ({"pending_close_times": (T, T)}, "pending crossing"),
+        ({"pending_close_times": (hours_before_t(1), T)}, "pending crossing"),
+        ({"pending_close_times": (hours_before_t(6), T)}, "pending crossing"),
+        ({"current_candle_crossed": False}, "pending crossing"),
+        (
+            {"pending_close_times": (hours_before_t(5), T + timedelta(hours=1))},
+            "pending crossing",
+        ),
+        ({"current_candle_crossed": 1}, "boolean"),
+        ({"lookback_candles": candle_span(720, 0, 721)}, "fixed bar count"),
+    ],
+)
+def test_pending_crossing_fields_reject_tampering(
+    changes: dict[str, Any], match: str
+) -> None:
+    result = crossings(PENDING)
+    payload = result.payload.model_dump() | changes
+    with pytest.raises(ValidationError, match=match):
+        LowerBandCrossingsPayload.model_validate(payload)
+    assert_rejected(result, payload, "" if match == "boolean" else match)
+
+
 @pytest.mark.parametrize("events", [{}, {716: (UP,) * 3}])
 def test_zero_samples_give_none_aggregates(
     events: dict[int, tuple[tuple[str, str, str], ...]],
@@ -484,6 +608,26 @@ def test_crossings_match_scanner_over_visible_history() -> None:
     )
     with localcontext(ORACLE):
         assert payload.mean_close_return == sum(expected, Decimal(0)) / len(expected)
+    pending = tuple(o.observed_at for o in eligible if o not in sampled)
+    assert payload.pending_close_times == pending
+    assert payload.current_candle_crossed is any(o.observed_at == T for o in found)
+
+
+# Seeds with no recent crossing, crossings at T-4h and T, at T alone, at T-3h,
+# and at T-3h and T.
+SCANNER_SEEDS = (0, 1, 20, 42, 82)
+
+
+@pytest.mark.parametrize("seed", SCANNER_SEEDS)
+def test_pending_crossings_match_scanner_opportunities_near_t(seed: int) -> None:
+    candles = random_walk(seed)
+    payload = payload_of(success(service(candles), CROSSINGS))
+    found = OpportunityScanner(
+        PointInTimeDataGateway(SimulationClock(T), candles)
+    ).scan(pair=BTC)
+    recent = tuple(o.observed_at for o in found if o.observed_at > hours_before_t(6))
+    assert payload.pending_close_times == recent
+    assert payload.current_candle_crossed is (T in recent)
 
 
 @pytest.mark.parametrize(
@@ -520,12 +664,14 @@ def test_zero_sample_payload_rejects_aggregates() -> None:
         )
 
 
-@pytest.mark.parametrize("capability", [STRUCTURE, HIGHER, CROSSINGS])
-def test_new_payloads_round_trip_through_json(
+@pytest.mark.parametrize("capability", CAPABILITIES)
+def test_payloads_round_trip_through_json(
     capability: MarketResearchCapability,
 ) -> None:
     original = (
-        crossings(EVENTS) if capability is CROSSINGS else success(service(), capability)
+        crossings(PENDING)
+        if capability is CROSSINGS
+        else success(service(), capability)
     )
     assert ResearchToolSuccess.model_validate_json(original.model_dump_json()) == (
         original
@@ -533,4 +679,27 @@ def test_new_payloads_round_trip_through_json(
     assert (
         type(original.payload).model_validate_json(original.payload.model_dump_json())
         == original.payload
+    )
+    assert type(original.payload).model_validate(original.payload) == original.payload
+    assert ResearchToolSuccess.model_validate(original) == original
+
+
+@pytest.mark.parametrize(
+    "renames",
+    [
+        {"baseline_mean_true_range": "previous_mean_true_range"},
+        {"range_vs_baseline_mean_true_range": "range_vs_mean_true_range"},
+    ],
+)
+def test_candle_structure_rejects_previous_field_names(renames: dict[str, str]) -> None:
+    result = success(service(), STRUCTURE)
+    payload = result.payload.model_dump()
+    renamed = {renames.get(key, key): value for key, value in payload.items()}
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        CandleStructurePayload.model_validate(renamed)
+    assert_rejected(result, renamed, "Extra inputs are not permitted")
+    assert_rejected(
+        result,
+        payload | {old: payload[new] for new, old in renames.items()},
+        "Extra inputs",
     )

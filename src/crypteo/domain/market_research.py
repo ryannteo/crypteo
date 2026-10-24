@@ -1,11 +1,12 @@
 """Immutable fixed V1 market evidence, independent of interpretation and replay."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
+from itertools import pairwise
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -43,6 +44,7 @@ def _hourly(value: datetime) -> datetime:
 
 HourlyDatetime = Annotated[UtcDatetime, AfterValidator(_hourly)]
 Digest = Annotated[str, Field(strict=True, pattern=r"^sha256:[0-9a-f]{64}$")]
+_HOUR = Timeframe.ONE_HOUR.duration
 
 
 class _Contract(BaseModel):
@@ -72,7 +74,7 @@ class MarketRole(StrEnum):
 class MarketResearchPolicy(_Contract):
     """One fixed policy; window lengths are not configurable query parameters."""
 
-    policy_id: Literal["market_research_v2"] = "market_research_v2"
+    policy_id: Literal["market_research_v3"] = "market_research_v3"
 
     def required_bars(self, capability: MarketResearchCapability) -> int:
         match capability:
@@ -185,6 +187,23 @@ class ResearchContext(_Contract):
         return self
 
 
+class CandleSpan(_Contract):
+    """Consecutive hourly candles a measurement aggregates, named by close time."""
+
+    first_close_time: HourlyDatetime
+    last_close_time: HourlyDatetime
+    bar_count: Annotated[int, Field(strict=True, gt=0)]
+
+    @model_validator(mode="after")
+    def validate_geometry(self) -> Self:
+        if self.last_close_time - self.first_close_time != (self.bar_count - 1) * _HOUR:
+            raise ValueError("candle span geometry does not match bar_count")
+        return self
+
+    def covers(self, close_time: datetime) -> bool:
+        return self.first_close_time <= close_time <= self.last_close_time
+
+
 class UndefinedReason(StrEnum):
     ZERO_PREVIOUS_NORMALIZED_RANGE = "ZERO_PREVIOUS_NORMALIZED_RANGE"
     ZERO_BAND_WIDTH = "ZERO_BAND_WIDTH"
@@ -218,12 +237,15 @@ class TrendPayload(_Contract):
     close: PositiveDecimal
     sma20: PositiveDecimal
     sma50: PositiveDecimal
+    sma20_candles: CandleSpan
+    sma50_candles: CandleSpan
     close_vs_sma20: ExactDecimal
     close_vs_sma50: ExactDecimal
     sma20_vs_sma50: ExactDecimal
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
         if (self.close_vs_sma20, self.close_vs_sma50, self.sma20_vs_sma50) != (
             _return(self.close, self.sma20),
             _return(self.close, self.sma50),
@@ -256,6 +278,8 @@ class VolatilityPayload(_Contract):
     capability: Literal[MarketResearchCapability.VOLATILITY] = (
         MarketResearchCapability.VOLATILITY
     )
+    current_candles: CandleSpan
+    previous_candles: CandleSpan
     current_mean_true_range: NonNegativeDecimal
     previous_mean_true_range: NonNegativeDecimal
     current_ending_close: PositiveDecimal
@@ -266,6 +290,12 @@ class VolatilityPayload(_Contract):
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
+        if (
+            self.previous_candles.last_close_time
+            != self.current_candles.first_close_time - _HOUR
+        ):
+            raise ValueError("volatility spans must be consecutive")
         if (self.current_normalized_range, self.previous_normalized_range) != (
             _divide(self.current_mean_true_range, self.current_ending_close),
             _divide(self.previous_mean_true_range, self.previous_ending_close),
@@ -289,9 +319,11 @@ class BollingerPositionPayload(_Contract):
     upper_band: ExactDecimal
     percent_b: ResearchRatio
     bandwidth_fraction: NonNegativeDecimal
+    band_candles: CandleSpan
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
         lower, upper = _bands(self.sma20, self.population_std)
         width = _difference(upper, lower)
         if (self.lower_band, self.upper_band) != (lower, upper) or (
@@ -318,9 +350,16 @@ class LevelsPayload(_Contract):
     recent_low_close_time: HourlyDatetime
     recent_high_distance: ExactDecimal
     recent_low_distance: ExactDecimal
+    level_candles: CandleSpan
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
+        if not (
+            self.level_candles.covers(self.recent_high_close_time)
+            and self.level_candles.covers(self.recent_low_close_time)
+        ):
+            raise ValueError("recent levels must belong to prior candles")
         if self.recent_low > self.recent_high or (
             self.recent_high_distance,
             self.recent_low_distance,
@@ -339,9 +378,11 @@ class VolumeContextPayload(_Contract):
     current_base_volume: NonNegativeDecimal
     previous_mean_base_volume: NonNegativeDecimal
     volume_ratio: ResearchRatio
+    baseline_candles: CandleSpan
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
         if self.volume_ratio != _ratio(
             self.current_base_volume,
             self.previous_mean_base_volume,
@@ -369,17 +410,19 @@ class CandleStructurePayload(_Contract):
     upper_wick_fraction: ResearchRatio
     lower_wick_fraction: ResearchRatio
     close_location: ResearchRatio
-    previous_mean_true_range: NonNegativeDecimal
-    range_vs_mean_true_range: ResearchRatio
+    baseline_mean_true_range: NonNegativeDecimal
+    range_vs_baseline_mean_true_range: ResearchRatio
+    baseline_candles: CandleSpan
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
         if self.low > min(self.open, self.close) or self.high < max(
             self.open, self.close
         ):
             raise ValueError("candle prices are inconsistent")
         derived = _candle_anatomy(
-            self.open, self.high, self.low, self.close, self.previous_mean_true_range
+            self.open, self.high, self.low, self.close, self.baseline_mean_true_range
         )
         if any(getattr(self, name) != value for name, value in derived.items()):
             raise ValueError("candle structure does not reconcile")
@@ -391,7 +434,7 @@ def _candle_anatomy(
     high: Decimal,
     low: Decimal,
     close: Decimal,
-    previous_mean_true_range: Decimal,
+    baseline_mean_true_range: Decimal,
 ) -> dict[str, Any]:
     """Derived candle fields, shared by calculation and recomputing validation."""
     span = _difference(high, low)
@@ -408,9 +451,9 @@ def _candle_anatomy(
         upper_wick_fraction=_ratio(upper_wick, span, reason),
         lower_wick_fraction=_ratio(lower_wick, span, reason),
         close_location=_ratio(_difference(close, low), span, reason),
-        previous_mean_true_range=previous_mean_true_range,
-        range_vs_mean_true_range=_ratio(
-            span, previous_mean_true_range, UndefinedReason.ZERO_MEAN_TRUE_RANGE
+        baseline_mean_true_range=baseline_mean_true_range,
+        range_vs_baseline_mean_true_range=_ratio(
+            span, baseline_mean_true_range, UndefinedReason.ZERO_MEAN_TRUE_RANGE
         ),
     )
 
@@ -418,20 +461,42 @@ def _candle_anatomy(
 class _BlockSection(_Contract):
     """Block 0 is the newest block of consecutive hourly candles ending at T."""
 
+    block_hours: int
     close: PositiveDecimal
     sma20: PositiveDecimal
     previous_sma20: PositiveDecimal
+    sma20_candles: CandleSpan
+    previous_sma20_candles: CandleSpan
     close_vs_sma20: ExactDecimal
     sma20_change: ExactDecimal
     close_5_blocks_ago: PositiveDecimal
+    close_5_blocks_ago_close_time: HourlyDatetime
     return_5_blocks: ExactDecimal
     range_high: PositiveDecimal
     range_low: PositiveDecimal
+    range_high_close_time: HourlyDatetime
+    range_low_close_time: HourlyDatetime
+    range_candles: CandleSpan
     range_high_distance: ExactDecimal
     range_low_distance: ExactDecimal
 
     @model_validator(mode="after")
     def validate_arithmetic(self) -> Self:
+        _validate_bar_counts(self)
+        block = self.block_hours * _HOUR
+        end = self.sma20_candles.last_close_time
+        if (
+            self.previous_sma20_candles.last_close_time != end - 5 * block
+            or self.range_candles.last_close_time != end - block
+            or self.close_5_blocks_ago_close_time
+            != self.previous_sma20_candles.last_close_time
+        ):
+            raise ValueError("higher-timeframe spans do not match block offsets")
+        if not (
+            self.range_candles.covers(self.range_high_close_time)
+            and self.range_candles.covers(self.range_low_close_time)
+        ):
+            raise ValueError("higher-timeframe range times must lie in range_candles")
         if self.range_low > self.range_high or (
             self.close_vs_sma20,
             self.sma20_change,
@@ -470,6 +535,11 @@ class HigherTimeframePayload(_Contract):
     def validate_sections(self) -> Self:
         if self.four_hour.close != self.daily.close:
             raise ValueError("higher-timeframe sections must share the current close")
+        if (
+            self.four_hour.sma20_candles.last_close_time
+            != self.daily.sma20_candles.last_close_time
+        ):
+            raise ValueError("higher-timeframe sections must end at the same candle")
         return self
 
 
@@ -484,8 +554,11 @@ class LowerBandCrossingsPayload(_Contract):
     )
     lookback_bars: Literal[720] = 720
     horizon_bars: Literal[6] = 6
+    lookback_candles: CandleSpan
     sample_count: Count
     pending_count: Count
+    pending_close_times: tuple[HourlyDatetime, ...]
+    current_candle_crossed: Annotated[bool, Field(strict=True)]
     reached_sma20_count: Count
     positive_close_count: Count
     reached_sma20_fraction: ResearchRatio
@@ -496,6 +569,25 @@ class LowerBandCrossingsPayload(_Contract):
     max_close_return: ExactDecimal | None
     mean_adverse_excursion: ExactDecimal | None
     mean_favorable_excursion: ExactDecimal | None
+
+    @model_validator(mode="after")
+    def validate_pending(self) -> Self:
+        _validate_bar_counts(self)
+        last = self.lookback_candles.last_close_time
+        times = self.pending_close_times
+        # Scanner-rule crossings are never one hour apart: crossing at i + 1
+        # requires the close at i to be at or above its lower band.
+        if (
+            len(times) != self.pending_count
+            or any(later - earlier <= _HOUR for earlier, later in pairwise(times))
+            or any(
+                not last - (self.horizon_bars - 1) * _HOUR <= time <= last
+                for time in times
+            )
+            or self.current_candle_crossed != (last in times)
+        ):
+            raise ValueError("pending crossing times do not reconcile")
+        return self
 
     @model_validator(mode="after")
     def validate_aggregates(self) -> Self:
@@ -578,6 +670,56 @@ MarketResearchPayload = Annotated[
 ]
 
 
+def _span_geometry(
+    payload: BaseModel,
+) -> tuple[tuple[CandleSpan, int, int], ...]:
+    """Each span with its fixed bar count and its last close's hours before T."""
+    match payload:
+        case TrendPayload():
+            return ((payload.sma20_candles, 20, 0), (payload.sma50_candles, 50, 0))
+        case VolatilityPayload():
+            return (
+                (payload.current_candles, 20, 0),
+                (payload.previous_candles, 20, 20),
+            )
+        case BollingerPositionPayload():
+            return ((payload.band_candles, 20, 0),)
+        case LevelsPayload():
+            return ((payload.level_candles, 24, 1),)
+        case VolumeContextPayload():
+            return ((payload.baseline_candles, 24, 1),)
+        case CandleStructurePayload():
+            return ((payload.baseline_candles, 20, 1),)
+        case _BlockSection():
+            b = payload.block_hours
+            return (
+                (payload.sma20_candles, 20 * b, 0),
+                (payload.previous_sma20_candles, 20 * b, 5 * b),
+                (payload.range_candles, 20 * b, b),
+            )
+        case HigherTimeframePayload():
+            return _span_geometry(payload.four_hour) + _span_geometry(payload.daily)
+        case LowerBandCrossingsPayload():
+            return ((payload.lookback_candles, payload.lookback_bars, 0),)
+    return ()
+
+
+def _validate_bar_counts(payload: BaseModel) -> None:
+    if any(span.bar_count != bars for span, bars, _ in _span_geometry(payload)):
+        raise ValueError("candle span does not match its fixed bar count")
+
+
+def _datetimes(value: Any) -> Iterator[datetime]:
+    if isinstance(value, datetime):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _datetimes(item)
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _datetimes(item)
+
+
 def _canonical(value: Any) -> Any:
     """Exact semantic encoding, also used to embed typed records in EvidenceItem."""
     if isinstance(value, BaseModel):
@@ -645,13 +787,18 @@ class ResearchToolSuccess(_Contract):
         context, evidence = self.context, self.evidence
         if self.payload.capability != context.query.capability:
             raise ValueError("payload capability does not match query")
-        if isinstance(self.payload, LevelsPayload):
-            for timestamp in (
-                self.payload.recent_high_close_time,
-                self.payload.recent_low_close_time,
-            ):
-                if not context.window.start < timestamp < context.window.end:
-                    raise ValueError("recent levels must belong to prior candles")
+        # Payload validators fix span sizes and relations; anchoring each span to T
+        # also keeps level and range extremes and pending crossings inside the window.
+        # The final bound also covers any payload time that no span constrains.
+        start, end = context.window.start, context.window.end
+        if any(
+            span.last_close_time != end - offset * _HOUR
+            or span.first_close_time <= start
+            for span, _, offset in _span_geometry(self.payload)
+        ):
+            raise ValueError("payload candle spans are not anchored to T")
+        if any(time > end for time in _datetimes(self.payload.model_dump())):
+            raise ValueError("payload times must not exceed T")
         if isinstance(self.payload, RelativeStrengthPayload) and (
             self.payload.subject_pair,
             self.payload.benchmark_pair,

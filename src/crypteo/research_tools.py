@@ -23,75 +23,88 @@ from crypteo.research_model import (
     render_json,
 )
 
-TOOL_VERSION = "bounded_market_tools_v4"
+TOOL_VERSION = "bounded_market_tools_v5"
 
 _DESCRIPTION_SUFFIX = (
     "Completed Coinbase hourly candles visible at T; venue, timeframe, window and "
-    "cutoff are runtime-owned."
+    "cutoff are runtime-owned. T-kh is the candle closing k hours before T; each "
+    "*_candles payload field gives the first and last close time and the count of "
+    "the candles it covers."
 )
 
 TOOL_DESCRIPTIONS: Mapping[MarketResearchCapability, str] = MappingProxyType(
     {
         MarketResearchCapability.TREND: (
-            "Close, SMA20 and SMA50 of hourly closes in the 50-candle window ending "
-            "at T (current candle included), and close/SMA20-1, close/SMA50-1 and "
-            "SMA20/SMA50-1."
+            "Close at T, SMA20 of the closes of candles T-19h..T (sma20_candles) "
+            "and SMA50 of candles T-49h..T (sma50_candles), and close/SMA20-1, "
+            "close/SMA50-1 and SMA20/SMA50-1."
         ),
         MarketResearchCapability.MOMENTUM: (
-            "Close-to-close returns in the 25-candle window ending at T: current 1h, "
-            "6h and 24h returns, the previous 6h return (close 6h ago vs 12h ago), "
-            "and current minus previous 6h return."
+            "Close-to-close returns: return_1h (close at T vs T-1h), return_6h (T "
+            "vs T-6h), return_24h (T vs T-24h), previous_return_6h (T-6h vs "
+            "T-12h), and return_6h minus previous_return_6h."
         ),
         MarketResearchCapability.VOLATILITY: (
-            "Mean true range (intrabar high/low and previous close) of the 20 "
-            "candles ending at T and of the 20 before them (41-candle window), each "
-            "divided by its window's ending close, and current/previous. Arithmetic "
-            "means, not Wilder ATR."
+            "Mean true range (intrabar high/low and previous close) of candles "
+            "T-19h..T (current_candles) and of candles T-39h..T-20h "
+            "(previous_candles), each divided by the close of its last candle (T "
+            "and T-20h), and current/previous. Arithmetic means, not Wilder ATR."
         ),
         MarketResearchCapability.BOLLINGER_POSITION: (
-            "The scanner's Bollinger bands over the 20-candle window of hourly "
-            "closes ending at T (current candle included; population standard "
-            "deviation, +/-2 sigma): SMA20, bands, unclipped percent_b and band "
-            "width as a fraction of SMA20."
+            "The scanner's Bollinger bands over the closes of candles T-19h..T "
+            "(band_candles; population standard deviation, +/-2 sigma): SMA20, "
+            "bands, unclipped percent_b of the close at T, and band width as a "
+            "fraction of SMA20."
         ),
         MarketResearchCapability.LEVELS: (
-            "In the 25-candle window ending at T: highest intrabar high and lowest "
-            "intrabar low of the 24 candles before the current candle (the candle "
-            "ending at T is excluded from both), their close times, and current "
-            "close/level-1 for each. Observational levels, not support/resistance "
-            "or trade terms."
+            "Highest intrabar high and lowest intrabar low of candles T-24h..T-1h "
+            "(level_candles; the candle ending at T is excluded), the close time of "
+            "the candle holding each (the most recent on ties), and close at "
+            "T/level-1 for each. Observational levels, not support/resistance or "
+            "trade terms."
         ),
         MarketResearchCapability.VOLUME_CONTEXT: (
-            "In the 25-candle window ending at T: base-asset volume of the current "
-            "candle, mean volume of the 24 candles before it, and their ratio."
+            "Base-asset volume of the candle ending at T, mean volume of candles "
+            "T-24h..T-1h (baseline_candles), and their ratio."
         ),
         MarketResearchCapability.CANDLE_STRUCTURE: (
-            "Anatomy of the current candle ending at T: OHLC, range, signed body, "
-            "upper and lower wicks, their fractions of the range, and close "
-            "location in the range; plus the range relative to the mean true range "
-            "of the 20 candles before it (22-candle window)."
+            "Anatomy of the candle ending at T: OHLC, range, signed body, upper and "
+            "lower wicks, their fractions of the range, and close_location, the "
+            "close's position in the range as a fraction (0 at the low, 1 at the "
+            "high), not a price distance; plus the range relative to "
+            "baseline_mean_true_range, the mean true range of candles T-20h..T-1h "
+            "(baseline_candles). Volatility's current mean true range differs: it "
+            "covers candles T-19h..T."
         ),
         MarketResearchCapability.HIGHER_TIMEFRAME: (
-            "4-hour and daily views built from consecutive blocks of hourly candles "
-            "ending at T (not calendar-aligned; 600-candle window): per view, SMA20 "
-            "of block closes, close vs SMA20, SMA20 change vs five blocks earlier, "
-            "5-block return, and the high/low of the 20 blocks before the current "
-            "one with distances."
+            "4-hour and daily views built from 25 consecutive blocks of hourly "
+            "candles ending at T (block 0 newest, not calendar-aligned; 600-candle "
+            "window). Per view: SMA20 of the closes of blocks 0-19 (sma20_candles) "
+            "and of blocks 5-24 (previous_sma20_candles), close at T vs SMA20, "
+            "SMA20 change, the return since the close of block 5 "
+            "(close_5_blocks_ago_close_time: T-20h for 4-hour, T-120h for daily), "
+            "and the highest high and lowest low of blocks 1-20 with the close time "
+            "of the candle holding each (the most recent on ties) and distances. "
+            "Blocks 1-20 cover candles T-83h..T-4h for 4-hour and T-503h..T-24h for "
+            "daily (range_candles), so the 4-hour range includes candles T-23h..T-4h "
+            "that the daily range excludes, and its high or low can lie outside the "
+            "daily range."
         ),
         MarketResearchCapability.LOWER_BAND_CROSSINGS: (
             "History of this pair's hourly closes crossing below the lower "
-            "Bollinger band (scanner rule) in the 720-candle window ending at T. "
-            "Only crossings whose next 6 candles all closed by T are sampled: "
-            "counts and fractions reaching the trigger's SMA20 intrabar and closing "
-            "higher after 6 hours, close-return mean, median and range, and mean "
-            "adverse and favorable excursions. Crossings whose next 6 candles have "
-            "not all closed by T, including any crossing on the candle ending at T, "
-            "are counted only in pending_count."
+            "Bollinger band (scanner rule) in candles T-719h..T (lookback_candles). "
+            "Crossings at T-6h or earlier, whose next 6 candles all closed by T, are "
+            "sampled: counts and fractions reaching the trigger's SMA20 intrabar and "
+            "closing higher after 6 hours, close-return mean, median and range, and "
+            "mean adverse and favorable excursions. Crossings at T-5h..T are pending "
+            "and not sampled: pending_count counts them, pending_close_times lists "
+            "their close times, and current_candle_crossed is true exactly when the "
+            "candle ending at T is one of them."
         ),
         MarketResearchCapability.RELATIVE_STRENGTH: (
-            "Subject minus benchmark close-to-close returns over 6h and 24h from "
-            "aligned 25-candle windows ending at T. Offered only for benchmarks "
-            "with a bound source."
+            "Subject minus benchmark close-to-close returns over 6h (close at T vs "
+            "T-6h) and 24h (T vs T-24h), from aligned candles of both pairs. Offered "
+            "only for benchmarks with a bound source."
         ),
     }
 )

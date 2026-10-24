@@ -83,7 +83,7 @@ detach mutable input collections into deeply immutable validated state.
 [market_research.py](../src/crypteo/market_research.py), with immutable typed
 [contracts and payloads](../src/crypteo/domain/market_research.py) and private
 [research arithmetic](../src/crypteo/domain/_market_research_arithmetic.py).
-The fixed policy is `market_research_v2`.
+The fixed policy is `market_research_v3`.
 
 ### Public API and assembly
 
@@ -113,17 +113,24 @@ low, and base-asset volume of the candle ending at `T - k hours`; `C0` is the
 current completed close. All windows below are exact contiguous hourly windows
 ending at `T`, including the current candle. Returns and distances are fractions.
 
+Payloads name the candles each windowed measurement aggregates. A span is a
+`CandleSpan` with `first_close_time`, `last_close_time`, and `bar_count`, where
+`last_close_time - first_close_time = (bar_count - 1) hours`; `T-kh` denotes the
+candle closing `k` hours before `T`. Spans are stored fields computed from the
+candles the service aggregates, never derived on read. A true-range mean's
+previous-close seed is not part of its span.
+
 | Capability | Required bars | Fixed measurements |
 | --- | --- | --- |
-| Trend | 50 | `SMA20 = mean(C0..C19)`; `SMA50 = mean(C0..C49)`; `close_vs_sma20 = C0 / SMA20 - 1`; `close_vs_sma50 = C0 / SMA50 - 1`; `sma20_vs_sma50 = SMA20 / SMA50 - 1`. |
+| Trend | 50 | `SMA20 = mean(C0..C19)`; `SMA50 = mean(C0..C49)`; `close_vs_sma20 = C0 / SMA20 - 1`; `close_vs_sma50 = C0 / SMA50 - 1`; `sma20_vs_sma50 = SMA20 / SMA50 - 1`. Spans: `sma20_candles` `T-19h..T` (20), `sma50_candles` `T-49h..T` (50). |
 | Momentum | 25 | Simple returns `return_1h = C0 / C1 - 1`, `return_6h = C0 / C6 - 1`, `return_24h = C0 / C24 - 1`; `previous_return_6h = C6 / C12 - 1`; `return_change_6h = return_6h - previous_return_6h`. |
-| Volatility | 41 | `TRk = max(Hk - Lk, abs(Hk - C(k+1)), abs(Lk - C(k+1)))`. Current mean is `mean(TR0..TR19)`; previous mean is `mean(TR20..TR39)`, seeded by `C40`. Normalize current mean by `C0` and previous mean by `C20`; `normalized_range_ratio = current_normalized_range / previous_normalized_range`. |
-| Bollinger position | 20 | Scanner-identical SMA20 and population standard deviation `σ` over `C0..C19`; `lower = SMA20 - 2σ`, `upper = SMA20 + 2σ`; `percent_b = (C0 - lower) / (upper - lower)`; `bandwidth_fraction = (upper - lower) / SMA20`. |
-| Recent levels | 25 | `recent_high = max(H1..H24)` and `recent_low = min(L1..L24)`, excluding the current candle. `close_vs_high = C0 / recent_high - 1`; `close_vs_low = C0 / recent_low - 1`. |
-| Volume context | 25 | Current base-asset volume `V0`, previous 24-bar mean `mean(V1..V24)`, and `volume_ratio = V0 / mean(V1..V24)`. |
-| Candle structure | 22 | Current `O0`, `H0`, `L0`, `C0`; `range = H0 - L0`; signed `body = C0 - O0`; `upper_wick = H0 - max(O0, C0)`; `lower_wick = min(O0, C0) - L0`; `body_fraction = abs(body) / range`, `upper_wick_fraction = upper_wick / range`, `lower_wick_fraction = lower_wick / range`, `close_location = (C0 - L0) / range`; `previous_mean_true_range = mean(TR1..TR20)`, seeded by `C21`; `range_vs_mean_true_range = range / previous_mean_true_range`. |
-| Higher timeframe | 600 | Sections `four_hour` (`block_hours = 4`) and `daily` (`block_hours = 24`), each from the last `25 * h` candles split into 25 consecutive `h`-hour blocks ending at `T` (block 0 newest; not calendar-aligned). Block close is its last candle's close, high the maximum high, low the minimum low. Per section, with `Bk` the close of block `k`: `close = B0`; `sma20 = mean(B0..B19)`; `previous_sma20 = mean(B5..B24)`; `close_vs_sma20 = close / sma20 - 1`; `sma20_change = sma20 / previous_sma20 - 1`; `close_5_blocks_ago = B5`; `return_5_blocks = close / close_5_blocks_ago - 1`; `range_high` and `range_low` are the highest high and lowest low of blocks 1..20; `range_high_distance = close / range_high - 1`; `range_low_distance = close / range_low - 1`. Both sections share `close`. |
-| Lower-band crossings | 720 | Window candles indexed `0..719` in time order (719 ends at `T`) with scanner-identical rolling Bollinger statistics computed over the window alone. A crossing is an index `i` with both `i - 1` and `i` statistics defined, `C(i-1) >= lower(i-1)` and `C(i) < lower(i)` (the scanner rule). It is a sample when `i + 6 <= 719`; otherwise its six outcome candles have not all closed by `T` and it counts only in `pending_count`, so a crossing at `i = 719` (the candle ending at `T`) is always pending. The tool description states this rule. Per sample: reached SMA20 when any `H(i+1..i+6) >= SMA20(i)`; `close_return = C(i+6) / C(i) - 1`; adverse excursion `min(L(i+1..i+6)) / C(i) - 1`; favorable excursion `max(H(i+1..i+6)) / C(i) - 1`. Payload: `lookback_bars = 720`, `horizon_bars = 6`, `sample_count`, `pending_count`, `reached_sma20_count`, `positive_close_count` (`close_return > 0`), their fractions of `sample_count`, and the mean, median (mean of the two middle values for an even count), minimum and maximum close return and the mean adverse and favorable excursions, all `null` exactly when `sample_count = 0`. |
+| Volatility | 41 | `TRk = max(Hk - Lk, abs(Hk - C(k+1)), abs(Lk - C(k+1)))`. Current mean is `mean(TR0..TR19)`; previous mean is `mean(TR20..TR39)`, seeded by `C40`. Normalize current mean by `C0` and previous mean by `C20`; `normalized_range_ratio = current_normalized_range / previous_normalized_range`. Spans: `current_candles` `T-19h..T` (20), `previous_candles` `T-39h..T-20h` (20); the previous span ends one hour before the current span starts. |
+| Bollinger position | 20 | Scanner-identical SMA20 and population standard deviation `σ` over `C0..C19`; `lower = SMA20 - 2σ`, `upper = SMA20 + 2σ`; `percent_b = (C0 - lower) / (upper - lower)`; `bandwidth_fraction = (upper - lower) / SMA20`. Span: `band_candles` `T-19h..T` (20). |
+| Recent levels | 25 | `recent_high = max(H1..H24)` and `recent_low = min(L1..L24)`, excluding the current candle, with `recent_high_close_time` and `recent_low_close_time` the close times of the candles holding them. `close_vs_high = C0 / recent_high - 1`; `close_vs_low = C0 / recent_low - 1`. Span: `level_candles` `T-24h..T-1h` (24). |
+| Volume context | 25 | Current base-asset volume `V0`, previous 24-bar mean `mean(V1..V24)`, and `volume_ratio = V0 / mean(V1..V24)`. Span: `baseline_candles` `T-24h..T-1h` (24). |
+| Candle structure | 22 | Current `O0`, `H0`, `L0`, `C0`; `range = H0 - L0`; signed `body = C0 - O0`; `upper_wick = H0 - max(O0, C0)`; `lower_wick = min(O0, C0) - L0`; `body_fraction = abs(body) / range`, `upper_wick_fraction = upper_wick / range`, `lower_wick_fraction = lower_wick / range`, `close_location = (C0 - L0) / range`, a fraction of the range (0 at the low, 1 at the high), not a price distance; `baseline_mean_true_range = mean(TR1..TR20)`, seeded by `C21`; `range_vs_baseline_mean_true_range = range / baseline_mean_true_range`. Span: `baseline_candles` `T-20h..T-1h` (20). |
+| Higher timeframe | 600 | Sections `four_hour` (`block_hours = 4`) and `daily` (`block_hours = 24`), each from the last `25 * h` candles split into 25 consecutive `h`-hour blocks ending at `T` (block 0 newest; not calendar-aligned). Block close is its last candle's close, high the maximum high, low the minimum low. Per section, with `Bk` the close of block `k`: `close = B0`; `sma20 = mean(B0..B19)`; `previous_sma20 = mean(B5..B24)`; `close_vs_sma20 = close / sma20 - 1`; `sma20_change = sma20 / previous_sma20 - 1`; `close_5_blocks_ago = B5`; `return_5_blocks = close / close_5_blocks_ago - 1`; `range_high` and `range_low` are the highest high and lowest low of blocks 1..20; `range_high_distance = close / range_high - 1`; `range_low_distance = close / range_low - 1`. `close_5_blocks_ago_close_time` is `5 * h` hours before `T` (`T-20h` four-hour, `T-120h` daily), and `range_high_close_time` and `range_low_close_time` are the close times of the hourly candles holding `range_high` and `range_low` within blocks 1..20, the most recent candle on ties. Spans of `20 * h` candles each: `sma20_candles` (blocks 0..19) ends at `T`, `previous_sma20_candles` (blocks 5..24) `5 * h` hours before `T`, and `range_candles` (blocks 1..20) `h` hours before `T`; four-hour `T-79h..T`, `T-99h..T-20h`, `T-83h..T-4h`; daily `T-479h..T`, `T-599h..T-120h`, `T-503h..T-24h`. The four-hour range therefore includes `T-23h..T-4h`, which the daily range excludes, and its high or low can lie outside the daily range. Both sections share `close` and end their `sma20_candles` at `T`. |
+| Lower-band crossings | 720 | Window candles indexed `0..719` in time order (719 ends at `T`) with scanner-identical rolling Bollinger statistics computed over the window alone. A crossing is an index `i` with both `i - 1` and `i` statistics defined, `C(i-1) >= lower(i-1)` and `C(i) < lower(i)` (the scanner rule). It is a sample when `i + 6 <= 719` (closing at `T-6h` or earlier); otherwise its six outcome candles have not all closed by `T` and it is pending, so pending crossings close at `T-5h..T` and a crossing at `i = 719` (the candle ending at `T`) is always pending. The tool description states this rule. Per sample: reached SMA20 when any `H(i+1..i+6) >= SMA20(i)`; `close_return = C(i+6) / C(i) - 1`; adverse excursion `min(L(i+1..i+6)) / C(i) - 1`; favorable excursion `max(H(i+1..i+6)) / C(i) - 1`. Payload: `lookback_bars = 720`, `horizon_bars = 6`, span `lookback_candles` `T-719h..T` (720), `sample_count`, `pending_count`, `pending_close_times` (the pending crossings' close times, strictly ascending), `current_candle_crossed` (true exactly when the candle ending at `T` is a crossing), `reached_sma20_count`, `positive_close_count` (`close_return > 0`), their fractions of `sample_count`, and the mean, median (mean of the two middle values for an even count), minimum and maximum close return and the mean adverse and favorable excursions, all `null` exactly when `sample_count = 0`. |
 | Relative strength | 25 per market | Subject and benchmark simple returns `C0 / C6 - 1` and `C0 / C24 - 1`; each spread is subject return minus benchmark return at the same horizon. The payload names its `subject_pair` and `benchmark_pair`. |
 
 Volatility reuses existing `mean_true_range` for two non-overlapping sets of 20
@@ -133,18 +140,26 @@ means, not Wilder ATR, a volatility percentile, or a regime classification.
 Bollinger `percent_b` is unclipped and can lie below zero or above one.
 
 Candle structure reuses `mean_true_range` for the 20 candles before the current
-candle; the current candle's own range is excluded from its baseline. Higher
+candle; the current candle's own range is excluded from its baseline. Its
+`baseline_candles` (`T-20h..T-1h`) therefore differ from volatility's
+`current_candles` (`T-19h..T`), and the baseline field names say so. Higher
 timeframe blocks are fixed offsets from `T`, so a change to the candle ending at
 `T - 4h` changes four-hour block 1, not block 0. Lower-band crossings reuse the
 scanner's Bollinger statistics and crossing rule; because statistics need 20
 in-window closes, crossings at window indices below 20 are not counted even when
-the scanner, reading older history, reports them. These measurements are
-observational history, not a predictive base rate or a trade signal.
+the scanner, reading older history, reports them. Two crossings are never one
+hour apart: a crossing at `i + 1` requires `C(i) >= lower(i)`, while a crossing
+at `i` requires `C(i) < lower(i)`. At window indices of 20 and above the
+in-window statistics equal the scanner's, so `current_candle_crossed` is true
+exactly when the scanner reports an opportunity observed at `T`. These
+measurements are observational history, not a predictive base rate or a trade
+signal.
 
 Recent levels select the most recent prior candle when extrema tie and retain
-its close time. The payload names for `close_vs_high` and `close_vs_low` are
-`recent_high_distance` and `recent_low_distance`, respectively. These are
-observational levels, not predictive support/resistance or proposed trade terms.
+its close time, which lies within `level_candles` (`T-24h..T-1h`). The payload
+names for `close_vs_high` and `close_vs_low` are `recent_high_distance` and
+`recent_low_distance`, respectively. These are observational levels, not
+predictive support/resistance or proposed trade terms.
 
 Relative strength requires explicit ordered subject/benchmark roles and exactly
 aligned windows. Its payload names both pairs; they must differ and must equal
@@ -182,7 +197,8 @@ data raises rather than becoming ordinary unavailability.
 
 Lower-band crossing outcomes are read only from the window ending at `T`. A
 crossing whose six outcome candles have not all closed by `T` is pending: it
-contributes only to `pending_count`, and no candle after `T` can complete it.
+contributes to `pending_count` and `pending_close_times` rather than to the
+samples, and no candle after `T` can complete it.
 
 Availability is derived as the maximum availability of **all** contributing
 candles across all inputs, including previous-close seeds. Since success requires
@@ -195,6 +211,13 @@ The existing `EvidenceItem` remains the common envelope. `ResearchToolSuccess`
 contains typed context, a capability-specific payload, and its normalized evidence.
 Contracts validate fixed window geometry, source roles, payload relationships,
 envelope linkage, and evidence identity, including nested and JSON revalidation.
+Payload spans and times are validated against `T`: each payload checks its
+spans' fixed bar counts and their relative offsets, that extreme close times lie
+within their span, and that pending crossing times are strictly ascending, never
+one hour apart, within `T-5h..T` of the lookback span's last close, and agree
+with `pending_count` and `current_candle_crossed`. `ResearchToolSuccess` then
+anchors each span's last close at its fixed offset from `T` and its first close
+after the window start, so no payload time precedes the window or exceeds `T`.
 The service establishes the actual visible candle dependencies; schema validation
 alone does not prove market provenance.
 
@@ -205,7 +228,7 @@ context is embedded in `provenance.query_params`, and the deterministic payload
 is normalized into the immutable envelope. Raw candle windows stay outside it.
 
 Semantic `evidence_id` is a SHA-256 digest of identity encoding version `1`,
-the `market_research_v2` policy and capability, ordered subject/benchmark roles
+the `market_research_v3` policy and capability, ordered subject/benchmark roles
 and market identities (venue, pair, timeframe), observed time, required-window
 geometry, canonical digests of the actual contributing candle windows, and the
 normalized deterministic payload. Each window digest includes encoding version,
@@ -225,7 +248,7 @@ source reference, alongside role, venue, pair, timeframe, source, and source sch
 version; acquisition ID may be absent. Relative-strength provenance preserves
 both subject and benchmark roles. `provenance.source_version` is canonical source
 schema version `1`, not dataset content identity or research-policy version.
-`provenance.producer` identifies `market_research_v2.<capability>`.
+`provenance.producer` identifies `market_research_v3.<capability>`.
 
 ### Numerical policy
 
@@ -1154,10 +1177,13 @@ offered with only those benchmarks. When no other pair is bound,
 ("relative_strength is not offered without a bound benchmark"); naming a
 benchmark outside the context's benchmarks is likewise an invalid tool request.
 Neither dispatches. Venue, timeframe, cutoff, and windows are runtime-owned.
-Each tool definition carries a fixed description of its window and measurements,
-ending with the shared statement that it reads completed Coinbase hourly candles
-visible at T and that venue, timeframe, window and cutoff are runtime-owned.
-Tool definitions are versioned `bounded_market_tools_v4`. A single-pair run is
+Each tool definition carries a fixed description of its measurements, stating
+each span in hours relative to `T`, ending with the shared statement that it
+reads completed Coinbase hourly candles visible at T, that venue, timeframe,
+window and cutoff are runtime-owned, that `T-kh` is the candle closing `k` hours
+before `T`, and that each `*_candles` payload field gives the first and last
+close time and the count of the candles it covers.
+Tool definitions are versioned `bounded_market_tools_v5`. A single-pair run is
 offered nine tools within its eight admitted tool attempts. Every request that
 offers no tools (thesis, critique, final assessment, and an investigation call
 with no attempts remaining, first asks and re-asks alike) instead carries

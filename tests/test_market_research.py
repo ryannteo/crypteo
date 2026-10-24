@@ -2,6 +2,7 @@
 
 import inspect
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
@@ -10,6 +11,8 @@ from typing import Any
 
 import pytest
 from decimal_support import hostile_decimal_context
+from pydantic import ValidationError
+from pydantic_core import to_json
 
 from crypteo.analytics import rolling_bollinger_statistics
 from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
@@ -21,6 +24,9 @@ from crypteo.coinbase_dataset import (
 from crypteo.domain.market import Candle, DatasetManifest, Timeframe, TradingPair, Venue
 from crypteo.domain.market_research import (
     BollingerPositionPayload,
+    CandleSpan,
+    CandleStructurePayload,
+    HigherTimeframePayload,
     LevelsPayload,
     MarketResearchCapability,
     MarketResearchPolicy,
@@ -809,10 +815,10 @@ def test_provenance_is_canonical_schema_and_complete_typed_context() -> None:
     envelope = json.loads(result.evidence.model_dump_json())
     assert envelope["source"] == "coinbase_exchange_candles"
     provenance = envelope["provenance"]
-    assert provenance["producer"] == "market_research_v2.relative_strength"
+    assert provenance["producer"] == "market_research_v3.relative_strength"
     assert provenance["source_version"] == "1"
     params = provenance["query_params"]
-    assert params["policy"] == {"policy_id": "market_research_v2"}
+    assert params["policy"] == {"policy_id": "market_research_v3"}
     assert params["window"]["end"] == "2022-01-03T12:00:00.000000Z"
     assert [i["source"]["role"] for i in params["inputs"]] == ["subject", "benchmark"]
     for item in params["inputs"]:
@@ -877,6 +883,16 @@ def test_semantic_identity_matches_independent_canonical_encoding() -> None:
         "close": "159",
         "sma20": "149.5",
         "sma50": "134.5",
+        "sma20_candles": {
+            "first_close_time": timestamp(41),
+            "last_close_time": timestamp(60),
+            "bar_count": 20,
+        },
+        "sma50_candles": {
+            "first_close_time": timestamp(11),
+            "last_close_time": timestamp(60),
+            "bar_count": 50,
+        },
         "close_vs_sma20": "0.0635451505016722408026755852842809364548494983278",
         "close_vs_sma50": "0.1821561338289962825278810408921933085501858736059",
         "sma20_vs_sma50": "0.1115241635687732342007434944237918215613382899628",
@@ -884,7 +900,7 @@ def test_semantic_identity_matches_independent_canonical_encoding() -> None:
     expected_id = digest(
         {
             "identity_encoding_version": "1",
-            "policy": {"policy_id": "market_research_v2"},
+            "policy": {"policy_id": "market_research_v3"},
             "capability": "trend",
             "observed_at": timestamp(60),
             "window": window,
@@ -947,3 +963,273 @@ def test_invalid_returned_history_raises_before_missing_history_outcome() -> Non
         direct_service(CorruptBenchmark(SimulationClock(T), [])).relative_strength(
             BTC, ETH
         )
+
+
+def hours_before_t(hours: int) -> datetime:
+    return T - timedelta(hours=hours)
+
+
+def candle_span(first: int, last: int, count: int) -> CandleSpan:
+    """Candles closing `first` hours through `last` hours before T."""
+    return CandleSpan(
+        first_close_time=hours_before_t(first),
+        last_close_time=hours_before_t(last),
+        bar_count=count,
+    )
+
+
+SPAN_GOLDENS: dict[MarketResearchCapability, dict[str, CandleSpan]] = {
+    MarketResearchCapability.TREND: {
+        "sma20_candles": candle_span(19, 0, 20),
+        "sma50_candles": candle_span(49, 0, 50),
+    },
+    MarketResearchCapability.VOLATILITY: {
+        "current_candles": candle_span(19, 0, 20),
+        "previous_candles": candle_span(39, 20, 20),
+    },
+    MarketResearchCapability.BOLLINGER_POSITION: {
+        "band_candles": candle_span(19, 0, 20),
+    },
+    MarketResearchCapability.LEVELS: {"level_candles": candle_span(24, 1, 24)},
+    MarketResearchCapability.VOLUME_CONTEXT: {
+        "baseline_candles": candle_span(24, 1, 24)
+    },
+    MarketResearchCapability.CANDLE_STRUCTURE: {
+        "baseline_candles": candle_span(20, 1, 20)
+    },
+}
+SECTION_SPAN_GOLDENS = {
+    "four_hour": {
+        "sma20_candles": candle_span(79, 0, 80),
+        "previous_sma20_candles": candle_span(99, 20, 80),
+        "range_candles": candle_span(83, 4, 80),
+    },
+    "daily": {
+        "sma20_candles": candle_span(479, 0, 480),
+        "previous_sma20_candles": candle_span(599, 120, 480),
+        "range_candles": candle_span(503, 24, 480),
+    },
+}
+
+
+@pytest.mark.parametrize("capability", tuple(SPAN_GOLDENS))
+def test_payload_spans_name_their_candles_by_close_time(
+    capability: MarketResearchCapability,
+) -> None:
+    payload = success(service(), capability).payload
+    for field, expected in SPAN_GOLDENS[capability].items():
+        assert getattr(payload, field) == expected
+
+
+def test_higher_timeframe_section_spans_and_close_times() -> None:
+    payload = success(service(), MarketResearchCapability.HIGHER_TIMEFRAME).payload
+    assert isinstance(payload, HigherTimeframePayload)
+    for name, offset in (("four_hour", 20), ("daily", 120)):
+        section = getattr(payload, name)
+        for field, expected in SECTION_SPAN_GOLDENS[name].items():
+            assert getattr(section, field) == expected
+        assert section.close_5_blocks_ago_close_time == hours_before_t(offset)
+
+
+def test_candle_structure_baseline_differs_from_current_volatility_span() -> None:
+    svc = service()
+    structure = success(svc, MarketResearchCapability.CANDLE_STRUCTURE).payload
+    volatility = success(svc, MarketResearchCapability.VOLATILITY).payload
+    assert isinstance(structure, CandleStructurePayload)
+    assert isinstance(volatility, VolatilityPayload)
+    assert structure.baseline_candles != volatility.current_candles
+    assert "previous_mean_true_range" not in type(structure).model_fields
+
+
+def payload_times(value: Any) -> list[datetime]:
+    if isinstance(value, datetime):
+        return [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, (list, tuple)):
+        return [time for item in value for time in payload_times(item)]
+    return []
+
+
+@pytest.mark.parametrize("capability", CAPABILITIES)
+def test_no_payload_time_exceeds_t_even_with_planted_future_candles(
+    capability: MarketResearchCapability,
+) -> None:
+    base = history(hours=span(capability))
+    planted = base + tuple(candle(i, low="1", high="999999") for i in range(60, 70))
+    result = success(service(planted), capability)
+    times = payload_times(result.payload.model_dump())
+    timeless = {
+        MarketResearchCapability.MOMENTUM,
+        MarketResearchCapability.RELATIVE_STRENGTH,
+    }
+    assert bool(times) is (capability not in timeless)
+    assert all(result.context.window.start < time <= T for time in times)
+
+
+def assert_rejected(
+    result: ResearchToolSuccess, payload: dict[str, Any], match: str
+) -> None:
+    """A forged payload fails nested, instance and JSON revalidation alike."""
+    nested = result.model_dump() | {"payload": payload}
+    attempts: list[Callable[[], object]] = [
+        lambda: ResearchToolSuccess.model_validate(nested),
+        lambda: ResearchToolSuccess.model_validate_json(to_json(nested)),
+    ]
+    if set(payload) <= set(type(result.payload).model_fields):
+        forged = type(result.payload).model_construct(**payload)
+        attempts.append(
+            lambda: ResearchToolSuccess.model_validate(
+                {
+                    "context": result.context,
+                    "payload": forged,
+                    "evidence": result.evidence,
+                }
+            )
+        )
+    for attempt in attempts:
+        with pytest.raises(ValidationError) as caught:
+            attempt()
+        assert any(match in error["msg"] for error in caught.value.errors())
+
+
+HOUR = timedelta(hours=1)
+SPAN_PATHS = (
+    [(c, (field,)) for c, fields in SPAN_GOLDENS.items() for field in fields]
+    + [
+        (MarketResearchCapability.HIGHER_TIMEFRAME, (section, field))
+        for section, fields in SECTION_SPAN_GOLDENS.items()
+        for field in fields
+    ]
+    + [(MarketResearchCapability.LOWER_BAND_CROSSINGS, ("lookback_candles",))]
+)
+SPANNED = tuple(dict.fromkeys(c for c, _ in SPAN_PATHS))
+
+
+def shift_times(value: Any, delta: timedelta) -> Any:
+    if isinstance(value, datetime):
+        return value + delta
+    if isinstance(value, dict):
+        return {key: shift_times(item, delta) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(shift_times(item, delta) for item in value)
+    return value
+
+
+def replaced(payload: dict[str, Any], path: tuple[str, ...], value: Any) -> Any:
+    head, *rest = path
+    inner = value if not rest else replaced(payload[head], tuple(rest), value)
+    return payload | {head: inner}
+
+
+def located(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
+    for name in path:
+        payload = payload[name]
+    return payload
+
+
+@pytest.mark.parametrize("delta", [HOUR, -HOUR])
+@pytest.mark.parametrize("capability", SPANNED)
+def test_translated_payload_is_consistent_but_not_anchored_to_t(
+    capability: MarketResearchCapability, delta: timedelta
+) -> None:
+    result = success(service(), capability)
+    payload = shift_times(result.payload.model_dump(), delta)
+    # Every relation inside the payload survives translation; only T anchors it.
+    type(result.payload).model_validate(payload)
+    assert_rejected(result, payload, "not anchored to T")
+
+
+@pytest.mark.parametrize("capability,path", SPAN_PATHS)
+def test_each_span_is_anchored_sized_and_consistent(
+    capability: MarketResearchCapability, path: tuple[str, ...]
+) -> None:
+    result = success(service(), capability)
+    payload = result.payload.model_dump()
+    span = located(payload, path)
+    for delta in (HOUR, -HOUR):
+        assert_rejected(result, replaced(payload, path, shift_times(span, delta)), "")
+    longer = span | {
+        "first_close_time": span["first_close_time"] - HOUR,
+        "bar_count": span["bar_count"] + 1,
+    }
+    CandleSpan.model_validate(longer)
+    assert_rejected(result, replaced(payload, path, longer), "fixed bar count")
+    inconsistent = span | {"bar_count": span["bar_count"] + 1}
+    assert_rejected(result, replaced(payload, path, inconsistent), "span geometry")
+
+
+@pytest.mark.parametrize(
+    "path,hours,match",
+    [
+        (("recent_high_close_time",), 0, "prior candles"),
+        (("recent_low_close_time",), 25, "prior candles"),
+    ]
+    + [
+        ((section, field), hours, "range_candles")
+        for section, block in (("four_hour", 4), ("daily", 24))
+        for field, hours in (
+            ("range_high_close_time", block - 1),
+            ("range_low_close_time", 21 * block),
+        )
+    ],
+)
+def test_extreme_times_must_lie_in_their_spans(
+    path: tuple[str, ...], hours: int, match: str
+) -> None:
+    capability = (
+        MarketResearchCapability.LEVELS
+        if len(path) == 1
+        else MarketResearchCapability.HIGHER_TIMEFRAME
+    )
+    result = success(service(), capability)
+    payload = replaced(result.payload.model_dump(), path, hours_before_t(hours))
+    assert_rejected(result, payload, match)
+
+
+@pytest.mark.parametrize(
+    "section,field,delta,match",
+    [
+        (section, field, delta, match)
+        for section in ("four_hour", "daily")
+        for field, match in (
+            ("close_5_blocks_ago_close_time", "block offsets"),
+            ("previous_sma20_candles", "block offsets"),
+            ("range_candles", "block offsets"),
+            ("sma20_candles", "block offsets"),
+        )
+        for delta in (HOUR, -HOUR)
+    ]
+    + [
+        ("daily", None, -HOUR, "end at the same candle"),
+        ("four_hour", None, HOUR, "end at the same candle"),
+    ],
+)
+def test_higher_timeframe_section_anchors_must_agree(
+    section: str, field: str | None, delta: timedelta, match: str
+) -> None:
+    result = success(service(), MarketResearchCapability.HIGHER_TIMEFRAME)
+    payload = result.payload.model_dump()
+    path = (section,) if field is None else (section, field)
+    shifted = replaced(payload, path, shift_times(located(payload, path), delta))
+    assert_rejected(result, shifted, match)
+
+
+@pytest.mark.parametrize("field", ["current_candles", "previous_candles"])
+def test_volatility_spans_must_be_consecutive(field: str) -> None:
+    result = success(service(), MarketResearchCapability.VOLATILITY)
+    payload = result.payload.model_dump()
+    shifted = replaced(payload, (field,), shift_times(payload[field], -HOUR))
+    assert_rejected(result, shifted, "consecutive")
+
+
+def test_stored_previous_policy_is_rejected() -> None:
+    result = success(service(), MarketResearchCapability.TREND)
+    stored = result.model_dump()
+    stored["context"]["policy"] = {"policy_id": "market_research_v2"}
+    with pytest.raises(ValidationError):
+        ResearchToolSuccess.model_validate(stored)
+    with pytest.raises(ValidationError):
+        ResearchToolSuccess.model_validate_json(to_json(stored))
+    with pytest.raises(ValidationError):
+        MarketResearchPolicy(policy_id="market_research_v2")  # type: ignore[arg-type]

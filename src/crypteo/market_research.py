@@ -25,6 +25,7 @@ from crypteo.domain._market_research_arithmetic import (
 from crypteo.domain.market import Candle, TradingPair
 from crypteo.domain.market_research import (
     BollingerPositionPayload,
+    CandleSpan,
     CandleStructurePayload,
     DailySection,
     FourHourSection,
@@ -303,6 +304,14 @@ def _unavailable(
     return None
 
 
+def _span(candles: tuple[Candle, ...]) -> CandleSpan:
+    return CandleSpan(
+        first_close_time=candles[0].close_time,
+        last_close_time=candles[-1].close_time,
+        bar_count=len(candles),
+    )
+
+
 def _calculate(
     capability: MarketResearchCapability,
     candles: tuple[Candle, ...],
@@ -317,6 +326,8 @@ def _calculate(
                 close=close,
                 sma20=sma20,
                 sma50=sma50,
+                sma20_candles=_span(candles[-20:]),
+                sma50_candles=_span(candles),
                 close_vs_sma20=_return(close, sma20),
                 close_vs_sma50=_return(close, sma50),
                 sma20_vs_sma50=_return(sma20, sma50),
@@ -336,7 +347,10 @@ def _calculate(
             previous_tr = mean_true_range(candles[:21])
             current = _divide(current_tr, close)
             previous = _divide(previous_tr, candles[20].close)
+            # Each span excludes its previous-close seed: candle 20, then candle 0.
             return VolatilityPayload(
+                current_candles=_span(candles[21:]),
+                previous_candles=_span(candles[1:21]),
                 current_mean_true_range=current_tr,
                 previous_mean_true_range=previous_tr,
                 current_ending_close=close,
@@ -365,6 +379,7 @@ def _calculate(
                     UndefinedReason.ZERO_BAND_WIDTH,
                 ),
                 bandwidth_fraction=_divide(width, stats.sma),
+                band_candles=_span(candles[-20:]),
             )
         case MarketResearchCapability.LEVELS:
             # Equal extrema select the most recent completed prior candle.
@@ -378,6 +393,7 @@ def _calculate(
                 recent_low_close_time=low.close_time,
                 recent_high_distance=_return(close, high.high),
                 recent_low_distance=_return(close, low.low),
+                level_candles=_span(candles[:-1]),
             )
         case MarketResearchCapability.VOLUME_CONTEXT:
             baseline = _mean(tuple(item.volume for item in candles[:-1]))
@@ -387,6 +403,7 @@ def _calculate(
                 volume_ratio=_ratio(
                     candles[-1].volume, baseline, UndefinedReason.ZERO_BASELINE_VOLUME
                 ),
+                baseline_candles=_span(candles[:-1]),
             )
         case MarketResearchCapability.CANDLE_STRUCTURE:
             last = candles[-1]
@@ -398,6 +415,8 @@ def _calculate(
                 **_candle_anatomy(
                     last.open, last.high, last.low, close, mean_true_range(candles[:21])
                 ),
+                # The span excludes candle 0, the previous-close seed.
+                baseline_candles=_span(candles[1:21]),
             )
         case MarketResearchCapability.HIGHER_TIMEFRAME:
             return HigherTimeframePayload(
@@ -437,20 +456,34 @@ def _block_section(candles: tuple[Candle, ...], hours: int) -> dict[str, Any]:
     )
     closes = tuple(block[-1].close for block in blocks)
     close, sma20, previous_sma20 = closes[0], _mean(closes[:20]), _mean(closes[5:])
-    range_high = max(item.high for block in blocks[1:21] for item in block)
-    range_low = min(item.low for block in blocks[1:21] for item in block)
+
+    def covering(newest: int) -> tuple[Candle, ...]:
+        """The candles of blocks newest..newest + 19 in time order."""
+        end = len(candles) - newest * hours
+        return candles[end - 20 * hours : end]
+
+    ranged = covering(1)
+    # Equal extrema select the most recent candle, as recent levels do.
+    high = max(ranged, key=lambda item: (item.high, item.close_time))
+    low = min(reversed(ranged), key=lambda item: item.low)
     return dict(
         close=close,
         sma20=sma20,
         previous_sma20=previous_sma20,
+        sma20_candles=_span(covering(0)),
+        previous_sma20_candles=_span(covering(5)),
         close_vs_sma20=_return(close, sma20),
         sma20_change=_return(sma20, previous_sma20),
         close_5_blocks_ago=closes[5],
+        close_5_blocks_ago_close_time=blocks[5][-1].close_time,
         return_5_blocks=_return(close, closes[5]),
-        range_high=range_high,
-        range_low=range_low,
-        range_high_distance=_return(close, range_high),
-        range_low_distance=_return(close, range_low),
+        range_high=high.high,
+        range_low=low.low,
+        range_high_close_time=high.close_time,
+        range_low_close_time=low.close_time,
+        range_candles=_span(ranged),
+        range_high_distance=_return(close, high.high),
+        range_low_distance=_return(close, low.low),
     )
 
 
@@ -464,7 +497,8 @@ def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayl
     """
     statistics = rolling_bollinger_statistics(candles)
     last = len(candles) - 1
-    pending = 0
+    pending: list[datetime] = []
+    current_crossed = False
     reached: list[bool] = []
     closes: list[Decimal] = []
     adverse: list[Decimal] = []
@@ -479,7 +513,8 @@ def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayl
         ):
             continue
         if i + _HORIZON > last:
-            pending += 1
+            pending.append(candles[i].close_time)
+            current_crossed = i == last
             continue
         entry, outcome = candles[i].close, candles[i + 1 : i + 1 + _HORIZON]
         reached.append(any(item.high >= current.sma for item in outcome))
@@ -498,8 +533,11 @@ def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayl
     )
     positive = sum(1 for value in closes if value > 0)
     return LowerBandCrossingsPayload(
+        lookback_candles=_span(candles),
         sample_count=count,
-        pending_count=pending,
+        pending_count=len(pending),
+        pending_close_times=tuple(pending),
+        current_candle_crossed=current_crossed,
         reached_sma20_count=sum(reached),
         positive_close_count=positive,
         reached_sma20_fraction=_ratio(
