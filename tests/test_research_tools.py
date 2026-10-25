@@ -24,32 +24,8 @@ from crypteo.research_tools import (
     tool_definitions,
 )
 
-# Pinned digests of the previous (v4) tool version; every v5 description changed.
-V4_DIGESTS = {
-    "trend": "c82ce9d8d550c9eaec0538a25ab1b2a0ddb6ea078312b0f0ea2d5dc4799832fa",
-    "momentum": "c285f89a3f66a0d9369c80020160e3125fc61bddfa0e244b0623f5e243052527",
-    "volatility": "bf2c13e00d2dc3817f747a1b2172d2d2c660f6ad0a53343bbff4f5b6bd782754",
-    "bollinger_position": (
-        "2ce528d4ff1ee46edb66400cf8a3122386c93d666eb019ef1dcfecbed0ffba6f"
-    ),
-    "levels": "758f241968e9fa5b3ac066a8a51ee419da10764a505e4b1ebad9b7c040af6c3b",
-    "volume_context": (
-        "7cfcd4a8d2474c18dcd7a7b4ba011d6f5925cffc96f1bd4e72b12f32c5c10db1"
-    ),
-    "candle_structure": (
-        "d9a309f73ee82c880255746024ede40bbccf67e04721b9498120d337743daf18"
-    ),
-    "higher_timeframe": (
-        "bf9f4be59991949bdeba8845050aa465c12ec169a8d769079ecacac873939a5b"
-    ),
-    "lower_band_crossings": (
-        "e198511f1cc7c38926c9817d8a682ab30e9450b20c75f54605bd7ea8b2c15ada"
-    ),
-    "relative_strength": (
-        "46a313cda8bdbe314a3d64119ffde3c0aaadeb92169c5f3e0e95a47ab35c55ca"
-    ),
-}
-SINGLE_ASSET_DIGESTS = {
+# Pinned v5 digests; only the crossing description changed in v6.
+V5_DIGESTS = {
     "trend": "c51d443913434092414fa8a868266322db65c0ddd05a7fb3179fe69d01e53441",
     "momentum": "cb6f096582112cd14cb859bb2643cb299c3c745853b8cb9c6f4f9f29d604ebd7",
     "volatility": "b557775e204a34298bf24aa931a5bac0237ebe04a32a2fd25fee743f062ea6f0",
@@ -69,16 +45,50 @@ SINGLE_ASSET_DIGESTS = {
     "lower_band_crossings": (
         "b4cb962ca00f9b105e4c4d4aa818bbdec6571cc7bc5f9bf3b7222e2c5e2ddfba"
     ),
+    "relative_strength": (
+        "195ac8cb7f628612a8f35c97b3d91e721d2f4617f8a855ffe14c945d69d27dcd"
+    ),
 }
-RELATIVE_STRENGTH_DIGEST = (
-    "195ac8cb7f628612a8f35c97b3d91e721d2f4617f8a855ffe14c945d69d27dcd"
-)
-# The v5 description text, verbatim.
+SINGLE_ASSET_DIGESTS = {
+    name: digest for name, digest in V5_DIGESTS.items() if name != "relative_strength"
+} | {
+    "lower_band_crossings": (
+        "f18f3c95580ef80e42398c4d8556bdf0029c7f51769cd4f942422c499af05e84"
+    )
+}
+RELATIVE_STRENGTH_DIGEST = V5_DIGESTS["relative_strength"]
+# The v6 description text, verbatim; only the crossing text extends v5.
 SUFFIX = (
     "Completed Coinbase hourly candles visible at T; venue, timeframe, window and "
     "cutoff are runtime-owned. T-kh is the candle closing k hours before T; each "
     "*_candles payload field gives the first and last close time and the count of "
     "the candles it covers."
+)
+V5_CROSSINGS = (
+    "History of this pair's hourly closes crossing below the lower "
+    "Bollinger band (scanner rule) in candles T-719h..T (lookback_candles). "
+    "Crossings at T-6h or earlier, whose next 6 candles all closed by T, are "
+    "sampled: counts and fractions reaching the trigger's SMA20 intrabar and "
+    "closing higher after 6 hours, close-return mean, median and range, and "
+    "mean adverse and favorable excursions. Crossings at T-5h..T are pending "
+    "and not sampled: pending_count counts them, pending_close_times lists "
+    "their close times, and current_candle_crossed is true exactly when the "
+    "candle ending at T is one of them."
+)
+CONDITIONED_CROSSINGS = (
+    "unconditional_baseline samples every candle T-699h..T-6h (start_candles), "
+    "crossing or not, with the same 6-candle outcomes: positive-close count and "
+    "fraction, close-return mean and median, and mean adverse and favorable "
+    "excursions; its samples overlap. Sampled crossings at T-670h or later are "
+    "classified by two features of the crossing candle: wide range (high minus low "
+    "at least the mean true range of the 20 candles before it) and downtrend "
+    "(SMA20 below SMA50 of the closes ending at it). wide_range_crossings, "
+    "not_wide_range_crossings, downtrend_crossings and not_downtrend_crossings "
+    "give, per group, counts and fractions reaching the trigger's SMA20 intrabar "
+    "and closing higher, mean close return, and mean adverse and favorable "
+    "excursions; unclassified_count counts sampled crossings before T-670h. "
+    "current_wide_range and current_downtrend give both features for the candle "
+    "ending at T. Groups can hold few samples."
 )
 DESCRIPTIONS = {
     "trend": (
@@ -137,17 +147,7 @@ DESCRIPTIONS = {
         "that the daily range excludes, and its high or low can lie outside the "
         "daily range."
     ),
-    "lower_band_crossings": (
-        "History of this pair's hourly closes crossing below the lower "
-        "Bollinger band (scanner rule) in candles T-719h..T (lookback_candles). "
-        "Crossings at T-6h or earlier, whose next 6 candles all closed by T, are "
-        "sampled: counts and fractions reaching the trigger's SMA20 intrabar and "
-        "closing higher after 6 hours, close-return mean, median and range, and "
-        "mean adverse and favorable excursions. Crossings at T-5h..T are pending "
-        "and not sampled: pending_count counts them, pending_close_times lists "
-        "their close times, and current_candle_crossed is true exactly when the "
-        "candle ending at T is one of them."
-    ),
+    "lower_band_crossings": f"{V5_CROSSINGS} {CONDITIONED_CROSSINGS}",
     "relative_strength": (
         "Subject minus benchmark close-to-close returns over 6h (close at T vs "
         "T-6h) and 24h (T vs T-24h), from aligned candles of both pairs. Offered "
@@ -163,26 +163,28 @@ def digests(benchmarks: tuple[TradingPair, ...]) -> dict[str, str]:
     }
 
 
-def test_v5_tool_identity_snapshots() -> None:
+def test_v6_tool_identity_snapshots() -> None:
     current = digests((ETH, SOL))
     assert current == SINGLE_ASSET_DIGESTS | {
         "relative_strength": RELATIVE_STRENGTH_DIGEST
     }
     # Without a bound benchmark, relative strength is not offered at all.
     assert digests(()) == SINGLE_ASSET_DIGESTS
-    assert all(current[name] != V4_DIGESTS[name] for name in V4_DIGESTS)
-    assert TOOL_VERSION == "bounded_market_tools_v5"
+    # Digests exclude the version: only the crossing definition's bytes moved.
+    changed = {name for name in V5_DIGESTS if current[name] != V5_DIGESTS[name]}
+    assert changed == {"lower_band_crossings"}
+    assert TOOL_VERSION == "bounded_market_tools_v6"
     assert {t.identity.version for t in tool_definitions(BTC, ())} == {TOOL_VERSION}
 
 
 def test_policy_identity_moves_only_tools_and_market_research() -> None:
     policy = research_policy(workflow_config())
-    assert policy.market_research == "market_research_v3"
+    assert policy.market_research == "market_research_v4"
     assert (policy.workflow, policy.model_view) == (
         "bounded_research_v2",
         "compact_research_view_v2",
     )
-    # Prompt and schema identities are those pinned before v5.
+    # Prompt and schema identities are those pinned before v5 and v6.
     assert [p.digest.removeprefix("sha256:") for p in policy.prompts] == [
         "850412dde6c09ce5b9ba74c1deec75cbd5a05a6ab766978aac6c91d530294172",
         "991afdb1f18f04a095cdaff07577e0a445ac9885a3deaf01685a7e2d1b791792",
@@ -276,7 +278,7 @@ def span_fields(value: object) -> set[str]:
 
 
 @pytest.mark.parametrize("capability", MarketResearchCapability)
-def test_descriptions_are_the_v5_text_and_name_every_span(
+def test_descriptions_are_the_v6_text_and_name_every_span(
     capability: MarketResearchCapability,
 ) -> None:
     assert set(TOOL_DESCRIPTIONS) == set(MarketResearchCapability)

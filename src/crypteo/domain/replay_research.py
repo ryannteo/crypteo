@@ -36,7 +36,7 @@ class SubjectToolIdentity(ModelContract):
 class ResearchPolicyIdentity(ModelContract):
     configuration_digest: Digest
     workflow: Literal["bounded_research_v2"] = "bounded_research_v2"
-    market_research: Literal["market_research_v3"] = "market_research_v3"
+    market_research: Literal["market_research_v4"] = "market_research_v4"
     model_view: Literal["compact_research_view_v2"] = "compact_research_view_v2"
     prompts: tuple[ContentIdentity, ...]
     schemas: tuple[ContentIdentity, ...]

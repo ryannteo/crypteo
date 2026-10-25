@@ -23,7 +23,7 @@ from crypteo.research_model import (
     render_json,
 )
 
-TOOL_VERSION = "bounded_market_tools_v5"
+TOOL_VERSION = "bounded_market_tools_v6"
 
 _DESCRIPTION_SUFFIX = (
     "Completed Coinbase hourly candles visible at T; venue, timeframe, window and "
@@ -99,7 +99,21 @@ TOOL_DESCRIPTIONS: Mapping[MarketResearchCapability, str] = MappingProxyType(
             "mean adverse and favorable excursions. Crossings at T-5h..T are pending "
             "and not sampled: pending_count counts them, pending_close_times lists "
             "their close times, and current_candle_crossed is true exactly when the "
-            "candle ending at T is one of them."
+            "candle ending at T is one of them. unconditional_baseline samples "
+            "every candle T-699h..T-6h (start_candles), crossing or not, with the "
+            "same 6-candle outcomes: positive-close count and fraction, close-return "
+            "mean and median, and mean adverse and favorable excursions; its samples "
+            "overlap. Sampled crossings at T-670h or later are classified by two "
+            "features of the crossing candle: wide range (high minus low at least "
+            "the mean true range of the 20 candles before it) and downtrend (SMA20 "
+            "below SMA50 of the closes ending at it). wide_range_crossings, "
+            "not_wide_range_crossings, downtrend_crossings and "
+            "not_downtrend_crossings give, per group, counts and fractions reaching "
+            "the trigger's SMA20 intrabar and closing higher, mean close return, "
+            "and mean adverse and favorable excursions; unclassified_count counts "
+            "sampled crossings before T-670h. current_wide_range and "
+            "current_downtrend give both features for the candle ending at T. "
+            "Groups can hold few samples."
         ),
         MarketResearchCapability.RELATIVE_STRENGTH: (
             "Subject minus benchmark close-to-close returns over 6h (close at T vs "

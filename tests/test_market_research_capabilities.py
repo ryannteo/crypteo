@@ -6,30 +6,37 @@ from random import Random
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from test_market_research import (
     BTC,
     CAPABILITIES,
+    HOUR,
     ORACLE,
     T,
     assert_rejected,
     candle,
     candle_span,
     hours_before_t,
+    located,
+    replaced,
     service,
+    shift_times,
     success,
 )
 
 from crypteo.domain.market import Candle
 from crypteo.domain.market_research import (
     CandleStructurePayload,
+    CrossingGroup,
     DailySection,
     FourHourSection,
     HigherTimeframePayload,
     LowerBandCrossingsPayload,
     MarketResearchCapability,
+    OutcomeBaseline,
     ResearchRatio,
     ResearchToolSuccess,
+    TrendPayload,
     UndefinedReason,
 )
 from crypteo.scanner import OpportunityScanner
@@ -661,6 +668,505 @@ def test_zero_sample_payload_rejects_aggregates() -> None:
     with pytest.raises(ValidationError, match="exactly with samples"):
         LowerBandCrossingsPayload.model_validate(
             payload.model_dump() | {"mean_adverse_excursion": Decimal(0)}
+        )
+
+
+# ADR-015: the unconditional baseline and the pre-registered conditioned groups.
+NEW_FIELDS = (
+    "unconditional_baseline",
+    "current_wide_range",
+    "current_downtrend",
+    "unclassified_count",
+    "wide_range_crossings",
+    "not_wide_range_crossings",
+    "downtrend_crossings",
+    "not_downtrend_crossings",
+)
+GROUPS = NEW_FIELDS[4:]
+
+
+def oracle_crossings(candles: tuple[Candle, ...]) -> dict[str, Any]:
+    """A plain recomputation of every new field over the 720 candles ending at T."""
+    window = candles[-720:]
+    assert window[-1].close_time == T
+    c = [item.close for item in window]
+    h = [item.high for item in window]
+    lo = [item.low for item in window]
+    with localcontext(ORACLE):
+
+        def sma(j: int, n: int) -> Decimal:
+            return sum(c[j - n + 1 : j + 1], Decimal(0)) / n
+
+        def lower(j: int) -> Decimal:
+            m = sma(j, 20)
+            variance = sum(((x - m) ** 2 for x in c[j - 19 : j + 1]), Decimal(0)) / 20
+            return m - 2 * variance.sqrt()
+
+        def outcome(i: int) -> tuple[Decimal, Decimal, Decimal]:
+            return (
+                c[i + 6] / c[i] - 1,
+                min(lo[i + 1 : i + 7]) / c[i] - 1,
+                max(h[i + 1 : i + 7]) / c[i] - 1,
+            )
+
+        def wide(j: int) -> bool:
+            ranges = [
+                max(h[k] - lo[k], abs(h[k] - c[k - 1]), abs(lo[k] - c[k - 1]))
+                for k in range(j - 20, j)
+            ]
+            return h[j] - lo[j] >= sum(ranges, Decimal(0)) / 20
+
+        def down(j: int) -> bool:
+            return sma(j, 20) < sma(j, 50)
+
+        def mean(values: list[Decimal]) -> Decimal:
+            return sum(values, Decimal(0)) / len(values)
+
+        def fraction(count: int, total: int) -> dict[str, Any]:
+            if not total:
+                return {"value": None, "undefined_reason": UndefinedReason.ZERO_SAMPLE}
+            return {"value": Decimal(count) / total, "undefined_reason": None}
+
+        def group(indices: list[int]) -> dict[str, Any]:
+            n = len(indices)
+            reached = sum(
+                any(h[k] >= sma(i, 20) for k in range(i + 1, i + 7)) for i in indices
+            )
+            outcomes = [outcome(i) for i in indices]
+            positive = sum(close > 0 for close, _, _ in outcomes)
+            return {
+                "sample_count": n,
+                "reached_sma20_count": reached,
+                "positive_close_count": positive,
+                "reached_sma20_fraction": fraction(reached, n),
+                "positive_close_fraction": fraction(positive, n),
+                "mean_close_return": mean([o[0] for o in outcomes]) if n else None,
+                "mean_adverse_excursion": mean([o[1] for o in outcomes]) if n else None,
+                "mean_favorable_excursion": (
+                    mean([o[2] for o in outcomes]) if n else None
+                ),
+            }
+
+        sampled = [
+            i for i in range(20, 714) if c[i - 1] >= lower(i - 1) and c[i] < lower(i)
+        ]
+        classified = [i for i in sampled if i >= 49]
+        baseline = [outcome(i) for i in range(20, 714)]
+        closes = sorted(close for close, _, _ in baseline)
+        positive = sum(close > 0 for close in closes)
+        return {
+            "unconditional_baseline": {
+                "start_candles": {
+                    "first_close_time": window[20].close_time,
+                    "last_close_time": window[713].close_time,
+                    "bar_count": 694,
+                },
+                "sample_count": 694,
+                "positive_close_count": positive,
+                "positive_close_fraction": fraction(positive, 694),
+                "mean_close_return": mean([o[0] for o in baseline]),
+                "median_close_return": (closes[346] + closes[347]) / 2,
+                "mean_adverse_excursion": mean([o[1] for o in baseline]),
+                "mean_favorable_excursion": mean([o[2] for o in baseline]),
+            },
+            "current_wide_range": wide(719),
+            "current_downtrend": down(719),
+            "unclassified_count": len(sampled) - len(classified),
+            "wide_range_crossings": group([i for i in classified if wide(i)]),
+            "not_wide_range_crossings": group([i for i in classified if not wide(i)]),
+            "downtrend_crossings": group([i for i in classified if down(i)]),
+            "not_downtrend_crossings": group([i for i in classified if not down(i)]),
+            # The existing statistics, as one group of every sample.
+            "all_samples": group(sampled),
+        }
+
+
+ORACLE_SEEDS = (0, 1, 7, 20, 42, 82, 108)
+
+
+def test_new_crossing_fields_match_an_independent_oracle() -> None:
+    seen: set[tuple[str, bool]] = set()
+    for seed in ORACLE_SEEDS:
+        candles = random_walk(seed)
+        payload = payload_of(success(service(candles), CROSSINGS))
+        expected = oracle_crossings(candles)
+        overall = expected.pop("all_samples")
+        actual = payload.model_dump()
+        for name, value in expected.items():
+            assert actual[name] == value, (seed, name)
+        assert {name: actual[name] for name in overall} == overall
+        seen |= {(name, actual[name]["sample_count"] > 0) for name in GROUPS}
+        seen |= {
+            ("unclassified", payload.unclassified_count > 0),
+            ("wide", payload.current_wide_range),
+            ("downtrend", payload.current_downtrend),
+        }
+    # The seeds exercise every group, unclassified samples and both T features.
+    assert seen >= {(name, True) for name in (*GROUPS, "unclassified")}
+    assert seen >= {
+        (name, value) for name in ("wide", "downtrend") for value in (True, False)
+    }
+
+
+def square_wave(w: int) -> str:
+    """Closes alternate every 6 window indices, phased for 347 rises and falls."""
+    return "100" if (w + 5) // 6 % 2 == 0 else "125"
+
+
+def test_unconditional_baseline_golden() -> None:
+    candles = tuple(bar(w - 660, square_wave(w), "90", "130") for w in range(-10, 720))
+    result = success(service(candles), CROSSINGS)
+    baseline = payload_of(result).unconditional_baseline
+    # Every start closes 6 hours later at the other level: 100 -> 125 is +0.25 and
+    # 125 -> 100 is -0.2, 347 times each. Lows 90 and highs 130 throughout.
+    assert baseline.start_candles == candle_span(699, 6, 694)
+    assert baseline.sample_count == 694
+    assert baseline.positive_close_count == 347
+    assert baseline.positive_close_fraction == ResearchRatio(value=Decimal("0.5"))
+    # The even-count median averages the two middle values, -0.2 and 0.25.
+    assert baseline.median_close_return == Decimal("0.025")
+    assert baseline.mean_close_return == Decimal("0.025")
+    assert baseline.mean_adverse_excursion == Decimal("-0.19")
+    assert baseline.mean_favorable_excursion == Decimal("0.17")
+
+
+def replace_window(
+    candles: tuple[Candle, ...], **replacements: tuple[str, str, str]
+) -> tuple[Candle, ...]:
+    """Replace the candles at window indices named w<index> (closes, lows, highs)."""
+    changed = list(candles)
+    for name, values in replacements.items():
+        w = int(name.removeprefix("w"))
+        changed[w - 720] = bar(w - 660, *values)
+    return tuple(changed)
+
+
+def current_features(candles: tuple[Candle, ...]) -> tuple[bool, bool]:
+    svc = service(candles)
+    payload = payload_of(success(svc, CROSSINGS))
+    trend = success(svc, MarketResearchCapability.TREND).payload
+    candle_structure = success(svc, STRUCTURE).payload
+    assert isinstance(trend, TrendPayload)
+    assert isinstance(candle_structure, CandleStructurePayload)
+    # The features agree with the trend and candle-structure tools at the same T.
+    assert payload.current_downtrend is (trend.sma20 < trend.sma50)
+    assert payload.current_wide_range is (
+        candle_structure.range >= candle_structure.baseline_mean_true_range
+    )
+    return payload.current_wide_range, payload.current_downtrend
+
+
+FLAT = crossing_history({})
+# C(698) = 90 seeds the true range of candle 699: max(2, 101 - 90) = 11, so the
+# mean true range of candles 699..718 is (19 * 2 + 11) / 20 = 2.45.
+SEEDED = replace_window(FLAT, w698=("90", "89", "91"))
+
+
+@pytest.mark.parametrize(
+    "candles,wide",
+    [
+        (FLAT, True),
+        (replace_window(FLAT, w719=("100", "99.01", "101")), False),
+        (replace_window(SEEDED, w719=("100", "98.55", "101")), True),
+        (replace_window(SEEDED, w719=("100", "98.56", "101")), False),
+        # A zero mean true range makes any candle wide, even a zero-range one.
+        (tuple(bar(w - 660, "100", "100", "100") for w in range(-10, 720)), True),
+    ],
+)
+def test_wide_range_includes_a_range_equal_to_the_mean_true_range(
+    candles: tuple[Candle, ...], wide: bool
+) -> None:
+    assert current_features(candles)[0] is wide
+
+
+@pytest.mark.parametrize(
+    "candles,downtrend",
+    [
+        # Equal SMA20 and SMA50 is not a downtrend: both 100, then both 101.
+        (FLAT, False),
+        (
+            replace_window(
+                FLAT, w670=("130", "129", "131"), w719=("120", "119", "121")
+            ),
+            False,
+        ),
+        (replace_window(FLAT, w719=("99", "98", "100")), True),
+        (replace_window(FLAT, w719=("101", "100", "102")), False),
+    ],
+)
+def test_downtrend_requires_sma20_strictly_below_sma50(
+    candles: tuple[Candle, ...], downtrend: bool
+) -> None:
+    assert current_features(candles)[1] is downtrend
+
+
+@pytest.mark.parametrize("seed", ORACLE_SEEDS)
+def test_current_features_agree_with_trend_and_candle_structure(seed: int) -> None:
+    current_features(random_walk(seed))
+
+
+def empty_group() -> dict[str, Any]:
+    zero = undefined(UndefinedReason.ZERO_SAMPLE).model_dump()
+    return {
+        "sample_count": 0,
+        "reached_sma20_count": 0,
+        "positive_close_count": 0,
+        "reached_sma20_fraction": zero,
+        "positive_close_fraction": zero,
+        "mean_close_return": None,
+        "mean_adverse_excursion": None,
+        "mean_favorable_excursion": None,
+    }
+
+
+# The 80 crossing candle has range 2 and the 20 flat candles before it a mean true
+# range of 2, so it is wide; SMA20 99 is below SMA50 99.6, so it is a downtrend.
+ONE_SAMPLE = {
+    "sample_count": 1,
+    "reached_sma20_count": 1,
+    "positive_close_count": 1,
+    "reached_sma20_fraction": ResearchRatio(value=Decimal(1)).model_dump(),
+    "positive_close_fraction": ResearchRatio(value=Decimal(1)).model_dump(),
+    "mean_close_return": Decimal("0.25"),
+    "mean_adverse_excursion": Decimal("0.2375"),
+    "mean_favorable_excursion": Decimal("0.2625"),
+}
+
+
+@pytest.mark.parametrize("w,classified", [(48, False), (49, True), (713, True)])
+def test_sampled_crossings_are_classified_from_window_index_49(
+    w: int, classified: bool
+) -> None:
+    candles = crossing_history({w: (UP,) * 6})
+    # Window index w closes 719 - w hours before T: 48 is T-671h, 49 is T-670h.
+    assert candles[w - 720].close_time == hours_before_t(719 - w)
+    payload = payload_of(success(service(candles), CROSSINGS)).model_dump()
+    assert (payload["sample_count"], payload["pending_count"]) == (1, 0)
+    assert payload["unclassified_count"] == (0 if classified else 1)
+    member = ONE_SAMPLE if classified else empty_group()
+    assert payload["wide_range_crossings"] == payload["downtrend_crossings"] == member
+    assert payload["not_wide_range_crossings"] == empty_group()
+    assert payload["not_downtrend_crossings"] == empty_group()
+
+
+def test_pending_crossing_at_t_is_in_no_group() -> None:
+    payload = payload_of(crossings({48: (UP,) * 6, 400: (UP,) * 6, 719: ()}))
+    assert (payload.sample_count, payload.pending_count) == (2, 1)
+    assert payload.current_candle_crossed is True
+    assert payload.unclassified_count == 1
+    dumped = payload.model_dump()
+    assert dumped["wide_range_crossings"] == dumped["downtrend_crossings"] == ONE_SAMPLE
+    assert dumped["not_wide_range_crossings"] == empty_group()
+    assert dumped["not_downtrend_crossings"] == empty_group()
+
+
+def narrow_crossings() -> tuple[Candle, ...]:
+    """EVENTS with each crossing candle's range 1, below the mean true range 2."""
+    return replace_window(
+        crossing_history(EVENTS), **{f"w{w}": ("80", "79.5", "80.5") for w in EVENTS}
+    )
+
+
+def uptrend_crossing() -> tuple[Candle, ...]:
+    """A drop below the band from a steady rise; SMA20 stays above SMA50."""
+    closes = {w: str(200 + w) for w in range(-10, 720)} | {400: "570"}
+    return tuple(bar(w - 660, close) for w, close in sorted(closes.items()))
+
+
+@pytest.mark.parametrize(
+    "candles,empty",
+    [
+        (
+            crossing_history(EVENTS),
+            {"not_wide_range_crossings", "not_downtrend_crossings"},
+        ),
+        (narrow_crossings(), {"wide_range_crossings", "not_downtrend_crossings"}),
+        (uptrend_crossing(), {"not_wide_range_crossings", "downtrend_crossings"}),
+        (crossing_history({}), set(GROUPS)),
+        (crossing_history({716: (UP,) * 3}), set(GROUPS)),
+    ],
+)
+def test_groups_without_samples_have_undefined_fractions_and_null_aggregates(
+    candles: tuple[Candle, ...], empty: set[str]
+) -> None:
+    payload = payload_of(success(service(candles), CROSSINGS))
+    dumped = payload.model_dump()
+    assert {name for name in GROUPS if dumped[name] == empty_group()} == empty
+    # Each non-empty group holds every sample, so it repeats the overall statistics.
+    overall = {name: dumped[name] for name in ONE_SAMPLE}
+    for name in set(GROUPS) - empty:
+        assert dumped[name] == overall
+    assert payload.unclassified_count == 0
+
+
+def test_planted_future_candles_leave_baseline_and_groups_identical() -> None:
+    for seed in ORACLE_SEEDS[:3]:
+        candles = random_walk(seed)
+        original = success(service(candles), CROSSINGS)
+        # Extreme future candles would flip every feature and outcome if read.
+        planted = candles + tuple(
+            candle(hour, open="1", close="1", low="1", high="999999", volume="1")
+            for hour in range(60, 80)
+        )
+        changed = success(service(planted), CROSSINGS)
+        assert changed.payload == original.payload
+        assert changed.context.inputs[0].window_digest == (
+            original.context.inputs[0].window_digest
+        )
+        assert changed.evidence.evidence_id == original.evidence.evidence_id
+        baseline = payload_of(changed).unconditional_baseline
+        assert baseline.start_candles == candle_span(699, 6, 694)
+
+
+def group_dump(count: int, reached: int, positive: int) -> dict[str, Any]:
+    """A self-consistent group, to tamper only with the payload's relations."""
+    return CrossingGroup(
+        sample_count=count,
+        reached_sma20_count=reached,
+        positive_close_count=positive,
+        reached_sma20_fraction=ratio(reached, count),
+        positive_close_fraction=ratio(positive, count),
+        mean_close_return=Decimal(0),
+        mean_adverse_excursion=Decimal(0),
+        mean_favorable_excursion=Decimal(0),
+    ).model_dump()
+
+
+GROUPS_REJECTED = "crossing groups do not reconcile"
+
+
+# EVENTS: four classified samples (reached 2, positive 3), all wide and downtrend.
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({("not_wide_range_crossings",): group_dump(1, 0, 0)}, GROUPS_REJECTED),
+        ({("wide_range_crossings",): group_dump(3, 2, 3)}, GROUPS_REJECTED),
+        ({("downtrend_crossings",): group_dump(4, 1, 3)}, GROUPS_REJECTED),
+        ({("not_downtrend_crossings",): group_dump(1, 1, 1)}, GROUPS_REJECTED),
+        (
+            {
+                ("wide_range_crossings",): group_dump(4, 1, 3),
+                ("downtrend_crossings",): group_dump(4, 1, 3),
+            },
+            GROUPS_REJECTED,
+        ),
+        (
+            {
+                ("wide_range_crossings",): group_dump(4, 2, 2),
+                ("downtrend_crossings",): group_dump(4, 2, 2),
+            },
+            GROUPS_REJECTED,
+        ),
+        ({("unclassified_count",): 1}, GROUPS_REJECTED),
+        ({("unclassified_count",): 5}, GROUPS_REJECTED),
+        ({("wide_range_crossings", "reached_sma20_count"): 5}, "crossing counts"),
+        ({("downtrend_crossings", "positive_close_count"): 5}, "crossing counts"),
+        (
+            {("wide_range_crossings", "positive_close_fraction"): ratio(2, 4)},
+            "crossing counts",
+        ),
+        (
+            {
+                ("not_wide_range_crossings", "reached_sma20_fraction"): ResearchRatio(
+                    value=Decimal(0)
+                )
+            },
+            "crossing counts",
+        ),
+        (
+            {("not_wide_range_crossings", "mean_close_return"): Decimal(0)},
+            "exactly with samples",
+        ),
+        (
+            {("downtrend_crossings", "mean_favorable_excursion"): None},
+            "exactly with samples",
+        ),
+        ({("unconditional_baseline", "sample_count"): 693}, "Input should be 694"),
+        (
+            {("unconditional_baseline", "positive_close_count"): 695},
+            "baseline counts",
+        ),
+        (
+            {
+                ("unconditional_baseline", "positive_close_fraction"): ResearchRatio(
+                    value=Decimal(0)
+                )
+            },
+            "baseline counts",
+        ),
+        ({("current_wide_range",): 1}, "valid boolean"),
+        ({("current_downtrend",): "false"}, "valid boolean"),
+        ({("unclassified_count",): -1}, "greater than or equal to 0"),
+        ({("unclassified_count",): True}, "valid integer"),
+    ],
+)
+def test_conditioned_crossing_fields_reject_tampering(
+    changes: dict[tuple[str, ...], Any], match: str
+) -> None:
+    result = crossings(EVENTS)
+    payload = result.payload.model_dump()
+    for path, value in changes.items():
+        payload = replaced(payload, path, value)
+    with pytest.raises(ValidationError, match=match):
+        LowerBandCrossingsPayload.model_validate(payload)
+    assert_rejected(result, payload, match)
+
+
+def test_baseline_start_candles_are_anchored_to_t() -> None:
+    result = crossings(EVENTS)
+    payload = result.payload.model_dump()
+    path = ("unconditional_baseline", "start_candles")
+    for delta in (HOUR, -HOUR):
+        shifted = replaced(payload, path, shift_times(located(payload, path), delta))
+        LowerBandCrossingsPayload.model_validate(shifted)
+        assert_rejected(result, shifted, "not anchored to T")
+
+
+@pytest.mark.parametrize("field", NEW_FIELDS)
+def test_payload_without_a_new_field_is_rejected(field: str) -> None:
+    result = crossings(EVENTS)
+    payload = result.payload.model_dump()
+    del payload[field]
+    assert_rejected(result, payload, "Field required")
+
+
+@pytest.mark.parametrize(
+    "path", [(), ("unconditional_baseline",), ("wide_range_crossings",)]
+)
+def test_crossing_contracts_reject_extra_fields(path: tuple[str, ...]) -> None:
+    result = crossings(EVENTS)
+    payload = result.payload.model_dump()
+    extended = located(payload, path) | {"sample_weight": Decimal(1)}
+    forged = replaced(payload, path, extended) if path else extended
+    assert_rejected(result, forged, "Extra inputs are not permitted")
+
+
+def test_crossing_contracts_round_trip_and_revalidate_instances() -> None:
+    payload = payload_of(crossings(PENDING | {400: (UP,) * 6}))
+    models: tuple[BaseModel, ...] = (
+        payload,
+        payload.unconditional_baseline,
+        payload.wide_range_crossings,
+        payload.not_wide_range_crossings,
+    )
+    for model in models:
+        kind = type(model)
+        assert kind.model_validate_json(model.model_dump_json()) == model
+        assert kind.model_validate(model.model_dump()) == model
+        assert kind.model_validate(model) == model
+    forged_group = CrossingGroup.model_construct(
+        **payload.wide_range_crossings.model_dump() | {"reached_sma20_count": 2}
+    )
+    forged_baseline = OutcomeBaseline.model_construct(
+        **payload.unconditional_baseline.model_dump() | {"positive_close_count": 0}
+    )
+    with pytest.raises(ValidationError, match="crossing counts"):
+        CrossingGroup.model_validate(forged_group)
+    with pytest.raises(ValidationError, match="baseline counts"):
+        OutcomeBaseline.model_validate(forged_baseline)
+    with pytest.raises(ValidationError, match="crossing counts"):
+        LowerBandCrossingsPayload.model_validate(
+            payload.model_dump() | {"wide_range_crossings": forged_group}
         )
 
 

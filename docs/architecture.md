@@ -95,6 +95,9 @@ contributing data and computed payload; acquisition and whole-dataset identities
 remain provenance. Large candle windows stay outside the envelope. Payloads
 name the candles each measurement covers by first and last close time and count,
 and payload contracts validate those spans and times against `T`.
+The lower-band crossings tool also reports an unconditional 6-candle baseline
+over the same lookback and crossing groups conditioned on two pre-registered
+features ([ADR-015](decisions/ADR-015-pre-registered-crossing-base-rates.md)).
 
 Common opportunity, evidence, thesis, critique, and assessment schemas are validated
 contracts. They revalidate existing/nested instances and detach mutable inputs.

@@ -815,10 +815,10 @@ def test_provenance_is_canonical_schema_and_complete_typed_context() -> None:
     envelope = json.loads(result.evidence.model_dump_json())
     assert envelope["source"] == "coinbase_exchange_candles"
     provenance = envelope["provenance"]
-    assert provenance["producer"] == "market_research_v3.relative_strength"
+    assert provenance["producer"] == "market_research_v4.relative_strength"
     assert provenance["source_version"] == "1"
     params = provenance["query_params"]
-    assert params["policy"] == {"policy_id": "market_research_v3"}
+    assert params["policy"] == {"policy_id": "market_research_v4"}
     assert params["window"]["end"] == "2022-01-03T12:00:00.000000Z"
     assert [i["source"]["role"] for i in params["inputs"]] == ["subject", "benchmark"]
     for item in params["inputs"]:
@@ -900,7 +900,7 @@ def test_semantic_identity_matches_independent_canonical_encoding() -> None:
     expected_id = digest(
         {
             "identity_encoding_version": "1",
-            "policy": {"policy_id": "market_research_v3"},
+            "policy": {"policy_id": "market_research_v4"},
             "capability": "trend",
             "observed_at": timestamp(60),
             "window": window,
@@ -1101,7 +1101,13 @@ SPAN_PATHS = (
         for section, fields in SECTION_SPAN_GOLDENS.items()
         for field in fields
     ]
-    + [(MarketResearchCapability.LOWER_BAND_CROSSINGS, ("lookback_candles",))]
+    + [
+        (MarketResearchCapability.LOWER_BAND_CROSSINGS, ("lookback_candles",)),
+        (
+            MarketResearchCapability.LOWER_BAND_CROSSINGS,
+            ("unconditional_baseline", "start_candles"),
+        ),
+    ]
 )
 SPANNED = tuple(dict.fromkeys(c for c, _ in SPAN_PATHS))
 
@@ -1226,10 +1232,10 @@ def test_volatility_spans_must_be_consecutive(field: str) -> None:
 def test_stored_previous_policy_is_rejected() -> None:
     result = success(service(), MarketResearchCapability.TREND)
     stored = result.model_dump()
-    stored["context"]["policy"] = {"policy_id": "market_research_v2"}
+    stored["context"]["policy"] = {"policy_id": "market_research_v3"}
     with pytest.raises(ValidationError):
         ResearchToolSuccess.model_validate(stored)
     with pytest.raises(ValidationError):
         ResearchToolSuccess.model_validate_json(to_json(stored))
     with pytest.raises(ValidationError):
-        MarketResearchPolicy(policy_id="market_research_v2")  # type: ignore[arg-type]
+        MarketResearchPolicy(policy_id="market_research_v3")  # type: ignore[arg-type]

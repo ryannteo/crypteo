@@ -8,7 +8,12 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from crypteo.analytics import _sma20, mean_true_range, rolling_bollinger_statistics
+from crypteo.analytics import (
+    BollingerStatistics,
+    _sma20,
+    mean_true_range,
+    rolling_bollinger_statistics,
+)
 from crypteo.coinbase_acquisition import CoinbaseAcquisitionRecord
 from crypteo.coinbase_dataset import (
     CoinbaseCanonicalDataset,
@@ -27,6 +32,7 @@ from crypteo.domain.market_research import (
     BollingerPositionPayload,
     CandleSpan,
     CandleStructurePayload,
+    CrossingGroup,
     DailySection,
     FourHourSection,
     HigherTimeframePayload,
@@ -40,6 +46,7 @@ from crypteo.domain.market_research import (
     MarketSourceBinding,
     MarketSourceReference,
     MomentumPayload,
+    OutcomeBaseline,
     RelativeStrengthPayload,
     ResearchContext,
     ResearchInput,
@@ -488,21 +495,103 @@ def _block_section(candles: tuple[Candle, ...], hours: int) -> dict[str, Any]:
 
 
 _HORIZON = 6
+# Pre-registered in ADR-015: baseline samples start at index 20, the first a
+# crossing can be sampled at, and both features are defined from index 49.
+_FIRST_SAMPLE = 20
+_FIRST_CLASSIFIED = 49
+
+_Outcome = tuple[Decimal, Decimal, Decimal]
+
+
+def _outcome(candles: tuple[Candle, ...], i: int) -> _Outcome:
+    """Close return and adverse and favorable excursions over the next 6 candles."""
+    entry, outcome = candles[i].close, candles[i + 1 : i + 1 + _HORIZON]
+    return (
+        _return(outcome[-1].close, entry),
+        _return(min(item.low for item in outcome), entry),
+        _return(max(item.high for item in outcome), entry),
+    )
+
+
+def _median(values: tuple[Decimal, ...]) -> Decimal:
+    """The middle value, or the mean of the two middle values for an even count."""
+    ordered, middle = sorted(values), len(values) // 2
+    if len(values) % 2:
+        return ordered[middle]
+    return _mean((ordered[middle - 1], ordered[middle]))
+
+
+def _wide_range(candles: tuple[Candle, ...], j: int) -> bool:
+    """Range at least the mean true range of candles j-20..j-1, seeded by C(j-21)."""
+    return _difference(candles[j].high, candles[j].low) >= mean_true_range(
+        candles[j - 21 : j]
+    )
+
+
+def _downtrend(
+    candles: tuple[Candle, ...],
+    statistics: tuple[BollingerStatistics | None, ...],
+    j: int,
+) -> bool:
+    """SMA20 below SMA50 of the closes ending at candle j."""
+    current = statistics[j]
+    if current is None:
+        raise ValueError("validated Bollinger window unexpectedly unavailable")
+    return current.sma < _mean(tuple(item.close for item in candles[j - 49 : j + 1]))
+
+
+def _crossing_group(samples: tuple[tuple[bool, _Outcome], ...]) -> CrossingGroup:
+    count = len(samples)
+    reached = sum(1 for hit, _ in samples if hit)
+    closes = tuple(close for _, (close, _, _) in samples)
+    adverse = tuple(low for _, (_, low, _) in samples)
+    favorable = tuple(high for _, (_, _, high) in samples)
+    positive = sum(1 for value in closes if value > 0)
+    return CrossingGroup(
+        sample_count=count,
+        reached_sma20_count=reached,
+        positive_close_count=positive,
+        reached_sma20_fraction=_ratio(
+            Decimal(reached), Decimal(count), UndefinedReason.ZERO_SAMPLE
+        ),
+        positive_close_fraction=_ratio(
+            Decimal(positive), Decimal(count), UndefinedReason.ZERO_SAMPLE
+        ),
+        mean_close_return=_mean(closes) if count else None,
+        mean_adverse_excursion=_mean(adverse) if count else None,
+        mean_favorable_excursion=_mean(favorable) if count else None,
+    )
+
+
+def _outcome_baseline(candles: tuple[Candle, ...]) -> OutcomeBaseline:
+    starts = range(_FIRST_SAMPLE, len(candles) - _HORIZON)
+    closes, adverse, favorable = zip(
+        *(_outcome(candles, i) for i in starts), strict=True
+    )
+    positive = sum(1 for value in closes if value > 0)
+    return OutcomeBaseline(
+        start_candles=_span(candles[starts.start : starts.stop]),
+        positive_close_count=positive,
+        positive_close_fraction=_ratio(
+            Decimal(positive), Decimal(len(closes)), UndefinedReason.ZERO_SAMPLE
+        ),
+        mean_close_return=_mean(closes),
+        median_close_return=_median(closes),
+        mean_adverse_excursion=_mean(adverse),
+        mean_favorable_excursion=_mean(favorable),
+    )
 
 
 def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayload:
     """Sample scanner-rule crossings whose whole outcome horizon closed by T.
 
-    The window ends at T, so no outcome can read a candle after the window.
+    The window ends at T, so no outcome or feature can read a candle after it.
     """
     statistics = rolling_bollinger_statistics(candles)
     last = len(candles) - 1
     pending: list[datetime] = []
     current_crossed = False
-    reached: list[bool] = []
-    closes: list[Decimal] = []
-    adverse: list[Decimal] = []
-    favorable: list[Decimal] = []
+    samples: list[tuple[int, bool, _Outcome]] = []
     for i in range(1, len(candles)):
         previous, current = statistics[i - 1], statistics[i]
         if previous is None or current is None:
@@ -516,42 +605,48 @@ def _lower_band_crossings(candles: tuple[Candle, ...]) -> LowerBandCrossingsPayl
             pending.append(candles[i].close_time)
             current_crossed = i == last
             continue
-        entry, outcome = candles[i].close, candles[i + 1 : i + 1 + _HORIZON]
-        reached.append(any(item.high >= current.sma for item in outcome))
-        closes.append(_return(outcome[-1].close, entry))
-        adverse.append(_return(min(item.low for item in outcome), entry))
-        favorable.append(_return(max(item.high for item in outcome), entry))
-    count = len(closes)
+        outcome = candles[i + 1 : i + 1 + _HORIZON]
+        samples.append(
+            (i, any(item.high >= current.sma for item in outcome), _outcome(candles, i))
+        )
+    closes = tuple(close for _, _, (close, _, _) in samples)
     ordered = sorted(closes)
-    middle = count // 2
-    median = (
-        None
-        if not count
-        else ordered[middle]
-        if count % 2
-        else _mean((ordered[middle - 1], ordered[middle]))
+    count = len(closes)
+    classified = tuple(
+        (
+            _wide_range(candles, i),
+            _downtrend(candles, statistics, i),
+            (reached, outcome),
+        )
+        for i, reached, outcome in samples
+        if i >= _FIRST_CLASSIFIED
     )
-    positive = sum(1 for value in closes if value > 0)
     return LowerBandCrossingsPayload(
         lookback_candles=_span(candles),
-        sample_count=count,
         pending_count=len(pending),
         pending_close_times=tuple(pending),
         current_candle_crossed=current_crossed,
-        reached_sma20_count=sum(reached),
-        positive_close_count=positive,
-        reached_sma20_fraction=_ratio(
-            Decimal(sum(reached)), Decimal(count), UndefinedReason.ZERO_SAMPLE
-        ),
-        positive_close_fraction=_ratio(
-            Decimal(positive), Decimal(count), UndefinedReason.ZERO_SAMPLE
-        ),
-        mean_close_return=_mean(tuple(closes)) if count else None,
-        median_close_return=median,
+        # The overall statistics are those of one group holding every sample.
+        **dict(_crossing_group(tuple((hit, o) for _, hit, o in samples))),
+        median_close_return=_median(closes) if count else None,
         min_close_return=ordered[0] if count else None,
         max_close_return=ordered[-1] if count else None,
-        mean_adverse_excursion=_mean(tuple(adverse)) if count else None,
-        mean_favorable_excursion=_mean(tuple(favorable)) if count else None,
+        unconditional_baseline=_outcome_baseline(candles),
+        current_wide_range=_wide_range(candles, last),
+        current_downtrend=_downtrend(candles, statistics, last),
+        unclassified_count=count - len(classified),
+        wide_range_crossings=_crossing_group(
+            tuple(sample for wide, _, sample in classified if wide)
+        ),
+        not_wide_range_crossings=_crossing_group(
+            tuple(sample for wide, _, sample in classified if not wide)
+        ),
+        downtrend_crossings=_crossing_group(
+            tuple(sample for _, down, sample in classified if down)
+        ),
+        not_downtrend_crossings=_crossing_group(
+            tuple(sample for _, down, sample in classified if not down)
+        ),
     )
 
 

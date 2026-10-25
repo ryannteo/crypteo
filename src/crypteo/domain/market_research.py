@@ -74,7 +74,7 @@ class MarketRole(StrEnum):
 class MarketResearchPolicy(_Contract):
     """One fixed policy; window lengths are not configurable query parameters."""
 
-    policy_id: Literal["market_research_v3"] = "market_research_v3"
+    policy_id: Literal["market_research_v4"] = "market_research_v4"
 
     def required_bars(self, capability: MarketResearchCapability) -> int:
         match capability:
@@ -546,6 +546,90 @@ class HigherTimeframePayload(_Contract):
 Count = Annotated[int, Field(strict=True, ge=0)]
 
 
+def _validate_samples(
+    sample_count: int,
+    counts: tuple[tuple[int, ResearchRatio], ...],
+    aggregates: tuple[Decimal | None, ...],
+) -> None:
+    """Counts and fractions of the samples; aggregates exist exactly with samples."""
+    samples = Decimal(sample_count)
+    if any(
+        count > sample_count
+        or fraction != _ratio(Decimal(count), samples, UndefinedReason.ZERO_SAMPLE)
+        for count, fraction in counts
+    ):
+        raise ValueError("crossing counts do not reconcile")
+    if any((value is None) != (sample_count == 0) for value in aggregates):
+        raise ValueError("crossing aggregates must exist exactly with samples")
+
+
+class OutcomeBaseline(_Contract):
+    """6-candle outcomes from every window candle a crossing can be sampled at."""
+
+    start_candles: CandleSpan
+    sample_count: Literal[694] = 694
+    positive_close_count: Count
+    positive_close_fraction: ResearchRatio
+    mean_close_return: ExactDecimal
+    median_close_return: ExactDecimal
+    mean_adverse_excursion: ExactDecimal
+    mean_favorable_excursion: ExactDecimal
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        if self.start_candles.bar_count != self.sample_count:
+            raise ValueError("baseline candle span does not match its fixed bar count")
+        if self.positive_close_count > self.sample_count or (
+            self.positive_close_fraction
+            != _ratio(
+                Decimal(self.positive_close_count),
+                Decimal(self.sample_count),
+                UndefinedReason.ZERO_SAMPLE,
+            )
+        ):
+            raise ValueError("baseline counts do not reconcile")
+        return self
+
+
+class CrossingGroup(_Contract):
+    """Classified sampled crossings sharing one value of one ADR-015 feature."""
+
+    sample_count: Count
+    reached_sma20_count: Count
+    positive_close_count: Count
+    reached_sma20_fraction: ResearchRatio
+    positive_close_fraction: ResearchRatio
+    mean_close_return: ExactDecimal | None
+    mean_adverse_excursion: ExactDecimal | None
+    mean_favorable_excursion: ExactDecimal | None
+
+    @model_validator(mode="after")
+    def validate_aggregates(self) -> Self:
+        _validate_samples(
+            self.sample_count,
+            (
+                (self.reached_sma20_count, self.reached_sma20_fraction),
+                (self.positive_close_count, self.positive_close_fraction),
+            ),
+            (
+                self.mean_close_return,
+                self.mean_adverse_excursion,
+                self.mean_favorable_excursion,
+            ),
+        )
+        return self
+
+
+def _partition_totals(
+    first: CrossingGroup, second: CrossingGroup
+) -> tuple[int, int, int]:
+    return (
+        first.sample_count + second.sample_count,
+        first.reached_sma20_count + second.reached_sma20_count,
+        first.positive_close_count + second.positive_close_count,
+    )
+
+
 class LowerBandCrossingsPayload(_Contract):
     """Scanner-rule crossings in the window; samples have all outcomes closed by T."""
 
@@ -569,6 +653,14 @@ class LowerBandCrossingsPayload(_Contract):
     max_close_return: ExactDecimal | None
     mean_adverse_excursion: ExactDecimal | None
     mean_favorable_excursion: ExactDecimal | None
+    unconditional_baseline: OutcomeBaseline
+    current_wide_range: Annotated[bool, Field(strict=True)]
+    current_downtrend: Annotated[bool, Field(strict=True)]
+    unclassified_count: Count
+    wide_range_crossings: CrossingGroup
+    not_wide_range_crossings: CrossingGroup
+    downtrend_crossings: CrossingGroup
+    not_downtrend_crossings: CrossingGroup
 
     @model_validator(mode="after")
     def validate_pending(self) -> Self:
@@ -591,23 +683,6 @@ class LowerBandCrossingsPayload(_Contract):
 
     @model_validator(mode="after")
     def validate_aggregates(self) -> Self:
-        samples = Decimal(self.sample_count)
-        if (
-            max(self.reached_sma20_count, self.positive_close_count) > self.sample_count
-            or self.reached_sma20_fraction
-            != _ratio(
-                Decimal(self.reached_sma20_count),
-                samples,
-                UndefinedReason.ZERO_SAMPLE,
-            )
-            or self.positive_close_fraction
-            != _ratio(
-                Decimal(self.positive_close_count),
-                samples,
-                UndefinedReason.ZERO_SAMPLE,
-            )
-        ):
-            raise ValueError("crossing counts do not reconcile")
         aggregates = (
             self.mean_close_return,
             self.median_close_return,
@@ -616,8 +691,14 @@ class LowerBandCrossingsPayload(_Contract):
             self.mean_adverse_excursion,
             self.mean_favorable_excursion,
         )
-        if any((value is None) != (self.sample_count == 0) for value in aggregates):
-            raise ValueError("crossing aggregates must exist exactly with samples")
+        _validate_samples(
+            self.sample_count,
+            (
+                (self.reached_sma20_count, self.reached_sma20_fraction),
+                (self.positive_close_count, self.positive_close_fraction),
+            ),
+            aggregates,
+        )
         mean, median, low, high = aggregates[:4]
         if (
             mean is not None
@@ -627,6 +708,27 @@ class LowerBandCrossingsPayload(_Contract):
             and not (low <= median <= high and low <= mean <= high)
         ):
             raise ValueError("crossing close-return statistics are inconsistent")
+        return self
+
+    @model_validator(mode="after")
+    def validate_groups(self) -> Self:
+        # Each feature partitions the classified samples; the rest are unclassified.
+        classified = self.sample_count - self.unclassified_count
+        wide = _partition_totals(
+            self.wide_range_crossings, self.not_wide_range_crossings
+        )
+        trend = _partition_totals(
+            self.downtrend_crossings, self.not_downtrend_crossings
+        )
+        _, reached, positive = wide
+        if (
+            classified < 0
+            or wide != trend
+            or wide[0] != classified
+            or not 0 <= self.reached_sma20_count - reached <= self.unclassified_count
+            or not 0 <= self.positive_close_count - positive <= self.unclassified_count
+        ):
+            raise ValueError("crossing groups do not reconcile with the samples")
         return self
 
 
@@ -700,7 +802,14 @@ def _span_geometry(
         case HigherTimeframePayload():
             return _span_geometry(payload.four_hour) + _span_geometry(payload.daily)
         case LowerBandCrossingsPayload():
-            return ((payload.lookback_candles, payload.lookback_bars, 0),)
+            return (
+                (payload.lookback_candles, payload.lookback_bars, 0),
+                (
+                    payload.unconditional_baseline.start_candles,
+                    payload.unconditional_baseline.sample_count,
+                    payload.horizon_bars,
+                ),
+            )
     return ()
 
 
