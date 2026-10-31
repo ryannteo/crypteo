@@ -59,3 +59,4 @@ durable decision actually changes.
 | [013](ADR-013-v2-evaluation-scope.md) | V2 evaluates research selection on post-cutoff data | Accepted |
 | [014](ADR-014-trader-led-research.md) | Trader-led research shares the bounded workflow and stays outside evaluation | Accepted |
 | [015](ADR-015-pre-registered-crossing-base-rates.md) | Lower-band crossing base rates use pre-registered conditioning | Accepted |
+| [016](ADR-016-tool-attempts-cover-single-pair-tools.md) | Tool attempts cover every tool in a single-pair window | Accepted |
