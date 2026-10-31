@@ -158,6 +158,8 @@ Scripts in the same directory: `extract.py` (loads runs), `blind.py` (builds
 the extract), `codes_to_json.py` (builder codes, with D4 derived from D3),
 `agreement.py` (agreement and disagreements), `resolve.py` and `tables.py`.
 
+The D5 recount's files (blind-d5-codes.txt, d5_agreement.py and the appended hashes-pre-blind.txt) are listed with their checksums in D5 blind recount.
+
 ## Method
 
 **Reading (R1).** The originals were checksummed, then copied, and only the
@@ -263,7 +265,7 @@ it opened no other file there. Its output was saved verbatim to
 `agreement.py` computed agreement from the two saved files. Each disagreement
 was resolved by re-reading the stage text. Neither saved file was edited; the
 resolutions are in `resolved-codes.json`. D3 and D5 were coded by the builder
-only.
+only; D5 was later recounted blind (see D5 blind recount).
 
 ## Results per trial
 
@@ -459,14 +461,88 @@ ETH-USD asks for "Bollinger band parameters … and how band width compares
 historically". Both coders classed it as not A: definitions (F) and history
 (E).
 
+## D5 blind recount
+
+**Method.** A fresh reviewer agent, separate from any review loop, was given
+three things:
+
+- `blind-extract.json`;
+- the D5 definition from Method, verbatim;
+- an instruction to list, for each of the 42 runs, every `challenged_claims`
+  and `contradictions` item it counts as weakening the bull case or the bear
+  case, and to give the two totals.
+
+It was not given the builder's D5 convention, the builder's codes or this
+record. It was told to open no other file in `~/crypteo-eval/diagnostic/`, no
+repository file and no trial record, and it stated that the extract was the
+only file it opened. Its output opens with the two counting rules it says it
+applied, quoted here verbatim:
+
+> - An item that says evidence was listed as supporting but actually has bearish content counts as weakening the bull case. An item that only says counterevidence was also used by the bull case is uncounted.
+> - Items that are unreconciled two-sided readings, formatting or window-definition notes, or comments on how invalidation conditions were designed are uncounted.
+
+The output was saved verbatim to `blind-d5-codes.txt`, and its checksum was
+appended to `hashes-pre-blind.txt` before any comparison. `d5_agreement.py`
+compares the per-run D5 counts in `builder-codes.json` with those in
+`blind-d5-codes.txt`. Neither file was edited, and no count was resolved or
+adjusted.
+
+| File | SHA-256 |
+|---|---|
+| `blind-extract.json` | `7f030191d18abfcb9f51a3078b088263d56098d97a42ba3efa63025b669b97ac` |
+| `builder-codes.json` | `dc3219b9783e96f8cc62e7fe6057316ac3d1941f792f29812dde69404a492663` |
+| `blind-d5-codes.txt` | `3371e55c753d4e9311c141723a6c73d622021e8f67f091ecdc283b4f48e67879` |
+| `d5_agreement.py` | `f24db413ba4c945c391bb87c13dfd5c2952c1ff6f4e0211ab0283239cf82c192` |
+
+**Totals.** Items weakening each case, summed over the trial's runs:
+
+| Trial | Runs | Builder: bull | Builder: bear | Blind: bull | Blind: bear |
+|---|---|---|---|---|---|
+| 5 | 22 | 139 | 52 | 136 | 51 |
+| 6 | 10 | 83 | 9 | 78 | 9 |
+| 7 | 10 | 87 | 15 | 85 | 13 |
+
+**Per-run direction.** Number of runs in each direction under each coder:
+
+| Trial | Builder: bull > bear | Builder: bear > bull | Builder: tie | Blind: bull > bear | Blind: bear > bull | Blind: tie | Directions agree |
+|---|---|---|---|---|---|---|---|
+| 5 | 18 | 3 | 1 | 18 | 3 | 1 | 20/22 |
+| 6 | 10 | 0 | 0 | 10 | 0 | 0 | 10/10 |
+| 7 | 10 | 0 | 0 | 10 | 0 | 0 | 10/10 |
+
+Runs whose direction differs (counts are bull/bear):
+
+| Run | Builder | Builder direction | Blind | Blind direction |
+|---|---|---|---|---|
+| T5 2026-07-13 04:00 SOL-USD | 3/3 | tie | 3/2 | bull > bear |
+| T5 2026-07-17 06:00 SOL-USD | 5/4 | bull > bear | 4/4 | tie |
+
+No run differs in direction in trials 6 and 7.
+
+**Verdict.** The rule was fixed before the blind pass. H3 holds under blind
+coding in a trial when the blind totals show more items weakening the bull
+case than the bear case, and the blind per-run directions show bull > bear in
+more than half of that trial's runs.
+
+| Trial | Blind bull vs bear | Blind runs bull > bear | H3 under blind coding |
+|---|---|---|---|
+| 5 | 136 > 51 | 18 of 22 | holds |
+| 6 | 78 > 9 | 10 of 10 | holds |
+| 7 | 85 > 13 | 10 of 10 | holds |
+
+H3 holds under blind coding in all three trials.
+
+**Limitation.** Both coders are models. The blind coder had the D5 definition
+only, without the builder's convention.
+
 ## Limitations
 
-- The coder is a model, and so is the blind coder. Agreement between two model
+- The coder is a model, and so are both blind coders. Agreement between two model
   coders is not agreement with a human reading. The builder's conventions were
   fixed before the blind pass but were not given to the blind coder.
 - The categories need judgment, especially the D1 decisive basis, the D1 (d)
   boundary, D3 class A against F for definitional requests, and D5's
-  "clearly". D3 and D5 were coded by the builder alone.
+  "clearly". D3 was coded by the builder alone; D5 was recounted blind (see D5 blind recount).
 - The 42 runs come from three trials with different tools, tool descriptions
   and model views. Results are reported per trial and never pooled into one
   rate. Trial 6 and trial 7 have 10 runs each.
