@@ -62,3 +62,4 @@ durable decision actually changes.
 | [016](ADR-016-tool-attempts-cover-single-pair-tools.md) | Tool attempts cover every tool in a single-pair window | Accepted |
 | [017](ADR-017-critic-tests-both-cases.md) | The critic tests the bull and bear cases with the same scrutiny | Accepted |
 | [018](ADR-018-plan-only-authorized-candidates.md) | Evaluation plans only candidates the baseline would trade | Accepted |
+| [019](ADR-019-pre-registered-baseline-study.md) | Baseline strategy changes are chosen by a pre-registered study | Accepted |
