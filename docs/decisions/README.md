@@ -60,3 +60,4 @@ durable decision actually changes.
 | [014](ADR-014-trader-led-research.md) | Trader-led research shares the bounded workflow and stays outside evaluation | Accepted |
 | [015](ADR-015-pre-registered-crossing-base-rates.md) | Lower-band crossing base rates use pre-registered conditioning | Accepted |
 | [016](ADR-016-tool-attempts-cover-single-pair-tools.md) | Tool attempts cover every tool in a single-pair window | Accepted |
+| [017](ADR-017-critic-tests-both-cases.md) | The critic tests the bull and bear cases with the same scrutiny | Accepted |
