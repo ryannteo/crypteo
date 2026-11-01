@@ -1,12 +1,14 @@
 """Evaluation window planning, paired comparison, and the evaluation runner.
 
-Planning reads candles only through the point-in-time gateway and scanner, and
-never runs terms, risk, execution, replay or research, so selection cannot see
-outcomes. Comparison performs no inference, research-tool dispatch, or
-market-data reads: windows are built from existing ``ReplayResult``s, fresh or
-frozen, and research links resolve through the caller's store. The runner
-executes a plan as given through the existing replay entrypoints and saves each
-window as it completes; reproduction replays saved research frozen.
+Planning reads candles only through point-in-time gateways. It scans, then
+computes the baseline's terms and risk decision at each candidate's signal hour
+T with the replay's own services through a gateway whose clock is T, and never
+runs execution, replay or research, so selection cannot see outcomes.
+Comparison performs no inference, research-tool dispatch, or market-data
+reads: windows are built from existing ``ReplayResult``s, fresh or frozen, and
+research links resolve through the caller's store. The runner executes a plan
+as given through the existing replay entrypoints and saves each window as it
+completes; reproduction replays saved research frozen.
 """
 
 import os
@@ -25,6 +27,7 @@ from crypteo.coinbase_dataset import (
 from crypteo.coinbase_persistence import _write_immutable
 from crypteo.domain._execution_arithmetic import _add
 from crypteo.domain.evaluation import (
+    BaselineRejection,
     CandidateComparison,
     ClosedOutcomeGroup,
     ComparisonMetrics,
@@ -44,7 +47,7 @@ from crypteo.domain.execution import (
     EntryRejection,
     PortfolioSnapshot,
 )
-from crypteo.domain.market import Timeframe, TradingPair
+from crypteo.domain.market import Candle, Timeframe, TradingPair
 from crypteo.domain.replay import (
     PAYLOAD_KINDS,
     Delivery,
@@ -62,7 +65,9 @@ from crypteo.domain.replay_research import (
 )
 from crypteo.domain.research import DecisionOutcome, Opportunity
 from crypteo.domain.research_workflow import ResearchWorkflowConfig
-from crypteo.domain.trade_terms import TradeTerms
+from crypteo.domain.risk import RiskRejection
+from crypteo.domain.trade_terms import TradeTerms, TradeTermsRejection
+from crypteo.execution import SimulatedBroker
 from crypteo.experiment import (
     ASSET_PRIORITY,
     SCANNER_POLICY,
@@ -86,8 +91,10 @@ from crypteo.research_replay import (
     run_research_replay,
     validate_research_links,
 )
+from crypteo.risk import RiskService
 from crypteo.scanner import OpportunityScanner
 from crypteo.temporal import PointInTimeDataGateway, SimulationClock
+from crypteo.trade_terms import TradeTermsService
 
 
 def _order_free(value: Any, order_id: str | None) -> Any:
@@ -477,8 +484,15 @@ def validate_planned_candidates(
         if candidate.exclusion_reason == "NOT_AVAILABLE_AT_OBSERVATION":
             continue
         listed = _overlaps(opportunity, opportunities, window.end)
-        if listed and candidate.decision == "SELECTED":
-            raise ValueError("a selected window cannot contain a listed candidate")
+        # The baseline check runs only after the overlap check passes.
+        if listed and (
+            candidate.decision == "SELECTED"
+            or candidate.exclusion_reason == "BASELINE_NOT_AUTHORIZED"
+        ):
+            raise ValueError(
+                "a selected or baseline-checked window cannot contain a listed "
+                "candidate"
+            )
         if (
             candidate.exclusion_reason == "OVERLAPPING_CANDIDATE"
             and not listed
@@ -495,7 +509,7 @@ def plan_identity(
 ) -> str:
     return identity(
         {
-            "purpose": "evaluation_window_plan_v1",
+            "purpose": "evaluation_window_plan_v2",
             "settings": settings,
             "scanner_policy": scanner_policy,
             "datasets": list(datasets),
@@ -504,17 +518,67 @@ def plan_identity(
     )
 
 
+def _baseline_rejection(
+    opportunity: Opportunity,
+    history: Sequence[Candle],
+    settings: WindowPlanSettings,
+) -> BaselineRejection | None:
+    """The baseline's decision at T with the replay's terms, proposal and risk code.
+
+    ``history`` is every candle the candidate's window replay would read; the
+    gateway's clock is T, so none after T contributes. The portfolio is the
+    replay broker's starting snapshot. The order ID derives from a planning-only
+    identifier, never a code-bound replay ``run_id``. Only a rejection's stage
+    and reason leave this function; None means the baseline would authorize.
+    """
+    at = opportunity.observed_at
+    oid = opportunity.opportunity_id
+    gateway = PointInTimeDataGateway(SimulationClock(at), history)
+    generated = TradeTermsService(gateway, settings.trade_terms).generate(
+        pair=opportunity.pair
+    )
+    terms = type(generated).model_validate(generated.model_dump())
+    if (
+        (terms.venue, terms.pair, terms.timeframe)
+        != (opportunity.venue, opportunity.pair, opportunity.timeframe)
+        or terms.decision_at != at
+        or terms.config != settings.trade_terms
+    ):
+        raise ValueError("stale or mismatched trade terms")
+    rejection: BaselineRejection | None = None
+    if isinstance(terms, TradeTermsRejection):
+        rejection = BaselineRejection(stage="TERMS", reason=terms.reason)
+    else:
+        assert isinstance(terms, TradeTerms)
+        check = identity(
+            {"purpose": "baseline_authorization_check", "opportunity_id": oid}
+        )
+        initial = SimulatedBroker(
+            gateway, settings.execution, initial_cash=settings.initial_cash
+        ).snapshot
+        authorization = RiskService(
+            gateway, settings.risk, settings.execution
+        ).authorize(proposal_from_terms(terms, check, oid), initial)
+        if isinstance(authorization, RiskRejection):
+            rejection = BaselineRejection(stage="RISK", reason=authorization.reason)
+    if gateway.now != at:
+        raise ValueError("planning clock moved during the baseline check")
+    return rejection
+
+
 def plan_windows(
     datasets: Iterable[CoinbaseCanonicalDataset | CoinbaseHistoricalDataset],
     settings: WindowPlanSettings,
 ) -> WindowPlan:
     """Plan single-candidate windows from one full-history scan per pair.
 
-    Each pair's gateway clock sits at its last completed candle close. A
+    Each pair's scan gateway clock sits at its last completed candle close. A
     crossing depends only on the 21 candles up to it, so the scan finds the same
     opportunity a replay starting at its ``observed_at`` admits, provided it was
-    available then. Selection uses only scanner candidates and candle close
-    times, never prices or outcomes. Failures raise.
+    available then. A candidate that passes availability, data end and overlap
+    is selected only if the baseline would authorize its trade at T, decided
+    through a gateway whose clock is T (ADR-018). Selection never reads
+    outcomes. Failures raise.
     """
     settings = WindowPlanSettings.model_validate(settings.model_dump())
     datasets = tuple(datasets)
@@ -523,10 +587,12 @@ def plan_windows(
     candles, dataset_ids = _inputs(pairs, datasets)
     found: list[Opportunity] = []
     last_close: dict[TradingPair, datetime] = {}
+    histories: dict[TradingPair, tuple[Candle, ...]] = {}
     for pair in pairs:
         history = tuple(candle for candle in candles if candle.pair is pair)
         if not history:
             continue
+        histories[pair] = history
         last_close[pair] = max(candle.close_time for candle in history)
         gateway = PointInTimeDataGateway(SimulationClock(last_close[pair]), history)
         scanned = tuple(
@@ -544,12 +610,19 @@ def plan_windows(
             break
         window = planned_window(opportunity, settings)
         reason: ExclusionReason | None = None
+        rejection: BaselineRejection | None = None
         if opportunity.available_at > opportunity.observed_at:
             reason = "NOT_AVAILABLE_AT_OBSERVATION"
         elif window.end > last_close[opportunity.pair]:
             reason = "WINDOW_BEYOND_DATA"
         elif _overlaps(opportunity, found, window.end):
             reason = "OVERLAPPING_CANDIDATE"
+        elif (
+            rejection := _baseline_rejection(
+                opportunity, histories[opportunity.pair], settings
+            )
+        ) is not None:
+            reason = "BASELINE_NOT_AUTHORIZED"
         if reason is None:
             selected += 1
             planned.append(
@@ -563,6 +636,7 @@ def plan_windows(
                     opportunity=opportunity,
                     decision="EXCLUDED",
                     exclusion_reason=reason,
+                    baseline_rejection=rejection,
                 )
             )
     return WindowPlan(
@@ -581,7 +655,7 @@ def validate_plan(
     """Re-plan from ``datasets`` and require exact equality.
 
     Catches what pure validation cannot see: unlisted overlaps, dataset ends,
-    omitted candidates, and different datasets.
+    omitted candidates, baseline decisions, and different datasets.
     """
     plan = WindowPlan.model_validate(plan.model_dump())
     if plan_windows(datasets, plan.settings) != plan:

@@ -282,8 +282,14 @@ the baseline financial chain apart from run-bound order IDs, and recompute
 descriptive metrics. The functions also resolve research links through the store.
 They neither run replays nor feed results back into research. `plan_windows` derives
 those windows mechanically: one gateway-bound scan per pair yields every
-candidate, each selected or excluded with a recorded reason, without terms, risk,
-execution, replay or research; `validate_plan` re-plans and requires equality.
+candidate, each selected or excluded with a recorded reason. A candidate that
+passes availability, data end and overlap is selected only if the replay's own
+terms, proposal and risk services, run through a gateway whose clock is its
+signal hour, would authorize the baseline trade; otherwise it is excluded as
+`BASELINE_NOT_AUTHORIZED` with the rejecting stage and reason
+([ADR-018](decisions/ADR-018-plan-only-authorized-candidates.md)). Planning runs
+no execution, replay or research; `validate_plan` re-plans and requires
+equality.
 `run_evaluation` executes a plan window by window through the existing replay
 entrypoints, saving canonical files and reserving each fresh research attempt
 before inference so a resume repeats no completed research and never exceeds the

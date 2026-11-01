@@ -858,9 +858,11 @@ research.
 
 `plan_windows(datasets, settings)` in [evaluation.py](../src/crypteo/evaluation.py)
 turns canonical datasets into a `WindowPlan` of single-candidate replay windows
-for the comparison above. It runs no replay, inference, terms, risk or execution,
-so no outcome can influence selection. `validate_plan(plan, datasets)` re-plans
-from the datasets and requires exact equality.
+for the comparison above. It scans, and computes the baseline's terms and risk
+decision at each candidate's signal hour through a point-in-time gateway whose
+clock is that hour. It runs no replay, inference, research or execution, so no
+outcome can influence selection. `validate_plan(plan, datasets)` re-plans from
+the datasets and requires exact equality.
 
 `WindowPlanSettings` holds `purpose`, an hourly UTC `planning_start`, a strictly
 positive integer `limit`, and the `initial_cash`, `trade_terms`, `risk` and
@@ -880,7 +882,7 @@ a candle not yet available at the last close is not a candidate. Candidates with
 `observed_at >= planning_start` are ordered by `observed_at`, then BTC-USD →
 ETH-USD → SOL-USD, then `opportunity_id`. The planner reads each dataset's last
 completed close time directly to bound windows, as planning-time inspection like
-dataset integrity checks, and reads no prices outside the gateway and scanner.
+dataset integrity checks, and reads no prices outside point-in-time gateways.
 
 The window for a candidate observed at T is `start = T`,
 `end = T + max_holding_bars` hours, `assets = (pair,)`, with the settings'
@@ -898,39 +900,66 @@ Exclusions apply in this order, and the first that applies is recorded:
 | `NOT_AVAILABLE_AT_OBSERVATION` | `available_at > observed_at`, so a replay starting at `observed_at` would not admit it |
 | `WINDOW_BEYOND_DATA` | `end` is after the pair's last completed candle close |
 | `OVERLAPPING_CANDIDATE` | Another scanner candidate of the same pair is observed strictly inside `(T, end)` |
+| `BASELINE_NOT_AUTHORIZED` | The baseline would not authorize the candidate's trade at T |
 
 The overlap rule uses scanner candidates only, including ones that are
-themselves unavailable at observation. Planning walks candidates in canonical
-order, selecting each one not excluded, and stops after the `limit`-th
-selection. `candidates` lists every candidate from `planning_start` through that
-selection; if the data runs out first, it lists all of them with fewer
-selections.
+themselves unavailable at observation or not authorized: the baseline check runs
+after it and does not change how overlap is decided.
+
+The baseline check
+([ADR-018](decisions/ADR-018-plan-only-authorized-candidates.md)) runs the
+replay's own services on a fresh point-in-time gateway whose clock is T, over
+every candle of the pair's dataset, the candles the window replay reads. No
+candle closing or becoming available after T contributes. `TradeTermsService`
+with the settings' `trade_terms` generates terms for the pair; a
+`TradeTermsRejection` excludes the candidate. Otherwise `proposal_from_terms`
+builds the baseline proposal with a planning-only identifier, the canonical
+identity of purpose `baseline_authorization_check` and the `opportunity_id`, in
+place of a replay `run_id`, so plans never depend on code identity.
+`RiskService` with the settings' `risk` and `execution` authorizes it against
+the starting snapshot of a `SimulatedBroker` built as the replay builds it for
+`initial_cash`; a `RiskRejection` excludes the candidate, and a
+`RiskAuthorization` selects it. The clock must still be T afterwards. Only a
+rejection's stage and reason are kept.
+
+Planning walks candidates in canonical order, selecting each one not excluded,
+and stops after the `limit`-th selection. Excluded candidates, including
+`BASELINE_NOT_AUTHORIZED` ones, do not count toward `limit`. `candidates` lists
+every candidate from `planning_start` through that selection; if the data runs
+out first, it lists all of them with fewer selections.
 
 `WindowPlan` holds `settings`, `scanner_policy` (the implemented scanner policy),
 `datasets` (`DatasetIdentity` per supplied pair, in canonical pair order),
 `candidates` and `plan_id`. Each `PlannedCandidate` holds the full `Opportunity`,
-`decision` (`SELECTED` or `EXCLUDED`), `exclusion_reason` (only when excluded)
-and `replay` (`ReplayConfig`, only when selected). `plan_id` is the
-replay-canonical identity of the plan without `plan_id` plus purpose
-`evaluation_window_plan_v1`.
+`decision` (`SELECTED` or `EXCLUDED`), `exclusion_reason` (only when excluded),
+`replay` (`ReplayConfig`, only when selected) and `baseline_rejection` (only
+for `BASELINE_NOT_AUTHORIZED`). A `BaselineRejection` holds `stage` (`TERMS` or
+`RISK`) and `reason`, one of `TradeTermsRejection`'s reasons at `TERMS` and one
+of `RiskRejection`'s at `RISK`. `plan_id` is the replay-canonical identity of
+the plan without `plan_id` plus purpose `evaluation_window_plan_v2`. Plans made
+before ADR-018 fail validation.
 
 Pure validation, on every parse, checks the settings rules, the scanner policy,
 dataset order, candidates that are unique, canonically ordered, at or after
 `planning_start` and on a planned pair, and decisions consistent with reasons
 and windows. Each selected `replay` must equal the derived window.
-`NOT_AVAILABLE_AT_OBSERVATION` must match the opportunity's own times. A
-selected window cannot contain a listed same-pair candidate, and
-`OVERLAPPING_CANDIDATE` needs a listed overlap unless the overlap could lie after
-the last candidate of a plan at its limit. A plan has at most `limit`
-selections and, at its limit, ends with a selection. `plan_id` is recomputed.
-Dataset ends, unlisted overlaps and omitted candidates need `validate_plan`.
+`NOT_AVAILABLE_AT_OBSERVATION` must match the opportunity's own times, and
+`baseline_rejection` must be present exactly for `BASELINE_NOT_AUTHORIZED`. A
+selected or `BASELINE_NOT_AUTHORIZED` window cannot contain a listed same-pair
+candidate, and `OVERLAPPING_CANDIDATE` needs a listed overlap unless the overlap
+could lie after the last candidate of a plan at its limit. A plan has at most
+`limit` selections and, at its limit, ends with a selection. `plan_id` is
+recomputed. Dataset ends, unlisted overlaps, omitted candidates and baseline
+decisions need `validate_plan`.
 
 Limitations: single-asset windows bind only that pair's dataset, so
 relative-strength evidence is unavailable to research in planned windows.
 `OVERLAPPING_CANDIDATE` drops candidates followed by another crossing within the
 window, which may bias the sample toward candidates whose decline did not
-continue. Internal dataset gaps are not excluded; they surface as baseline
-`ENTRY_REJECTED` or `DATA_GAP`.
+continue. Baseline totals describe authorized trades only, so they are not
+comparable with plans made before ADR-018, which also selected windows the
+baseline rejected. Internal dataset gaps are not excluded; they surface as
+baseline `ENTRY_REJECTED` or `DATA_GAP`.
 
 ### Evaluation runner
 

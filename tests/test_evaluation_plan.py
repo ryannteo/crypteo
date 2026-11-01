@@ -1,28 +1,33 @@
-"""Mechanical single-candidate window planning over scanner candidates only."""
+"""Single-candidate window planning over scanner candidates and baseline decisions."""
 
-from datetime import timedelta
+import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from test_evaluation import research_run
 from test_replay import BTC, CODE, ETH, SOL, D, H, T, bar, config, dataset, payloads
 
+import crypteo.evaluation as evaluation
 import crypteo.experiment as experiment
 import crypteo.replay as replay
 import crypteo.research_replay as research_replay
 from crypteo.coinbase_dataset import CoinbaseCanonicalDataset
 from crypteo.domain.evaluation import (
     EVALUATION_PERIOD_START,
+    BaselineRejection,
     FinancialOutcome,
     PlannedCandidate,
     WindowPlan,
     WindowPlanSettings,
 )
 from crypteo.domain.execution import ClosedTrade
-from crypteo.domain.market import TradingPair
+from crypteo.domain.market import Candle, TradingPair
 from crypteo.domain.replay import Delivery
 from crypteo.domain.research import Opportunity
+from crypteo.domain.risk import RiskAuthorization, RiskRejection
+from crypteo.domain.trade_terms import TradeTermsRejection
 from crypteo.evaluation import (
     _financial_outcome,
     compare_replays,
@@ -36,6 +41,7 @@ from crypteo.replay import run_scanner_only
 from crypteo.research_persistence import ResearchStore
 from crypteo.risk import RiskService
 from crypteo.scanner import OpportunityScanner
+from crypteo.temporal import PointInTimeDataGateway, SimulationClock
 from crypteo.trade_terms import TradeTermsService
 
 EVALUATION_HOURS = (EVALUATION_PERIOD_START - T) // H
@@ -109,7 +115,7 @@ def forged(plan: WindowPlan, **fields: Any) -> dict[str, Any]:
     data = plan.model_dump() | fields
     data["plan_id"] = experiment.identity(
         {
-            "purpose": "evaluation_window_plan_v1",
+            "purpose": "evaluation_window_plan_v2",
             "settings": data["settings"],
             "scanner_policy": data["scanner_policy"],
             "datasets": data["datasets"],
@@ -157,7 +163,7 @@ def test_canonical_order_reasons_and_windows(plan: WindowPlan) -> None:
             assert candidate.decision == "EXCLUDED" and candidate.replay is None
     assert plan.plan_id == experiment.identity(
         {
-            "purpose": "evaluation_window_plan_v1",
+            "purpose": "evaluation_window_plan_v2",
             "settings": plan.settings,
             "scanner_policy": SCANNER_POLICY,
             "datasets": list(plan.datasets),
@@ -358,16 +364,9 @@ def test_planner_never_reaches_outcomes(
     plan: WindowPlan, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def forbidden(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError(
-            "planner reached terms, risk, execution, replay or research"
-        )
+        raise AssertionError("planner reached execution, replay or research")
 
     for owner, name in (
-        (TradeTermsService, "__init__"),
-        (TradeTermsService, "generate"),
-        (RiskService, "__init__"),
-        (RiskService, "authorize"),
-        (SimulatedBroker, "__init__"),
         (SimulatedBroker, "submit"),
         (SimulatedBroker, "process"),
         (replay, "_replay_engine"),
@@ -378,6 +377,36 @@ def test_planner_never_reaches_outcomes(
         monkeypatch.setattr(owner, name, forbidden)
     assert plan_windows(DATASETS, settings()) == plan
     assert validate_plan(plan, DATASETS) == plan
+
+
+def test_baseline_check_uses_the_replay_services_at_t(
+    plan: WindowPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    generate, authorize = TradeTermsService.generate, RiskService.authorize
+
+    def terms(self: TradeTermsService, *, pair: TradingPair) -> Any:
+        calls.append(("terms", self._gateway.now))
+        return generate(self, pair=pair)
+
+    def risk(self: RiskService, proposal: Any, portfolio: Any) -> Any:
+        calls.append(("risk", (self._gateway.now, portfolio)))
+        return authorize(self, proposal, portfolio)
+
+    monkeypatch.setattr(TradeTermsService, "generate", terms)
+    monkeypatch.setattr(RiskService, "authorize", risk)
+    assert plan_windows(DATASETS, settings()) == plan
+    initial = SimulatedBroker(
+        PointInTimeDataGateway(SimulationClock(T), ()),
+        plan.settings.execution,
+        initial_cash=plan.settings.initial_cash,
+    ).snapshot
+    checked = [
+        c.opportunity.observed_at for c in plan.candidates if c.decision == "SELECTED"
+    ]
+    assert calls == [
+        item for at in checked for item in (("terms", at), ("risk", (at, initial)))
+    ]
 
 
 @pytest.mark.parametrize(
@@ -506,7 +535,7 @@ def _window(plan: WindowPlan, index: int, **changes: Any) -> dict[str, Any]:
                 | {
                     "plan_id": experiment.identity(
                         {
-                            "purpose": "evaluation_window_plan_v2",
+                            "purpose": "evaluation_window_plan_v1",
                             **{
                                 k: v
                                 for k, v in p.model_dump().items()
@@ -608,3 +637,436 @@ def test_canonical_round_trip_and_revalidation(plan: WindowPlan) -> None:
             )
         )
     assert WindowPlan.model_validate(plan) == plan
+
+
+# ADR-018: a candidate is selected only if the baseline would authorize it at T.
+
+COSTLY = config().execution.model_copy(
+    update={"entry_fee_rate": D("0.01"), "exit_fee_rate": D("0.01")}
+)
+# Crossings at +0h and +4h for BTC and ETH, and at +0h for SOL.
+MIXED = (
+    series(BTC, ("99.95", "100", "100", "100", "90", "95", "96", "97", "98")),
+    series(ETH, ("99", "100", "100", "100", "90", "95", "96", "97", "98")),
+    series(SOL, ("90", "95", "96", "97", "98")),
+)
+TERMS_REJECTED = BaselineRejection(stage="TERMS", reason="INVALID_ALIGNED_LEVELS")
+RISK_REJECTED = BaselineRejection(stage="RISK", reason="NON_POSITIVE_TARGET_REWARD")
+MIXED_EXPECTED = [
+    (0, BTC, "BASELINE_NOT_AUTHORIZED"),  # the target floors below the reference
+    (0, ETH, "BASELINE_NOT_AUTHORIZED"),  # costs exceed the shallow target reward
+    (0, SOL, None),
+    (4, BTC, None),
+    (4, ETH, None),
+]
+MIXED_REJECTIONS = [TERMS_REJECTED, RISK_REJECTED, None, None, None]
+# Crossings at +0h and +2h; at these costs only the deeper +0h one is economic.
+OVERLAP_DATA = series(BTC, ("90", "100", "92", "95", "96", "97", "98"))
+OVERLAP_COSTLY = config().execution.model_copy(
+    update={"entry_fee_rate": D("0.045"), "exit_fee_rate": D("0.045")}
+)
+
+
+@pytest.fixture(scope="module")
+def mixed() -> WindowPlan:
+    return plan_windows(MIXED, settings(execution=COSTLY))
+
+
+def test_baseline_rejections_are_excluded_with_stage_and_reason(
+    mixed: WindowPlan,
+) -> None:
+    assert summary(mixed) == MIXED_EXPECTED
+    assert [c.baseline_rejection for c in mixed.candidates] == MIXED_REJECTIONS
+    for candidate in mixed.candidates:
+        assert (candidate.decision == "SELECTED") == (candidate.replay is not None)
+    assert WindowPlan.model_validate(forged(mixed)) == mixed
+    # Without costs the shallow ETH crossing is economic; terms do not change.
+    free = plan_windows(MIXED, settings())
+    assert [c.baseline_rejection for c in free.candidates] == [
+        TERMS_REJECTED,
+        *[None] * 4,
+    ]
+    assert free.candidates[1].decision == "SELECTED"
+
+
+def _replay_decision(
+    candidate: PlannedCandidate,
+    datasets: tuple[CoinbaseCanonicalDataset, ...],
+    plan_settings: WindowPlanSettings,
+) -> BaselineRejection | str | None:
+    """The scanner-only replay's terms or risk result for the candidate, if any."""
+    opportunity = candidate.opportunity
+    result = run_scanner_only(
+        planned_window(opportunity, plan_settings),
+        single_pair_datasets(opportunity.pair, datasets),
+        code=CODE,
+    )
+    for record in result.records:
+        if record.opportunity_id != opportunity.opportunity_id:
+            continue
+        payload = record.payload
+        if isinstance(payload, TradeTermsRejection):
+            return BaselineRejection(stage="TERMS", reason=payload.reason)
+        if isinstance(payload, RiskRejection):
+            return BaselineRejection(stage="RISK", reason=payload.reason)
+        if isinstance(payload, RiskAuthorization):
+            return "AUTHORIZED"
+    return None
+
+
+@pytest.mark.parametrize(
+    "datasets,changes,rejections",
+    [
+        (DATASETS, {}, set()),
+        (DATASETS, {"initial_cash": D(0)}, {("RISK", "NO_CAPITAL")}),
+        (DATASETS, {"initial_cash": D(1)}, {("RISK", "QUANTITY_BELOW_INCREMENT")}),
+        (
+            MIXED,
+            {"execution": COSTLY},
+            {
+                ("TERMS", "INVALID_ALIGNED_LEVELS"),
+                ("RISK", "NON_POSITIVE_TARGET_REWARD"),
+            },
+        ),
+        (MIXED, {}, {("TERMS", "INVALID_ALIGNED_LEVELS")}),
+        (
+            (OVERLAP_DATA,),
+            {"execution": OVERLAP_COSTLY},
+            {("RISK", "NON_POSITIVE_TARGET_REWARD")},
+        ),
+    ],
+)
+def test_baseline_decisions_match_each_planned_window_replay(
+    datasets: tuple[CoinbaseCanonicalDataset, ...],
+    changes: dict[str, Any],
+    rejections: set[tuple[str, str]],
+) -> None:
+    plan = plan_windows(datasets, settings(**changes))
+    histories = {d.manifest.pair: d.candles for d in datasets}
+    checked = 0
+    for candidate in plan.candidates:
+        replayed = _replay_decision(candidate, datasets, plan.settings)
+        reason = candidate.exclusion_reason
+        if reason == "NOT_AVAILABLE_AT_OBSERVATION":
+            assert replayed is None  # the window replay never admits it
+            continue
+        # The planner's check agrees with the replay for every admitted candidate.
+        own = evaluation._baseline_rejection(
+            candidate.opportunity, histories[candidate.opportunity.pair], plan.settings
+        )
+        assert replayed == (own or "AUTHORIZED")
+        if candidate.decision == "SELECTED" or reason == "BASELINE_NOT_AUTHORIZED":
+            checked += 1
+            assert (replayed != "AUTHORIZED") == (reason == "BASELINE_NOT_AUTHORIZED")
+            assert replayed == (candidate.baseline_rejection or "AUTHORIZED")
+        else:
+            assert candidate.baseline_rejection is None
+    assert checked
+    assert {
+        (c.baseline_rejection.stage, c.baseline_rejection.reason)
+        for c in plan.candidates
+        if c.baseline_rejection is not None
+    } == rejections
+
+
+def _crash(candle: Candle) -> Candle:
+    return Candle.model_validate(
+        candle.model_dump() | {"open": "1", "close": "1", "high": "500", "low": "0.5"}
+    )
+
+
+@pytest.mark.parametrize(
+    "datasets,changes",
+    [
+        (DATASETS, {}),
+        (MIXED, {"execution": COSTLY}),
+        (MIXED, {}),
+        ((OVERLAP_DATA,), {"execution": OVERLAP_COSTLY}),
+    ],
+)
+def test_candles_after_t_change_no_planning_decision(
+    datasets: tuple[CoinbaseCanonicalDataset, ...],
+    changes: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = plan_windows(datasets, settings(**changes))
+    real = PointInTimeDataGateway
+    tampered: list[datetime] = []
+
+    def gateway(clock: SimulationClock, candles: Any) -> PointInTimeDataGateway:
+        """Change every candle invisible at the clock and plant more after it."""
+        now, original = clock.now, tuple(candles)
+        changed = []
+        for candle in original:
+            if candle.close_time > now or candle.available_at > now:
+                tampered.append(now)
+                candle = _crash(candle)
+            changed.append(candle)
+        last = max(c.open_time for c in original)
+        planted = [
+            _crash(
+                Candle.model_validate(
+                    original[-1].model_dump()
+                    | {
+                        "open_time": last + k * H,
+                        "close_time": last + (k + 1) * H,
+                        "available_at": last + (k + 1) * H,
+                    }
+                )
+            )
+            for k in range(1, 6)
+        ]
+        return real(clock, (*changed, *planted))
+
+    monkeypatch.setattr(evaluation, "PointInTimeDataGateway", gateway)
+    assert plan_windows(datasets, settings(**changes)) == expected
+    # Every baseline check saw changed candles after its own T.
+    checked = {
+        c.opportunity.observed_at
+        for c in expected.candidates
+        if c.decision == "SELECTED" or c.exclusion_reason == "BASELINE_NOT_AUTHORIZED"
+    }
+    assert checked and checked <= set(tampered)
+
+
+def test_dataset_candles_after_t_change_outcomes_not_decisions(
+    mixed: WindowPlan,
+) -> None:
+    # Lows after the last T stop out BTC +4h but change no decision at any T.
+    btc = MIXED[0]
+    last = mixed.candidates[-1].opportunity.observed_at
+    crashed = dataset(
+        tuple(
+            Candle.model_validate(c.model_dump() | {"low": "1"})
+            if c.close_time > last
+            else c
+            for c in btc.candles
+        ),
+        pair=BTC,
+    )
+    changed = plan_windows((crashed, *MIXED[1:]), mixed.settings)
+    assert changed.candidates == mixed.candidates
+    assert changed.plan_id != mixed.plan_id  # the dataset identity differs
+    window = mixed.candidates[3].replay
+    assert window is not None and mixed.candidates[3].opportunity.pair is BTC
+    oid = mixed.candidates[3].opportunity.opportunity_id
+    before = _financial_outcome(run_scanner_only(window, [btc], code=CODE), oid)
+    after = _financial_outcome(run_scanner_only(window, [crashed], code=CODE), oid)
+    assert (before.exit_reason, after.exit_reason) == ("TIME", "STOP")
+
+
+def test_candle_at_or_before_t_can_change_the_decision(mixed: WindowPlan) -> None:
+    # A wide range five hours before T inflates the mean true range. The scanner
+    # reads closes only, so the candidates are unchanged; SOL +0h's stop is not.
+    sol = MIXED[2]
+    wide = dataset(
+        tuple(
+            Candle.model_validate(c.model_dump() | {"high": "10000"})
+            if c.close_time == T - 5 * H
+            else c
+            for c in sol.candles
+        ),
+        pair=SOL,
+    )
+    changed = plan_windows((*MIXED[:2], wide), mixed.settings)
+    assert [c.opportunity for c in changed.candidates] == [
+        c.opportunity for c in mixed.candidates
+    ]
+    assert summary(changed)[2] == (0, SOL, "BASELINE_NOT_AUTHORIZED")
+    assert changed.candidates[2].baseline_rejection == BaselineRejection(
+        stage="TERMS", reason="INVALID_RAW_STOP"
+    )
+    assert summary(changed)[3:] == MIXED_EXPECTED[3:]
+
+
+def test_unauthorized_crossing_still_overlaps_an_earlier_candidate() -> None:
+    plan = plan_windows([OVERLAP_DATA], settings(execution=OVERLAP_COSTLY))
+    assert summary(plan) == [
+        (0, BTC, "OVERLAPPING_CANDIDATE"),
+        (2, BTC, "BASELINE_NOT_AUTHORIZED"),
+    ]
+    assert [c.baseline_rejection for c in plan.candidates] == [None, RISK_REJECTED]
+    # The baseline would have authorized BTC +0h; overlap alone excludes it.
+    first = plan.candidates[0].opportunity
+    assert (
+        evaluation._baseline_rejection(first, OVERLAP_DATA.candles, plan.settings)
+        is None
+    )
+
+
+@pytest.mark.parametrize("limit,count", [(1, 3), (2, 4), (3, 5), (4, 5)])
+def test_limit_counts_only_authorized_selections(limit: int, count: int) -> None:
+    plan = plan_windows(MIXED, settings(execution=COSTLY, limit=limit))
+    assert summary(plan) == MIXED_EXPECTED[:count]
+    selected = [c for c in plan.candidates if c.decision == "SELECTED"]
+    assert len(selected) == min(limit, 3)
+    if limit <= 3:
+        assert plan.candidates[-1].decision == "SELECTED"
+    assert validate_plan(plan, MIXED) == plan
+
+
+def test_planning_never_reads_code_identity(
+    mixed: WindowPlan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("planning read code identity or git")
+
+    for owner in (experiment, evaluation, replay):
+        monkeypatch.setattr(owner, "current_code_identity", forbidden)
+    for name in ("run", "check_output", "Popen"):
+        monkeypatch.setattr(subprocess, name, forbidden)
+    replanned = plan_windows(MIXED, settings(execution=COSTLY))
+    assert replanned == mixed and replanned.plan_id == mixed.plan_id
+    assert validate_plan(mixed, MIXED) == mixed
+
+
+@pytest.mark.parametrize("stage", ["TERMS", "RISK"])
+def test_baseline_rejection_reasons_follow_their_stage(stage: str) -> None:
+    reasons = {
+        "TERMS": set(get_args(TradeTermsRejection.model_fields["reason"].annotation)),
+        "RISK": set(get_args(RiskRejection.model_fields["reason"].annotation)),
+    }
+    for reason in sorted(reasons["TERMS"] | reasons["RISK"]):
+        if reason in reasons[stage]:
+            rejection = BaselineRejection(stage=stage, reason=reason)  # type: ignore[arg-type]
+            assert (
+                BaselineRejection.model_validate_json(rejection.model_dump_json())
+                == rejection
+            )
+        else:
+            with pytest.raises(ValueError, match=f"must be a {stage} rejection"):
+                BaselineRejection(stage=stage, reason=reason)  # type: ignore[arg-type]
+    for reason in ("", "OVERLAPPING_CANDIDATE", "non_positive_target_reward"):
+        with pytest.raises(ValueError, match=f"must be a {stage} rejection"):
+            BaselineRejection(stage=stage, reason=reason)  # type: ignore[arg-type]
+
+
+def test_baseline_rejection_contract_shape() -> None:
+    for data, match in (
+        ({"stage": "EXECUTION", "reason": "NO_CAPITAL"}, "'TERMS' or 'RISK'"),
+        ({"stage": "RISK"}, "Field required"),
+        ({"reason": "NO_CAPITAL"}, "Field required"),
+        ({"stage": "RISK", "reason": 1}, "valid string"),
+        (RISK_REJECTED.model_dump() | {"detail": "x"}, "Extra inputs"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            BaselineRejection.model_validate(data)
+    with pytest.raises(ValueError, match="frozen"):
+        RISK_REJECTED.reason = "NO_CAPITAL"
+
+
+def test_baseline_rejection_present_exactly_when_not_authorized(
+    mixed: WindowPlan, plan: WindowPlan
+) -> None:
+    rejected, selected = mixed.candidates[1], mixed.candidates[2]
+    overlapping = plan.candidates[0]
+    for data in (
+        rejected.model_dump() | {"baseline_rejection": None},
+        selected.model_dump() | {"baseline_rejection": RISK_REJECTED.model_dump()},
+        overlapping.model_dump() | {"baseline_rejection": RISK_REJECTED.model_dump()},
+        rejected.model_dump() | {"exclusion_reason": "WINDOW_BEYOND_DATA"},
+        rejected.model_dump() | {"exclusion_reason": "OVERLAPPING_CANDIDATE"},
+    ):
+        with pytest.raises(ValueError, match="exactly BASELINE_NOT_AUTHORIZED"):
+            PlannedCandidate.model_validate(data)
+    stored = rejected.model_dump()
+    del stored["baseline_rejection"]
+    with pytest.raises(ValueError, match="exactly BASELINE_NOT_AUTHORIZED"):
+        PlannedCandidate.model_validate(stored)
+    with pytest.raises(ValueError, match="must be a TERMS rejection"):
+        PlannedCandidate.model_validate(
+            rejected.model_dump()
+            | {"baseline_rejection": {"stage": "TERMS", "reason": "NO_CAPITAL"}}
+        )
+    with pytest.raises(ValueError, match="exactly BASELINE_NOT_AUTHORIZED"):
+        PlannedCandidate.model_validate(
+            rejected.model_copy(update={"baseline_rejection": None})
+        )
+
+
+def test_plan_contract_rejects_tampered_baseline_fields(mixed: WindowPlan) -> None:
+    # A baseline-checked window passed the overlap check, so cannot hold a listing.
+    overlap = plan_windows([OVERLAP_DATA], settings(execution=OVERLAP_COSTLY))
+    checked = with_candidate(
+        overlap,
+        0,
+        exclusion_reason="BASELINE_NOT_AUTHORIZED",
+        baseline_rejection=RISK_REJECTED.model_dump(),
+    )
+    with pytest.raises(ValueError, match="baseline-checked window cannot contain"):
+        WindowPlan.model_validate(checked)
+    # A plan stored before ADR-018: v1 identity, no baseline_rejection fields.
+    v1 = mixed.model_dump()
+    v1["plan_id"] = experiment.identity(
+        {
+            "purpose": "evaluation_window_plan_v1",
+            **{k: value for k, value in v1.items() if k != "plan_id"},
+        }
+    )
+    with pytest.raises(ValueError, match="plan_id must match"):
+        WindowPlan.model_validate(v1)
+    stored = forged(
+        mixed,
+        candidates=[
+            {k: value for k, value in c.items() if k != "baseline_rejection"}
+            for c in mixed.model_dump()["candidates"]
+        ],
+    )
+    with pytest.raises(ValueError, match="exactly BASELINE_NOT_AUTHORIZED"):
+        WindowPlan.model_validate(stored)
+    with pytest.raises(ValueError, match="exactly BASELINE_NOT_AUTHORIZED"):
+        WindowPlan.model_validate(
+            mixed.model_copy(
+                update={
+                    "candidates": (
+                        mixed.candidates[0].model_copy(
+                            update={"baseline_rejection": None}
+                        ),
+                        *mixed.candidates[1:],
+                    )
+                }
+            )
+        )
+
+
+def test_round_trip_with_baseline_rejections(mixed: WindowPlan) -> None:
+    encoded = mixed.canonical_bytes()
+    loaded = WindowPlan.model_validate_json(encoded)
+    assert loaded == mixed and loaded.canonical_bytes() == encoded
+    assert loaded.candidates[0].baseline_rejection == TERMS_REJECTED
+    assert WindowPlan.model_validate(mixed) == mixed
+    assert WindowPlan.model_validate(mixed.model_dump()) == mixed
+
+
+def test_validate_plan_rechecks_baseline_decisions(mixed: WindowPlan) -> None:
+    assert validate_plan(mixed, MIXED) == mixed
+    eth = mixed.candidates[1].opportunity
+    for data in (
+        with_candidate(
+            mixed, 1, baseline_rejection={"stage": "RISK", "reason": "NO_CAPITAL"}
+        ),
+        with_candidate(
+            mixed,
+            0,
+            baseline_rejection={"stage": "RISK", "reason": "INVALID_LONG_LEVELS"},
+        ),
+        with_candidate(
+            mixed,
+            1,
+            decision="SELECTED",
+            exclusion_reason=None,
+            baseline_rejection=None,
+            replay=planned_window(eth, mixed.settings).model_dump(),
+        ),
+        with_candidate(
+            mixed,
+            2,
+            decision="EXCLUDED",
+            exclusion_reason="BASELINE_NOT_AUTHORIZED",
+            baseline_rejection=RISK_REJECTED.model_dump(),
+            replay=None,
+        ),
+    ):
+        altered = WindowPlan.model_validate(data)  # purely consistent
+        with pytest.raises(ValueError, match="re-plan of the supplied datasets"):
+            validate_plan(altered, MIXED)

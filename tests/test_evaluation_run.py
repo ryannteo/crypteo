@@ -17,7 +17,12 @@ from test_research_replay import WORKFLOW, ReplayModel
 import crypteo.evaluation as evaluation
 import crypteo.experiment as experiment
 import crypteo.research_replay as research_replay
-from crypteo.domain.evaluation import EvaluationAttempt, EvaluationResult, WindowPlan
+from crypteo.domain.evaluation import (
+    BaselineRejection,
+    EvaluationAttempt,
+    EvaluationResult,
+    WindowPlan,
+)
 from crypteo.domain.replay_research import (
     FreshResearchSettings,
     FrozenResearchSettings,
@@ -59,6 +64,7 @@ DATASETS = (
 OUTCOMES = {BTC.value: "TRADE", ETH.value: "NO_TRADE", SOL.value: "ABSTAIN"}
 PLAN = plan_windows(DATASETS, settings())
 TRIAL = "evaluation-trial"
+REJECTED = BaselineRejection(stage="TERMS", reason="INVALID_ALIGNED_LEVELS")
 
 
 def window_ids(plan: WindowPlan = PLAN) -> list[str]:
@@ -461,6 +467,52 @@ def test_plan_without_selections_is_refused(tmp_path: Path) -> None:
             plan=empty,
         )
     assert not (tmp_path / "run").exists()
+
+
+def test_only_authorized_windows_are_researched(tmp_path: Path) -> None:
+    # BTC +0h and SOL +0h terms floor their targets below the reference (ADR-018).
+    datasets = (
+        series(BTC, ("99.95", "100", "100", "100", "90", "95", "96", "97", "98")),
+        series(ETH, ("90", "85", "84", "83")),
+        series(SOL, ("99.95", "100", "100", "100")),
+    )
+    plan = plan_windows(datasets, settings())
+    assert [
+        (c.opportunity.pair, c.exclusion_reason, c.baseline_rejection)
+        for c in plan.candidates
+    ] == [
+        (BTC, "BASELINE_NOT_AUTHORIZED", REJECTED),
+        (ETH, None, None),
+        (SOL, "BASELINE_NOT_AUTHORIZED", REJECTED),
+        (BTC, None, None),
+    ]
+    ids = window_ids(plan)
+    directory, store = tmp_path / "run", ResearchStore(tmp_path / "r.sqlite")
+    model = WindowModel()
+    result = asyncio.run(
+        run_evaluation(
+            plan,
+            datasets,
+            directory=directory,
+            store=store,
+            model=model,
+            configuration=WORKFLOW,
+            trial=TRIAL,
+            max_research_runs=len(ids),  # no reservation for an excluded window
+            code=CODE,
+        )
+    )
+    assert [w.candidate.opportunity_id for w in result.comparison.windows] == ids
+    assert [a.opportunity_id for a in result.attempts] == ids
+    assert sorted(path.name for path in (directory / "windows").iterdir()) == [
+        "001",
+        "002",
+    ]
+    assert set(model.calls) == {BTC.value, ETH.value}
+    assert [w.candidate.baseline.status for w in result.comparison.windows] == [
+        "CLOSED",
+        "CLOSED",
+    ]
 
 
 def test_provider_mismatch_is_refused_before_any_file(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 """Evaluation window plans, paired comparisons and executed evaluation contracts.
 
-A window plan derives replay windows from scanner candidates only. A comparison
+A window plan derives replay windows from scanner candidates and the baseline's
+decision at each candidate's signal hour. A comparison
 reads completed replay results only. An evaluation result binds a comparison to
 its plan and research attempts. None grants financial authority or feeds
 anything back into research. Pure validation cannot prove that referenced
@@ -9,7 +10,7 @@ research artifacts exist or that a plan covers its datasets;
 """
 
 from datetime import UTC, datetime
-from typing import Final, Literal, Self
+from typing import Final, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,9 +18,9 @@ from crypteo.domain.execution import ExecutionConfig
 from crypteo.domain.market import ExactDecimal, NonNegativeDecimal, TradingPair
 from crypteo.domain.replay import ReplayResult
 from crypteo.domain.research import DecisionOutcome, NonBlankText, Opportunity
-from crypteo.domain.risk import RiskConfig
+from crypteo.domain.risk import RiskConfig, RiskRejection
 from crypteo.domain.time import UtcDatetime
-from crypteo.domain.trade_terms import TradeTermsConfig
+from crypteo.domain.trade_terms import TradeTermsConfig, TradeTermsRejection
 from crypteo.experiment import (
     ASSET_PRIORITY,
     SCANNER_POLICY,
@@ -177,7 +178,10 @@ class ResearchComparison(BaseModel):
 EVALUATION_PERIOD_START: Final = datetime(2026, 7, 1, tzinfo=UTC)
 
 ExclusionReason = Literal[
-    "NOT_AVAILABLE_AT_OBSERVATION", "WINDOW_BEYOND_DATA", "OVERLAPPING_CANDIDATE"
+    "NOT_AVAILABLE_AT_OBSERVATION",
+    "WINDOW_BEYOND_DATA",
+    "OVERLAPPING_CANDIDATE",
+    "BASELINE_NOT_AUTHORIZED",
 ]
 
 
@@ -211,6 +215,27 @@ class WindowPlanSettings(BaseModel):
         return self
 
 
+class BaselineRejection(BaseModel):
+    """The stage and reason the baseline would not authorize a trade at T (ADR-018).
+
+    ``reason`` is one of ``TradeTermsRejection``'s reasons at stage ``TERMS`` and
+    one of ``RiskRejection``'s at stage ``RISK``.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+    stage: Literal["TERMS", "RISK"]
+    reason: str
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> Self:
+        rejection = TradeTermsRejection if self.stage == "TERMS" else RiskRejection
+        if self.reason not in get_args(rejection.model_fields["reason"].annotation):
+            raise ValueError(f"reason must be a {self.stage} rejection reason")
+        return self
+
+
 class PlannedCandidate(BaseModel):
     """One scanner candidate: SELECTED with its window, or EXCLUDED with a reason."""
 
@@ -221,6 +246,7 @@ class PlannedCandidate(BaseModel):
     decision: Literal["SELECTED", "EXCLUDED"]
     exclusion_reason: ExclusionReason | None = None
     replay: ReplayConfig | None = None
+    baseline_rejection: BaselineRejection | None = None
 
     @model_validator(mode="after")
     def validate_decision(self) -> Self:
@@ -229,6 +255,12 @@ class PlannedCandidate(BaseModel):
             self.replay is not None
         ):
             raise ValueError("exactly SELECTED candidates carry a replay and no reason")
+        if (self.exclusion_reason == "BASELINE_NOT_AUTHORIZED") != (
+            self.baseline_rejection is not None
+        ):
+            raise ValueError(
+                "exactly BASELINE_NOT_AUTHORIZED candidates carry a baseline rejection"
+            )
         opportunity = self.opportunity
         if (opportunity.available_at > opportunity.observed_at) != (
             self.exclusion_reason == "NOT_AVAILABLE_AT_OBSERVATION"
