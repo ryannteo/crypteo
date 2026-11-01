@@ -36,6 +36,53 @@ from crypteo.research_model import ModelConfiguration, RefusalReply
 from crypteo.research_workflow import ResearchState, _failure
 
 
+def test_budget_policy_is_bounded_research_v3() -> None:
+    policy = ResearchBudgetPolicy()
+    assert policy.model_dump() == {
+        "policy_id": "bounded_research_v3",
+        "max_tool_attempts": 9,
+        "max_tools_per_response": 1,
+        "max_investigation_calls": 10,
+        "thesis_calls": 1,
+        "critic_calls": 1,
+        "assessment_calls": 1,
+        "max_model_calls": 15,
+        "max_output_reasks": 2,
+        "max_invalid_tool_requests": 2,
+        "provider_retries": 0,
+        "graph_retries": 0,
+        "recursion_limit": 26,
+    }
+    assert ResearchBudgetPolicy.model_validate_json(policy.model_dump_json()) == policy
+    assert (
+        ResearchWorkflowConfig.model_validate_json(
+            ResearchWorkflowConfig(
+                model=ModelConfiguration(provider="fake", model="m")
+            ).model_dump_json()
+        ).budget
+        == policy
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("policy_id", "bounded_research_v2"),
+        ("max_tool_attempts", 8),
+        ("max_investigation_calls", 9),
+        ("max_model_calls", 14),
+        ("recursion_limit", 24),
+    ],
+)
+def test_budget_policy_rejects_bounded_research_v2_values(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        ResearchBudgetPolicy.model_validate({field: value})
+    with pytest.raises(ValidationError):
+        ResearchBudgetPolicy.model_validate_json(json.dumps({field: value}))
+
+
 @pytest.mark.parametrize(
     "field",
     [

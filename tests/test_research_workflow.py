@@ -178,7 +178,7 @@ def test_critic_fresh_context_exact_thesis_all_evidence_and_request_history() ->
     assert data(final_request)["thesis"] == data(critic_request)["thesis"]
 
 
-def test_eight_attempts_and_ninth_completion_twelve_calls_cache_linkage(
+def test_nine_attempts_and_tenth_completion_thirteen_calls_cache_linkage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = dispatch_tool
@@ -189,13 +189,13 @@ def test_eight_attempts_and_ninth_completion_twelve_calls_cache_linkage(
         return original(*args)
 
     monkeypatch.setattr(workflow, "dispatch_tool", dispatch)
-    model = ScriptedModel([tool()] * 8)
+    model = ScriptedModel([tool()] * 9)
     result = run(model)
     assert result.status == "COMPLETED"
     assert len(dispatched) == 1
-    assert len(model.requests) == 12
-    assert len(records(result)) == 8
-    assert data(model.requests[8])["attempts_remaining"] == 0
+    assert len(model.requests) == 13
+    assert len(records(result)) == 9
+    assert data(model.requests[9])["attempts_remaining"] == 0
     assert all(r.admitted for r in records(result))
     assert all(r.cached_from == "run-1/tool/0001" for r in records(result)[1:])
     assert all(r.result == records(result)[0].result for r in records(result))
@@ -203,15 +203,15 @@ def test_eight_attempts_and_ninth_completion_twelve_calls_cache_linkage(
 
 
 def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> None:
-    model = ScriptedModel([tool()] * 8)
+    model = ScriptedModel([tool()] * 9)
     result = run(model)
     assert result.status == "COMPLETED" and result.investigation is not None
     investigations = [r for r in model.requests if r.stage == "investigate"]
-    assert len(investigations) == 9
-    for request in investigations[:8]:
+    assert len(investigations) == 10
+    for request in investigations[:9]:
         assert data(request)["attempts_remaining"] > 0
         assert request.tools == tool_definitions(BTC, (ETH,))
-    final = investigations[8]
+    final = investigations[9]
     assert data(final)["attempts_remaining"] == 0
     assert final.tools == ()
     assert final.messages[0].content == SHARED_POLICY + "\n\n" + (
@@ -220,19 +220,19 @@ def test_final_investigation_offers_no_tools_and_earlier_calls_keep_them() -> No
     assert "no tools are offered; return" in final.messages[0].content
     assert final.prompt_identity == prompt_identity("investigate", "opportunity")
     assert final.prompt_identity.version == "investigate_prompt_v4"
-    assert all(r.tools == () for r in model.requests[9:])
+    assert all(r.tools == () for r in model.requests[10:])
 
 
-def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -> None:
+def test_blank_tenth_completion_after_budget_fails_validation_without_repair() -> None:
     empty = '{"summary":"","relevant_evidence_ids":[],"remaining_gaps":[]}'
-    model = ScriptedModel([tool()] * 8 + [StructuredReply(content=empty)] * 2)
+    model = ScriptedModel([tool()] * 9 + [StructuredReply(content=empty)] * 2)
     result = run(model)
     final = model.requests[-1]
     # The one re-ask is a new recorded call; its blank reply is never filled.
-    assert len(model.requests) == 10 and len(records(result)) == 8
+    assert len(model.requests) == 11 and len(records(result)) == 9
     assert data(final)["attempts_remaining"] == 0
     assert data(final)["output_rejection"] == {
-        "call_id": "run-1/model/0009",
+        "call_id": "run-1/model/0010",
         "problems": ["summary: text must be nonblank"],
     }
     assert final.tools == ()
@@ -250,7 +250,7 @@ def test_blank_ninth_completion_after_budget_fails_validation_without_repair() -
     assert result.thesis is None and result.critique is None
 
 
-def test_ninth_tool_request_interrupts_without_dispatch(
+def test_tenth_tool_request_interrupts_without_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     count = 0
@@ -262,19 +262,22 @@ def test_ninth_tool_request_interrupts_without_dispatch(
         return original(*args)
 
     monkeypatch.setattr(workflow, "dispatch_tool", dispatch)
-    model = ScriptedModel([tool()] * 9)
+    model = ScriptedModel([tool()] * 10)
     result = run(model)
     assert count == 1
-    assert len(model.requests) == 9
-    # The ninth call offers no tools; a tool request there is still rejected by
+    assert len(model.requests) == 10
+    # The tenth call offers no tools; a tool request there is still rejected by
     # the budget check, never dispatched, accepted or converted into completion.
-    assert model.requests[8].tools == ()
-    assert all(r.tools == tool_definitions(BTC, (ETH,)) for r in model.requests[:8])
+    assert model.requests[9].tools == ()
+    assert all(r.tools == tool_definitions(BTC, (ETH,)) for r in model.requests[:9])
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert result.investigation is None
     rejection = records(result)[-1].rejection
-    assert rejection is not None and rejection.code == "TOOL_BUDGET_EXHAUSTED"
-    assert sum(r.admitted for r in records(result)) == 8
+    assert rejection == ToolRejection(
+        code="TOOL_BUDGET_EXHAUSTED",
+        message="another tool request after nine admitted attempts",
+    )
+    assert sum(r.admitted for r in records(result)) == 9
     assert not records(result)[-1].admitted
     assert result.failure is not None
     assert result.failure.code == ResearchFailureCode.TOOL_BUDGET_EXHAUSTED
@@ -302,7 +305,7 @@ def test_first_invalid_feedback_consumes_attempt_second_interrupts(
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert all(r.result is None and r.admitted for r in records(result))
     assert len(data(model.requests[1])["request_history"]) == 1
-    assert data(model.requests[1])["attempts_remaining"] == 7
+    assert data(model.requests[1])["attempts_remaining"] == 8
     assert data(model.requests[1])["request_history"][0]["status"] == "rejected"
     assert (
         data(model.requests[1])["request_history"][0]["code"] == "INVALID_TOOL_REQUEST"
@@ -315,7 +318,7 @@ def test_first_invalid_request_can_recover_and_complete() -> None:
     assert result.status == "COMPLETED"
     assert records(result)[0].rejection is not None
     assert records(result)[1].result is not None
-    assert data(model.requests[2])["attempts_remaining"] == 6
+    assert data(model.requests[2])["attempts_remaining"] == 7
     assert all(
         r.tools == tool_definitions(BTC, (ETH,))
         for r in model.requests
@@ -384,7 +387,7 @@ def test_btc_only_rejects_unoffered_relative_strength_and_completes() -> None:
         code="INVALID_TOOL_REQUEST",
         message="relative_strength is not offered without a bound benchmark",
     )
-    assert data(investigations[1])["attempts_remaining"] == 7
+    assert data(investigations[1])["attempts_remaining"] == 8
     assert records(result)[1].result is not None
 
 
@@ -988,17 +991,38 @@ def test_each_single_asset_tool_executes_at_most_once(
     assert len(collected_evidence(result.trace)) == 1
 
 
-def test_eighth_invalid_attempt_consumed_then_ninth_completes() -> None:
-    model = ScriptedModel([tool()] * 7 + [tool("", {"pair": "BTC-USD"})])
+def test_ninth_invalid_attempt_consumed_then_tenth_completes() -> None:
+    model = ScriptedModel([tool()] * 8 + [tool("", {"pair": "BTC-USD"})])
     result = run(model)
     assert result.status == "COMPLETED"
-    assert len(model.requests) == 12 and len(records(result)) == 8
+    assert len(model.requests) == 13 and len(records(result)) == 9
     assert records(result)[-1].rejection is not None
-    assert data(model.requests[8])["attempts_remaining"] == 0
+    assert data(model.requests[9])["attempts_remaining"] == 0
     # An admitted invalid request consumes an attempt, so the rule follows
-    # attempts_remaining: the ninth call offers no tools here too.
-    assert model.requests[7].tools == tool_definitions(BTC, (ETH,))
-    assert model.requests[8].tools == ()
+    # attempts_remaining: the tenth call offers no tools here too.
+    assert model.requests[8].tools == tool_definitions(BTC, (ETH,))
+    assert model.requests[9].tools == ()
+
+
+def test_single_pair_run_requests_all_nine_offered_tools_then_completes() -> None:
+    names = [t.name for t in tool_definitions(BTC, ())]
+    assert len(names) == 9
+    model = ScriptedModel([tool(name) for name in names], outcome="NO_TRADE")
+    # higher_timeframe and lower_band_crossings need more than 60 hours.
+    result = run(model, service(pairs=(BTC,), hours=721))
+    assert result.status == "COMPLETED" and result.failure is None
+    assert [r.query.capability.value for r in records(result) if r.query] == names
+    assert all(r.admitted and r.rejection is None for r in records(result))
+    assert all(isinstance(r.result, ResearchToolSuccess) for r in records(result))
+    assert len(collected_evidence(result.trace)) == 9
+    investigations = [r for r in model.requests if r.stage == "investigate"]
+    assert len(investigations) == 10
+    assert [data(r)["attempts_remaining"] for r in investigations] == list(
+        range(9, -1, -1)
+    )
+    assert all(r.tools == tool_definitions(BTC, ()) for r in investigations[:9])
+    assert investigations[9].tools == ()
+    assert len(model.requests) == 13
 
 
 def test_all_eight_distinct_queries_preserve_deterministic_results() -> None:
@@ -1144,7 +1168,7 @@ def test_exact_audit_metadata_request_and_id_retention() -> None:
     assert calls[0].request == model.requests[0]
     assert calls[0].request.call_id == "run-1/model/0001"
     assert calls[0].reply.metadata.response_id == "provider-response"
-    assert result.configuration.budget.policy_id == "bounded_research_v2"
+    assert result.configuration.budget.policy_id == "bounded_research_v3"
     assert (
         result.provider == model.identity
         and result.context.request.research_run_id == "run-1"

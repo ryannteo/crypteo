@@ -297,9 +297,9 @@ def test_structured_completion_uses_json_schema_output_config() -> None:
 
 
 def test_final_investigation_wire_has_no_tools_or_tool_choice() -> None:
-    model = ScriptedModel([tool()] * 8, provider="anthropic")
+    model = ScriptedModel([tool()] * 9, provider="anthropic")
     run(model)
-    request = model.requests[8]
+    request = model.requests[9]
     assert request.stage == "investigate" and request.tools == ()
     wire = render_anthropic_request(request)
     assert set(wire) == {"model", "max_tokens", "system", "messages", "output_config"}
@@ -739,7 +739,7 @@ def test_tool_input_surrogates_have_identical_invalid_attempt_accounting(
         for r in attempts
     )
     second_input = json.loads(sent[1]["messages"][-1]["content"])["research_data"]
-    assert second_input["attempts_remaining"] == 7
+    assert second_input["attempts_remaining"] == 8
     assert len(second_input["request_history"]) == 1
     assert second_input["request_history"][0]["status"] == "rejected"
     assert second_input["request_history"][0]["code"] == "INVALID_TOOL_REQUEST"

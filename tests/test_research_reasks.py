@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic import ValidationError
 from research_support import (
     CODE,
     ETH,
@@ -28,6 +29,7 @@ from research_support import (
 )
 from test_research_persistence import ObservedModel, execute
 
+from crypteo.domain.research_journal import ModelRequestPrepared, ToolResolved
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
     NodeTransition,
@@ -35,6 +37,7 @@ from crypteo.domain.research_workflow import (
     ResearchFailureCode,
     ResearchRunResult,
     ToolRecord,
+    ToolRejection,
 )
 from crypteo.research_journal import (
     ResearchStorageError,
@@ -202,8 +205,8 @@ def test_reask_carries_tool_definitions_only_without_tools(stage: str) -> None:
     offered = tool_definitions(opportunity().pair, (ETH,))
     for request in (first, reask):
         if stage == "investigate":
-            # One tool call precedes it, so seven attempts remain.
-            assert data(request)["attempts_remaining"] == 7
+            # One tool call precedes it, so eight attempts remain.
+            assert data(request)["attempts_remaining"] == 8
             assert request.tools == offered
             assert "tool_definitions" not in data(request)
         else:
@@ -315,15 +318,15 @@ def test_invalid_tool_requests_and_tool_budget_are_not_reasked() -> None:
     model = ScriptedModel([bad, bad])
     assert run(model).failure.code == "INVALID_TOOL_REQUEST"  # type: ignore[union-attr]
     assert len(model.requests) == 2
-    model = ScriptedModel([tool()] * 9)
+    model = ScriptedModel([tool()] * 10)
     assert run(model).failure.code == "TOOL_BUDGET_EXHAUSTED"  # type: ignore[union-attr]
-    assert len(model.requests) == 9
+    assert len(model.requests) == 10
     assert all("output_rejection" not in data(r) for r in model.requests)
 
 
 def max_length_steps() -> list[Step]:
-    """Eight tools, nine investigations and both re-asks: fourteen model calls."""
-    return [tool()] * 8 + [
+    """Nine tools, ten investigations and both re-asks: fifteen model calls."""
+    return [tool()] * 9 + [
         empty("investigate"),
         valid("investigate"),
         empty("draft_thesis"),
@@ -333,29 +336,32 @@ def max_length_steps() -> list[Step]:
     ]
 
 
-def test_budget_edges_per_stage_limits_ignore_reasks_up_to_fourteen_calls() -> None:
+def test_budget_edges_per_stage_limits_ignore_reasks_up_to_fifteen_calls() -> None:
     model = ScriptedModel(max_length_steps())
     result = run(model)
     assert result.status == "COMPLETED"
-    assert len(model.requests) == result.configuration.budget.max_model_calls == 14
+    assert len(model.requests) == result.configuration.budget.max_model_calls == 15
+    assert sum(r.stage != "investigate" for r in model.requests) == 4
+    assert sum("output_rejection" in data(r) for r in model.requests) == 2
+    assert sum(isinstance(r, ToolRecord) for r in result.trace) == 9
     investigations = [r for r in model.requests if r.stage == "investigate"]
-    # Nine budgeted investigation calls plus one re-ask, at attempts_remaining 0.
-    assert len(investigations) == 10
-    assert data(investigations[9])["attempts_remaining"] == 0
-    assert data(investigations[9])["output_rejection"]["call_id"] == (
-        investigations[8].call_id
+    # Ten budgeted investigation calls plus one re-ask, at attempts_remaining 0.
+    assert len(investigations) == 11
+    assert data(investigations[10])["attempts_remaining"] == 0
+    assert data(investigations[10])["output_rejection"]["call_id"] == (
+        investigations[9].call_id
     )
-    assert investigations[8].tools == investigations[9].tools == ()
-    # 22 node executions fit the unchanged LangGraph recursion limit of 24.
-    assert len(transitions(result)) == 23
-    assert result.configuration.budget.recursion_limit == 24
+    assert investigations[9].tools == investigations[10].tools == ()
+    # 24 node executions fit the LangGraph recursion limit of 26.
+    assert len(transitions(result)) == 25
+    assert result.configuration.budget.recursion_limit == 26
 
 
-def test_fourteen_call_cap_holds_even_for_a_due_reask() -> None:
+def test_fifteen_call_cap_holds_even_for_a_due_reask() -> None:
     model = ScriptedModel(max_length_steps())
     result = run(model)
     calls = [r for r in result.trace if isinstance(r, ModelCallRecord)]
-    assert len(calls) == 14
+    assert len(calls) == 15
     runtime = _ResearchRuntime(service(), model, result.configuration)
     state: ResearchState = {
         "context": result.context,
@@ -371,9 +377,137 @@ def test_fourteen_call_cap_holds_even_for_a_due_reask() -> None:
     refused = runtime.reask_or_fail(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
     assert refused["failure"] is not None and refused["rejected"] is None
     after, reply = asyncio.run(runtime.call(state, "final_assessment"))
-    assert reply is None and len(model.requests) == 14
+    assert reply is None and len(model.requests) == 15
     assert after["failure"] is not None
     assert after["failure"].code == "MODEL_BUDGET_EXHAUSTED"
+
+
+def test_journal_loads_a_history_at_exactly_the_budget_limits(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = asyncio.run(execute(store, ObservedModel(max_length_steps())))
+    result = artifact.result
+    assert result.status == "COMPLETED"
+    calls = [r for r in result.trace if isinstance(r, ModelCallRecord)]
+    assert len(calls) == 15
+    first_asks = [r.request for r in calls if "output_rejection" not in data(r.request)]
+    assert sum(r.stage == "investigate" for r in first_asks) == 10
+    assert sum(r.admitted for r in result.trace if isinstance(r, ToolRecord)) == 9
+    assert store.load_terminal("run-1") == artifact
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").state == "COMPLETED"
+
+
+def test_journal_rejects_a_tenth_admitted_tool_attempt(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel([tool()] * 10)))
+    events = store.inspect_run("run-1").events
+    resolved = [i for i, e in enumerate(events) if isinstance(e.event, ToolResolved)]
+    assert len(resolved) == 10
+    ninth, tenth = (events[i].event for i in resolved[-2:])
+    assert isinstance(ninth, ToolResolved) and isinstance(tenth, ToolResolved)
+    assert ninth.record.admitted and not tenth.record.admitted
+    assert tenth.record.rejection == ToolRejection(
+        code="TOOL_BUDGET_EXHAUSTED",
+        message="another tool request after nine admitted attempts",
+    )
+    # Forge the tenth attempt as an admitted cache hit, like the nine before it.
+    record = ninth.record.model_copy(
+        update={
+            "attempt_id": tenth.record.attempt_id,
+            "model_call_id": tenth.record.model_call_id,
+        }
+    )
+    forged = events[resolved[-1]].model_copy(
+        update={"event": tenth.model_copy(update={"record": record})}
+    )
+    prefix = events[: resolved[-1]]
+    project(prefix)
+    with pytest.raises(
+        ResearchValidationError, match="^tool admission differs from budget$"
+    ):
+        project((*prefix, forged))
+
+
+def test_journal_request_limits_are_its_own_literals(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel([tool()] * 9)))
+    events = store.inspect_run("run-1").events
+    prepared = [
+        i for i, e in enumerate(events) if isinstance(e.event, ModelRequestPrepared)
+    ]
+    # The tenth investigation request is the last one the per-stage limit admits.
+    index = prepared[9]
+    event = events[index].event
+    assert isinstance(event, ModelRequestPrepared)
+    request = event.request
+    assert request.stage == "investigate" and data(request)["attempts_remaining"] == 0
+    projection = project(events[:index])
+    assert (projection.calls, projection.counts["investigate"]) == (9, 9)
+    projection.validate_request(request)
+    # Code cannot reach these states; the journal still refuses them by itself.
+    projection.counts["investigate"] = 10
+    with pytest.raises(ResearchValidationError, match="^model call budget exceeded$"):
+        projection.validate_request(request)  # An eleventh investigation call.
+    projection = project(events[:index])
+    projection.calls = 15
+    sixteenth = request.model_copy(update={"call_id": "run-1/model/0016"})
+    with pytest.raises(ResearchValidationError, match="^model call budget exceeded$"):
+        projection.validate_request(sixteenth)
+
+
+def test_journal_refuses_a_reask_that_would_be_the_sixteenth_call(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel(reask_steps("final_assessment"))))
+    events = store.inspect_run("run-1").events
+    finished = [
+        i for i, e in enumerate(events) if e.event.kind == "MODEL_CALL_FINISHED"
+    ]
+    # Five calls: tool, investigation, thesis, critique, invalid assessment.
+    projection = project(events[: finished[4] + 1])
+    assert projection.calls == 5 and projection.rejected_call() is not None
+    projection.calls = 14
+    assert projection.rejected_call() is not None
+    projection.calls = 15
+    assert projection.rejected_call() is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"policy_id": "bounded_research_v2"},
+        {"max_tool_attempts": 8},
+        {"max_investigation_calls": 9},
+        {"max_model_calls": 14},
+        {"recursion_limit": 24},
+        {
+            "policy_id": "bounded_research_v2",
+            "max_tool_attempts": 8,
+            "max_investigation_calls": 9,
+            "max_model_calls": 14,
+            "recursion_limit": 24,
+        },
+    ],
+)
+def test_loaders_reject_a_stored_v2_budget(
+    tmp_path: Path, changes: dict[str, Any]
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel([tool()])))
+    assert store.load_terminal("run-1").result.status == "COMPLETED"
+
+    def mutate(events: list[dict[str, Any]]) -> int:
+        assert events[0]["event"]["kind"] == "RUN_STARTED"
+        events[0]["event"]["header"]["configuration"]["budget"].update(changes)
+        return 0
+
+    tamper(store, mutate)
+    for load in (store.inspect_run, store.load_terminal):
+        with pytest.raises(ResearchStorageError) as raised:
+            load("run-1")
+        assert isinstance(raised.value.__cause__, ValidationError)
+        assert "budget" in str(raised.value.__cause__)
 
 
 def strip_rejection(request: ModelRequest) -> ModelRequest:
@@ -436,7 +570,7 @@ PATHS: dict[str, list[Step]] = {
         valid("critique"),
         valid("final_assessment"),
     ],
-    "fourteen_calls": max_length_steps(),
+    "fifteen_calls": max_length_steps(),
 }
 
 

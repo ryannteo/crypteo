@@ -4,6 +4,7 @@ import inspect
 
 import pytest
 
+import crypteo.research_prompts as research_prompts
 from crypteo.research_model import ModelMessage, content_digest, render_json
 from crypteo.research_prompts import (
     ASSESSMENT_INSTRUCTIONS,
@@ -42,8 +43,8 @@ _STAGE_INSTRUCTIONS = {
         ),
         (
             "critique",
-            "critique_prompt_v2",
-            "9f3261966e7fb217c9de52cb4c00236d344081aee7afc9f8995c82f3665dbd74",
+            "critique_prompt_v3",
+            "1b08b4c44e2a25b75e6d2be484759f410f43ddde72a4c823613d24d50b784fc4",
             "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
         ),
         (
@@ -60,6 +61,28 @@ def test_v1_prompt_and_schema_snapshots(
     assert prompt_identity(stage, "opportunity").version == prompt_version
     assert prompt_identity(stage, "opportunity").digest == "sha256:" + prompt_digest
     assert structured_schema(stage).identity.digest == "sha256:" + schema_digest
+
+
+# ADR-017's block quote, line for line.
+ADR_017_CRITIC = (
+    "You are the independent research critic in a fresh conversation. Challenge",
+    "the exact supplied thesis against ALL collected evidence, request history and",
+    "typed unavailable results. Test its bull case and its bear case with the same",
+    "scrutiny: in each, identify unsupported claims, contradictions, assumptions,",
+    "missing evidence and unresolved uncertainties, and say where a reading",
+    "overstates what the evidence shows. Do not defer to the investigator. Critique",
+    "remains textual; do not invent citation fields. Return the structured",
+    "critique. You have no tools.",
+)
+
+
+def test_critic_instructions_are_adr_017_text_wrapped_within_80_columns() -> None:
+    assert CRITIC_INSTRUCTIONS.replace("\n", " ") == " ".join(ADR_017_CRITIC)
+    source = inspect.getsource(research_prompts)
+    start = source.index('CRITIC_INSTRUCTIONS = """')
+    end = source.index('"""', start + len('CRITIC_INSTRUCTIONS = """')) + 3
+    assert all(len(line) <= 80 for line in source[start:end].splitlines())
+    assert all(line == line.strip() for line in CRITIC_INSTRUCTIONS.splitlines())
 
 
 def test_investigation_requires_nonblank_summary_at_budget_boundary() -> None:
@@ -98,8 +121,8 @@ def test_shared_policy_explains_output_rejection_on_every_stage(stage: str) -> N
         ),
         (
             "critique",
-            "trader_critique_prompt_v1",
-            "5b38e48a9173c51a3da794c80e64d879bb75705182be28fca085577e1cc13c39",
+            "trader_critique_prompt_v2",
+            "3134cde6e0fd20ca20f2204165e2a511b75329751d020fd6151e754b49014107",
         ),
         (
             "final_assessment",

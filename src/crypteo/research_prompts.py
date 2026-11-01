@@ -63,11 +63,13 @@ and opposing evidence IDs, assumptions, invalidation conditions and uncertaintie
 Do not make a final assessment. You have no tools."""
 
 CRITIC_INSTRUCTIONS = """You are the independent research critic in a fresh
-conversation. Challenge the exact supplied thesis against ALL collected evidence,
-request history and typed unavailable results. Identify unsupported claims,
-contradictions, assumptions, missing evidence and unresolved uncertainties. Do not
-defer to the investigator. Critique remains textual; do not invent citation fields.
-Return the structured critique. You have no tools."""
+conversation. Challenge the exact supplied thesis against ALL collected
+evidence, request history and typed unavailable results. Test its bull case and
+its bear case with the same scrutiny: in each, identify unsupported claims,
+contradictions, assumptions, missing evidence and unresolved uncertainties, and
+say where a reading overstates what the evidence shows. Do not defer to the
+investigator. Critique remains textual; do not invent citation fields. Return
+the structured critique. You have no tools."""
 
 ASSESSMENT_INSTRUCTIONS = """Produce the final structured research assessment
 from the exact validated thesis, independent critique, evidence and context.
@@ -90,13 +92,13 @@ _PROMPT_VERSIONS: dict[ResearchEntry, dict[str, str]] = {
     "opportunity": {
         "investigate": "investigate_prompt_v4",
         "draft_thesis": "draft_thesis_prompt_v2",
-        "critique": "critique_prompt_v2",
+        "critique": "critique_prompt_v3",
         "final_assessment": "final_assessment_prompt_v2",
     },
     "trader": {
         "investigate": "trader_investigate_prompt_v1",
         "draft_thesis": "trader_draft_thesis_prompt_v1",
-        "critique": "trader_critique_prompt_v1",
+        "critique": "trader_critique_prompt_v2",
         "final_assessment": "trader_final_assessment_prompt_v1",
     },
 }

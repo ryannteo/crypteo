@@ -63,19 +63,19 @@ class TraderResearchRequest(ModelContract):
 
 
 class ResearchBudgetPolicy(ModelContract):
-    policy_id: Literal["bounded_research_v2"] = "bounded_research_v2"
-    max_tool_attempts: Literal[8] = 8
+    policy_id: Literal["bounded_research_v3"] = "bounded_research_v3"
+    max_tool_attempts: Literal[9] = 9
     max_tools_per_response: Literal[1] = 1
-    max_investigation_calls: Literal[9] = 9
+    max_investigation_calls: Literal[10] = 10
     thesis_calls: Literal[1] = 1
     critic_calls: Literal[1] = 1
     assessment_calls: Literal[1] = 1
-    max_model_calls: Literal[14] = 14
+    max_model_calls: Literal[15] = 15
     max_output_reasks: Literal[2] = 2
     max_invalid_tool_requests: Literal[2] = 2
     provider_retries: Literal[0] = 0
     graph_retries: Literal[0] = 0
-    recursion_limit: Literal[24] = 24
+    recursion_limit: Literal[26] = 26
 
     @field_validator("*", mode="before")
     @classmethod

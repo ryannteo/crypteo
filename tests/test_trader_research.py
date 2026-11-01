@@ -61,6 +61,7 @@ from crypteo.research_prompts import (
     ASSESSMENT_INSTRUCTIONS,
     CRITIC_INSTRUCTIONS,
     INVESTIGATION_INSTRUCTIONS,
+    SHARED_POLICY,
     THESIS_INSTRUCTIONS,
     TRADER_SHARED_POLICY,
     prompt_identity,
@@ -217,13 +218,30 @@ def test_trader_run_completes_through_all_five_nodes(outcome: str) -> None:
 
 
 def test_trader_budget_boundary_requests_follow_the_tool_definitions_rule() -> None:
-    model = ScriptedModel([tool()] * 8)
+    model = ScriptedModel([tool()] * 9)
     result = run_trader(model)
     assert result.status == "COMPLETED"
     assert isinstance(result.context, TraderResearchContext)
-    assert len([r for r in model.requests if r.stage == "investigate"]) == 9
-    assert model.requests[8].tools == ()
+    assert len([r for r in model.requests if r.stage == "investigate"]) == 10
+    assert model.requests[9].tools == ()
     assert_trader_requests(model.requests, result.context)
+
+
+def test_trader_critic_shares_the_opportunity_critic_instructions() -> None:
+    model = ScriptedModel(outcome="ABSTAIN")
+    trader = run_trader(model)
+    assert trader.status == "COMPLETED"
+    critic = [r for r in model.requests if r.stage == "critique"]
+    assert len(critic) == 1
+    assert critic[0].prompt_identity.version == "trader_critique_prompt_v2"
+    assert critic[0].prompt_identity == prompt_identity("critique", "trader")
+    opportunity_system = prompt_messages("critique", {}, "opportunity")[0].content
+    for system, policy in (
+        (critic[0].messages[0].content, TRADER_SHARED_POLICY),
+        (opportunity_system, SHARED_POLICY),
+    ):
+        assert system == policy + "\n\n" + CRITIC_INSTRUCTIONS
+    assert prompt_identity("critique", "opportunity").version == "critique_prompt_v3"
 
 
 def test_trader_relative_strength_is_offered_against_other_bound_pairs() -> None:

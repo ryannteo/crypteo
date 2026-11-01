@@ -166,19 +166,19 @@ def test_history_view_unavailable_role_and_reason() -> None:
 
 
 def test_history_view_budget_exhausted_rejection_is_not_admitted() -> None:
-    result = run(ScriptedModel([tool()] * 9))
+    result = run(ScriptedModel([tool()] * 10))
     view = request_history_view(records(result))
     rejection = records(result)[-1].rejection
     assert rejection is not None
     assert view[-1] == {
-        "attempt": 9,
+        "attempt": 10,
         "requests": [{"name": "trend", "arguments_json": "{}"}],
         "admitted": False,
         "status": "rejected",
         "code": "TOOL_BUDGET_EXHAUSTED",
         "message": rejection.message,
     }
-    assert [entry["cached_from_attempt"] for entry in view[1:8]] == [1] * 7
+    assert [entry["cached_from_attempt"] for entry in view[1:9]] == [1] * 8
 
 
 @pytest.mark.parametrize("target", ["absent", "self", "later"])
@@ -389,19 +389,20 @@ def definitions_view(benchmarks: tuple[TradingPair, ...]) -> list[dict[str, str]
     ]
 
 
-EIGHT_TOOLS = (
+NINE_TOOLS = (
     *(tool(name) for name in BTC_TOOLS),
     tool("candle_structure"),
+    tool("higher_timeframe"),
     tool("relative_strength", {"benchmark": "ETH-USD"}),
 )
 
 
 def test_requests_offering_no_tools_carry_tool_definitions() -> None:
-    model = ScriptedModel(EIGHT_TOOLS)
+    model = ScriptedModel(NINE_TOOLS)
     result = run(model)
     assert result.status == "COMPLETED"
     stages = [r.stage for r in model.requests]
-    assert stages == ["investigate"] * 9 + [
+    assert stages == ["investigate"] * 10 + [
         "draft_thesis",
         "critique",
         "final_assessment",
@@ -411,15 +412,15 @@ def test_requests_offering_no_tools_carry_tool_definitions() -> None:
     # Names and full descriptions (suffix included) in offer order.
     assert expected == [{"name": t.name, "description": t.description} for t in offered]
     assert [d["name"] for d in expected] == [c.value for c in MarketResearchCapability]
-    for attempts, request in zip(range(8, 0, -1), model.requests[:8], strict=True):
+    for attempts, request in zip(range(9, 0, -1), model.requests[:9], strict=True):
         data = research(request)
         assert data["attempts_remaining"] == attempts
         assert request.tools == offered and "tool_definitions" not in data
-    # The ninth investigation call has no attempts left and offers no tools.
-    for request in model.requests[8:]:
+    # The tenth investigation call has no attempts left and offers no tools.
+    for request in model.requests[9:]:
         data = research(request)
         assert request.tools == () and data["tool_definitions"] == expected
-    assert research(model.requests[8])["attempts_remaining"] == 0
+    assert research(model.requests[9])["attempts_remaining"] == 0
 
 
 @pytest.mark.parametrize(

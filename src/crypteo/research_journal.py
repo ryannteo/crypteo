@@ -305,7 +305,7 @@ class JournalProjection:
             isinstance(r, ModelCallRecord) and request_rejection(r.request) is not None
             for r in self.trace
         )
-        if reasks >= 2 or self.calls >= 14:
+        if reasks >= 2 or self.calls >= 15:
             return None
         return record if output_rejection(self.trace, record) is not None else None
 
@@ -320,8 +320,8 @@ class JournalProjection:
             raise ResearchValidationError("model call identity/sequence mismatch")
         rejected = self.rejected_call()
         count = self.counts.get(request.stage, 0)
-        if self.calls >= 14 or (
-            rejected is None and count >= (9 if request.stage == "investigate" else 1)
+        if self.calls >= 15 or (
+            rejected is None and count >= (10 if request.stage == "investigate" else 1)
         ):
             raise ResearchValidationError("model call budget exceeded")
         data = research_data(
@@ -501,7 +501,7 @@ class JournalProjection:
             ) != (pending.attempt_id, pending.model_call_id, pending.requests):
                 raise ResearchValidationError("tool resolution lacks matching request")
             history = tuple(r for r in self.trace if isinstance(r, ToolRecord))
-            admitted = sum(r.admitted for r in history) < 8
+            admitted = sum(r.admitted for r in history) < 9
             bound = (
                 bind_tool_request(
                     record.requests,
@@ -511,7 +511,7 @@ class JournalProjection:
                 if admitted
                 else ToolRejection(
                     code="TOOL_BUDGET_EXHAUSTED",
-                    message="another tool request after eight admitted attempts",
+                    message="another tool request after nine admitted attempts",
                 )
             )
             if record.admitted != admitted:

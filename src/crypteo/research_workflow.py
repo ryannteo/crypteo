@@ -492,7 +492,7 @@ class _ResearchRuntime:
             if admitted
             else ToolRejection(
                 code="TOOL_BUDGET_EXHAUSTED",
-                message="another tool request after eight admitted attempts",
+                message="another tool request after nine admitted attempts",
             )
         )
         if isinstance(query_or_rejection, ToolRejection):

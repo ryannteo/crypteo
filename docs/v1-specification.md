@@ -1156,11 +1156,10 @@ research conclusion could not be formed. Code never parses direction, pair or
 time from the question. The question reaches the model only inside
 `research_data.context` as untrusted data. It cannot be cited, produces no
 evidence, and selects no pair, time, venue, timeframe, window or tool argument.
-Trader-led requests use `TRADER_SHARED_POLICY` followed by the unchanged stage
-instructions, with prompt versions `trader_investigate_prompt_v1`,
-`trader_draft_thesis_prompt_v1`, `trader_critique_prompt_v1` and
-`trader_final_assessment_prompt_v1`. Opportunity-led prompts and versions are
-unchanged.
+Trader-led requests use `TRADER_SHARED_POLICY` followed by the stage
+instructions shared with opportunity-led requests, with prompt versions
+`trader_investigate_prompt_v1`, `trader_draft_thesis_prompt_v1`,
+`trader_critique_prompt_v2` and `trader_final_assessment_prompt_v1`.
 
 Time is checked around model, tool, and cache boundaries and before return.
 Moving the authoritative clock raises an invariant error, including movement
@@ -1171,7 +1170,7 @@ Model inference remains subject to the
 
 ### Investigation policy and graph
 
-The runtime-enforced policy is `bounded_research_v2`. Budget and operational
+The runtime-enforced policy is `bounded_research_v3`. Budget and operational
 limits are validated literal configuration values, not freely tunable overrides.
 Ten deterministic capabilities exist: `trend`, `momentum`, `volatility`,
 `bollinger_position`, `levels`, `volume_context`, `candle_structure`,
@@ -1193,9 +1192,13 @@ window and cutoff are runtime-owned, that `T-kh` is the candle closing `k` hours
 before `T`, and that each `*_candles` payload field gives the first and last
 close time and the count of the candles it covers.
 Tool definitions are versioned `bounded_market_tools_v6`. A single-pair run is
-offered nine tools within its eight admitted tool attempts. Every request that
-offers no tools (thesis, critique, final assessment, and an investigation call
-with no attempts remaining, first asks and re-asks alike) instead carries
+offered nine tools within its nine admitted tool attempts, so it can request
+each once
+([ADR-016](decisions/ADR-016-tool-attempts-cover-single-pair-tools.md)); which
+tools it requests, and when it completes, remain the model's choice.
+Every request that offers no tools (thesis, critique, final assessment, and an
+investigation call with no attempts remaining, first asks and re-asks alike)
+instead carries
 `research_data.tool_definitions`: the run's tool definitions as read-only data,
 one `{name, description}` object per tool in offer order, with the full
 description including the shared suffix and the same relative-strength rule. A
@@ -1204,15 +1207,15 @@ evidence windows measure; they grant no tool and no parameter.
 
 | Bound | Current policy |
 | --- | --- |
-| Admitted tool attempts | At most 8 per run |
+| Admitted tool attempts | At most 9 per run |
 | Tool requests per investigation response | Exactly 1 for a tool response; completion requests none |
-| Investigation model calls | At most 9, excluding re-asks |
+| Investigation model calls | At most 10, excluding re-asks |
 | Thesis, critic, final assessment calls | Exactly 1 each in a completed run, excluding re-asks |
 | Output re-asks | At most 1 per stage invocation and 2 per run |
-| Total model calls | At most 14, including re-asks |
+| Total model calls | At most 15, including re-asks |
 | Invalid tool requests | First permits recovery; second interrupts |
 | Automatic provider and graph retries | 0 |
-| Graph recursion limit | 24, a defensive guard rather than the primary budget |
+| Graph recursion limit | 26, a defensive guard rather than the primary budget |
 
 Admitted invalid requests, unavailable results, and cache hits consume attempts.
 Identical bound queries are cached within a run, including unavailable results;
@@ -1221,7 +1224,7 @@ Malformed/unknown/extra arguments or multiple tool requests dispatch nothing and
 produce typed rejection feedback. The first invalid request allows another
 investigation response within remaining budgets. The second interrupts. A tool
 request after all admitted attempts are consumed interrupts with
-`TOOL_BUDGET_EXHAUSTED`; the investigator may instead complete on its ninth call.
+`TOOL_BUDGET_EXHAUSTED`; the investigator may instead complete on its tenth call.
 Investigation requests offer tools only while `attempts_remaining`
 is positive. The final investigation call, when no tool attempts remain, offers
 no tools, so its only expected response is the structured completion; a tool
@@ -1268,10 +1271,10 @@ re-ask fails validation, or a further invalid structured reply arrives after bot
 re-asks are spent, the run is `INTERRUPTED` with that reply's failure code and
 call ID. Provider failures, timeouts, incomplete output, refusals, a tool reply on
 a synthesis stage, invalid tool requests and tool-budget rejections are never
-re-asked. The worst case is 8 tool calls, 9 investigation calls, 3 synthesis calls
-and 2 re-asks: 14 model calls and 22 node executions. LangGraph 1.2 completes N
+re-asked. The worst case is 9 tool calls, 10 investigation calls, 3 synthesis calls
+and 2 re-asks: 15 model calls and 24 node executions. LangGraph 1.2 completes N
 node executions only when N is at most the recursion limit minus one, so the
-limit of 24 covers it.
+limit of 26 covers it with a margin of one.
 
 ### Model boundary and operational limits
 
@@ -1375,11 +1378,14 @@ Investigation, thesis, and final assessment evidence references must belong to
 successful evidence collected in that run. Critique is structured textual content
 without separate citation fields. The critic is a separate fresh model call and
 context receiving the exact validated thesis, all collected evidence, and tool
-request history including unavailability, both in the compact view. It challenges
-unsupported claims, contradictions, missing evidence, assumptions, and interpretive
-overreach. It does not inherit the investigator's completion narrative or a
-provider conversation. Independence is procedural only; statistical independence
-is not claimed.
+request history including unavailability, both in the compact view. It tests the
+thesis's bull and bear cases with the same scrutiny, challenging unsupported
+claims, contradictions, missing evidence, assumptions, and interpretive
+overreach in each ([ADR-017](decisions/ADR-017-critic-tests-both-cases.md)).
+Both entry modes share these critic instructions, versioned `critique_prompt_v3`
+and `trader_critique_prompt_v2`. The critic does not inherit the investigator's
+completion narrative or a provider conversation. Independence is procedural
+only; statistical independence is not claimed.
 Final assessment receives the validated thesis and critique and must address the
 critic explicitly for every completed outcome.
 
@@ -1649,7 +1655,7 @@ Loading validates relationships as well as schemas and checksums:
   (opportunity-led or trader-led), schemas, and tool definitions. Editing either
   shared policy makes earlier runs of that entry fail to load.
   The projection independently decides when a re-ask is due (the last retained
-  call is an invalid structured first reply, fewer than 2 re-asks and 14 model
+  call is an invalid structured first reply, fewer than 2 re-asks and 15 model
   calls so far) and then requires the next request of that stage to carry
   the `output_rejection` recomputed from the stored reply. It rejects a re-ask
   that is missing, extra, names another call or lists other problems; a
