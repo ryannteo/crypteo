@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted. [ADR-021](ADR-021-pre-registered-ranking-measure.md) narrowly
+supersedes the stop clause for ranking trials only; it still holds for
+selection.
 
 ## Context
 

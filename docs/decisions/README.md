@@ -62,4 +62,6 @@ durable decision actually changes.
 | [016](ADR-016-tool-attempts-cover-single-pair-tools.md) | Tool attempts cover every tool in a single-pair window | Accepted |
 | [017](ADR-017-critic-tests-both-cases.md) | The critic tests the bull and bear cases with the same scrutiny | Accepted |
 | [018](ADR-018-plan-only-authorized-candidates.md) | Evaluation plans only candidates the baseline would trade | Accepted |
-| [019](ADR-019-pre-registered-baseline-study.md) | Baseline strategy changes are chosen by a pre-registered study | Accepted |
+| [019](ADR-019-pre-registered-baseline-study.md) | Baseline strategy changes are chosen by a pre-registered study | Accepted; stop clause narrowly superseded by ADR-021 for ranking trials |
+| [020](ADR-020-assessment-states-a-lean.md) | The assessment states a graded lean on the evidence | Accepted |
+| [021](ADR-021-pre-registered-ranking-measure.md) | Research ranking is measured by a pre-registered two-stage trial | Accepted |
