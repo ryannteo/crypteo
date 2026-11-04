@@ -861,8 +861,9 @@ turns canonical datasets into a `WindowPlan` of single-candidate replay windows
 for the comparison above. It scans, and computes the baseline's terms and risk
 decision at each candidate's signal hour through a point-in-time gateway whose
 clock is that hour. It runs no replay, inference, research or execution, so no
-outcome can influence selection. `validate_plan(plan, datasets)` re-plans from
-the datasets and requires exact equality.
+replay outcome can influence selection, although the overlap rule reads later
+scanner candidates (see the limitations below). `validate_plan(plan, datasets)`
+re-plans from the datasets and requires exact equality.
 
 `WindowPlanSettings` holds `purpose`, an hourly UTC `planning_start`, a strictly
 positive integer `limit`, and the `initial_cash`, `trade_terms`, `risk` and
@@ -956,7 +957,10 @@ Limitations: single-asset windows bind only that pair's dataset, so
 relative-strength evidence is unavailable to research in planned windows.
 `OVERLAPPING_CANDIDATE` drops candidates followed by another crossing within the
 window, which may bias the sample toward candidates whose decline did not
-continue. Baseline totals describe authorized trades only, so they are not
+continue; the
+[trading-logic exploration](evaluations/v2-trading-logic-exploration.md)
+measures its effect on baseline results. Baseline totals describe authorized
+trades only, so they are not
 comparable with plans made before ADR-018, which also selected windows the
 baseline rejected. Internal dataset gaps are not excluded; they surface as
 baseline `ENTRY_REJECTED` or `DATA_GAP`.
