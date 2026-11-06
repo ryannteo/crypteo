@@ -16,6 +16,7 @@ from research_support import (
     BTC,
     CODE,
     ETH,
+    LEAN_BY_OUTCOME,
     SOL,
     ScriptedModel,
     T,
@@ -185,6 +186,11 @@ def test_trader_run_completes_through_all_five_nodes(outcome: str) -> None:
     assert result.status == "COMPLETED" and result.assessment_origin == "MODEL"
     assert result.assessment.outcome.value == outcome
     assert result.failure is None and result.assessment.critic_response
+    assert result.assessment.lean == LEAN_BY_OUTCOME[outcome]
+    assert model.requests[-1].stage == "final_assessment"
+    assert model.requests[-1].prompt_identity.version == (
+        "trader_final_assessment_prompt_v2"
+    )
     context = result.context
     assert isinstance(context, TraderResearchContext)
     assert (context.entry, context.subject, context.benchmarks) == (

@@ -163,6 +163,9 @@ def critique() -> Critique:
     )
 
 
+LEAN_BY_OUTCOME = {"TRADE": "FOR", "NO_TRADE": "AGAINST", "ABSTAIN": "BALANCED"}
+
+
 def assessment(outcome: str, ids: tuple[str, ...]) -> TradeDecision:
     return TradeDecision.model_validate(
         dict(
@@ -176,6 +179,7 @@ def assessment(outcome: str, ids: tuple[str, ...]) -> TradeDecision:
             abstention_reasons=("INSUFFICIENT_EVIDENCE",)
             if outcome == "ABSTAIN"
             else (),
+            lean=LEAN_BY_OUTCOME[outcome],
         )
     )
 

@@ -12,6 +12,7 @@ from crypteo.domain.research import (
     DecisionOutcome,
     EvidenceCategory,
     EvidenceItem,
+    EvidenceLean,
     EvidenceProvenance,
     EvidenceQuality,
     FrozenJsonObject,
@@ -246,6 +247,7 @@ def decision_data(
             "confidence": 70,
             "critic_response": "Trend risk is acknowledged in the assessment.",
             "abstention_reasons": [],
+            "lean": EvidenceLean.FOR,
         },
         DecisionOutcome.NO_TRADE: {
             "supporting_evidence_ids": ["ev-1"],
@@ -255,6 +257,7 @@ def decision_data(
                 "The weak reversal evidence does not answer the critique."
             ),
             "abstention_reasons": [],
+            "lean": EvidenceLean.AGAINST,
         },
         DecisionOutcome.ABSTAIN: {
             "supporting_evidence_ids": [],
@@ -262,6 +265,7 @@ def decision_data(
             "confidence": None,
             "critic_response": None,
             "abstention_reasons": [AbstentionReason.INSUFFICIENT_EVIDENCE],
+            "lean": EvidenceLean.BALANCED,
         },
     }
     data: dict[str, Any] = {
@@ -714,6 +718,78 @@ def test_valid_decisions_round_trip_json(outcome: DecisionOutcome) -> None:
     assert TradeDecision.model_validate_json(decision.model_dump_json()) == decision
     assert isinstance(decision.supporting_evidence_ids, tuple)
     assert isinstance(decision.key_uncertainties, tuple)
+
+
+def test_evidence_lean_values_are_stable_and_ordered() -> None:
+    assert [item.value for item in EvidenceLean] == [
+        "STRONGLY_AGAINST",
+        "AGAINST",
+        "BALANCED",
+        "FOR",
+        "STRONGLY_FOR",
+    ]
+
+
+LEAN_ACCEPTED: dict[DecisionOutcome, set[EvidenceLean | None]] = {
+    DecisionOutcome.TRADE: {EvidenceLean.FOR, EvidenceLean.STRONGLY_FOR},
+    DecisionOutcome.NO_TRADE: {EvidenceLean.AGAINST, EvidenceLean.STRONGLY_AGAINST},
+    DecisionOutcome.ABSTAIN: {*EvidenceLean, None},
+}
+LEAN_REJECTED = {
+    DecisionOutcome.TRADE: "TRADE requires lean FOR or STRONGLY_FOR",
+    DecisionOutcome.NO_TRADE: "NO_TRADE requires lean AGAINST or STRONGLY_AGAINST",
+}
+
+
+@pytest.mark.parametrize("lean", [*EvidenceLean, None])
+@pytest.mark.parametrize("outcome", list(DecisionOutcome))
+def test_lean_consistency_matrix(
+    outcome: DecisionOutcome, lean: EvidenceLean | None
+) -> None:
+    data = decision_data(outcome, lean=lean)
+    if lean in LEAN_ACCEPTED[outcome]:
+        assert TradeDecision.model_validate(data).lean is lean
+    else:
+        with pytest.raises(ValidationError, match=LEAN_REJECTED[outcome]):
+            TradeDecision.model_validate(data)
+
+
+def test_lean_defaults_to_none_and_is_the_last_field() -> None:
+    data = decision_data(DecisionOutcome.ABSTAIN)
+    del data["lean"]
+    assert TradeDecision.model_validate(data).lean is None
+    assert list(TradeDecision.model_fields)[-1] == "lean"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "overrides", "message"),
+    [
+        (DecisionOutcome.TRADE, {"supporting_evidence_ids": []}, "supporting"),
+        (DecisionOutcome.TRADE, {"confidence": None}, "requires confidence"),
+        (DecisionOutcome.TRADE, {"critic_response": None}, "critic"),
+        (DecisionOutcome.TRADE, {"abstention_reasons": ["STALE_EVIDENCE"]}, "must not"),
+        (DecisionOutcome.NO_TRADE, {"counterevidence_ids": []}, "counterevidence"),
+        (DecisionOutcome.NO_TRADE, {"confidence": None}, "requires confidence"),
+        (DecisionOutcome.NO_TRADE, {"critic_response": None}, "critic"),
+        (
+            DecisionOutcome.NO_TRADE,
+            {"abstention_reasons": ["STALE_EVIDENCE"]},
+            "must not",
+        ),
+    ],
+)
+def test_existing_outcome_checks_run_before_the_lean_check(
+    outcome: DecisionOutcome, overrides: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        TradeDecision.model_validate(decision_data(outcome, lean=None, **overrides))
+
+
+def test_decision_rejects_unknown_lean() -> None:
+    with pytest.raises(ValidationError, match="lean"):
+        TradeDecision.model_validate(
+            decision_data(DecisionOutcome.ABSTAIN, lean="SLIGHTLY_FOR")
+        )
 
 
 def test_abstain_may_include_available_research_results() -> None:

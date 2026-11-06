@@ -177,31 +177,37 @@ def test_v6_tool_identity_snapshots() -> None:
     assert {t.identity.version for t in tool_definitions(BTC, ())} == {TOOL_VERSION}
 
 
-def test_policy_identity_moves_only_workflow_and_critic_prompt() -> None:
+def test_policy_identity_pins_prompts_and_schemas() -> None:
     policy = research_policy(workflow_config())
     assert policy.market_research == "market_research_v4"
     assert (policy.workflow, policy.model_view) == (
         "bounded_research_v3",
         "compact_research_view_v2",
     )
-    # Among prompts only the critic moved (ADR-017); schemas are unchanged.
+    # The critic moved under ADR-017; the final assessment under ADR-020.
     assert [p.version for p in policy.prompts] == [
         "investigate_prompt_v4",
         "draft_thesis_prompt_v2",
         "critique_prompt_v3",
-        "final_assessment_prompt_v2",
+        "final_assessment_prompt_v3",
     ]
     assert [p.digest.removeprefix("sha256:") for p in policy.prompts] == [
         "850412dde6c09ce5b9ba74c1deec75cbd5a05a6ab766978aac6c91d530294172",
         "991afdb1f18f04a095cdaff07577e0a445ac9885a3deaf01685a7e2d1b791792",
         "1b08b4c44e2a25b75e6d2be484759f410f43ddde72a4c823613d24d50b784fc4",
-        "3445cbadac61157d7a500c6ac396a21c3f6429bc7edaa98a4cfda37300d06865",
+        "424d7f664954ad70a8a6993a5be51addb25efde40be59ddcdf5935174514c37c",
+    ]
+    assert [s.version for s in policy.schemas] == [
+        "investigate_schema_v1",
+        "draft_thesis_schema_v1",
+        "critique_schema_v1",
+        "final_assessment_schema_v2",
     ]
     assert [s.digest.removeprefix("sha256:") for s in policy.schemas] == [
         "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
         "7a62eaa5f8f91a3a94a93b32477db6c287f1a2d586258f071a8fdccc9472da26",
         "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
-        "54f953c92fd301620f314d8fefb2b2ed037f0aa812c4bf4e39a8a6264d40adcc",
+        "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
     ]
     # Tool identities are unchanged: BTC offers carry the pinned v6 snapshots.
     offers = {

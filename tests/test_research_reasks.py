@@ -90,6 +90,7 @@ EMPTY = {
         "key_uncertainties": [],
         "critic_response": None,
         "abstention_reasons": ["INSUFFICIENT_EVIDENCE"],
+        "lean": "BALANCED",
     },
 }
 PROBLEMS = {
@@ -283,6 +284,97 @@ def test_unknown_evidence_reference_is_reasked() -> None:
         "counterevidence_ids: unknown evidence id fabricated-id",
         "critic_response: required for every outcome",
     ]
+
+
+def final_with(outcome: str, **changes: Any) -> Step:
+    """A final assessment citing the request's evidence, then changed."""
+
+    def reply(request: ModelRequest) -> ModelReply:
+        decision = assessment(outcome, evidence_ids(request)).model_dump(mode="json")
+        return structured(decision | changes)
+
+    return reply
+
+
+def final_without_lean(request: ModelRequest) -> ModelReply:
+    decision = assessment("TRADE", evidence_ids(request)).model_dump(mode="json")
+    del decision["lean"]
+    return structured(decision)
+
+
+TRADE_LEAN = "output: TRADE requires lean FOR or STRONGLY_FOR"
+NO_TRADE_LEAN = "output: NO_TRADE requires lean AGAINST or STRONGLY_AGAINST"
+UNSTATED_LEAN = "lean: required for every outcome"
+
+
+@pytest.mark.parametrize(
+    "bad,problems",
+    [
+        (final_without_lean, ["lean: missing"]),
+        (final_with("TRADE", lean=None), [TRADE_LEAN]),
+        (final_with("NO_TRADE", lean=None), [NO_TRADE_LEAN]),
+        (final_with("ABSTAIN", lean=None), [UNSTATED_LEAN]),
+        (final_with("TRADE", lean="BALANCED"), [TRADE_LEAN]),
+        (final_with("TRADE", lean="AGAINST"), [TRADE_LEAN]),
+        (final_with("NO_TRADE", lean="FOR"), [NO_TRADE_LEAN]),
+        (final_with("NO_TRADE", lean="BALANCED"), [NO_TRADE_LEAN]),
+        (final_with("ABSTAIN", lean="SLIGHTLY_FOR"), ["lean: enum"]),
+        (
+            final_with("ABSTAIN", lean=None, critic_response=None),
+            ["critic_response: required for every outcome", UNSTATED_LEAN],
+        ),
+    ],
+)
+def test_bad_lean_is_reasked_never_coerced(bad: Step, problems: list[str]) -> None:
+    model = ScriptedModel(
+        graph(
+            ("final_assessment", bad),
+            ("final_assessment", valid("final_assessment")),
+        )
+    )
+    result = run(model)
+    assert result.status == "COMPLETED" and result.assessment.lean == "FOR"
+    assert data(model.requests[-1])["output_rejection"]["problems"] == problems
+    assert ("final_assessment", "final_assessment") in transitions(result)
+    # The rejected reply is retained as it was, with nothing filled in.
+    calls = [r for r in result.trace if isinstance(r, ModelCallRecord)]
+    assert isinstance(calls[-2].reply, StructuredReply)
+    assert calls[-2].request.stage == "final_assessment"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        final_without_lean,
+        final_with("NO_TRADE", lean="FOR"),
+        final_with("ABSTAIN", lean=None),
+    ],
+)
+def test_two_bad_leans_exhaust_the_reask_budget(bad: Step) -> None:
+    model = ScriptedModel(graph(("final_assessment", bad), ("final_assessment", bad)))
+    result = run(model)
+    assert len(model.requests) == 6
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.failure is not None
+    assert result.failure.code == "INVALID_MODEL_OUTPUT"
+    assert result.failure.call_id == model.requests[-1].call_id
+    assert result.assessment.outcome == "ABSTAIN" and result.assessment.lean is None
+    assert result.critique is not None
+
+
+def test_reasked_lean_round_trips_through_the_journal(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path / "research.sqlite")
+    model = ObservedModel(
+        graph(
+            ("final_assessment", final_with("NO_TRADE", lean="FOR")),
+            ("final_assessment", final_with("NO_TRADE", lean="STRONGLY_AGAINST")),
+        )
+    )
+    artifact = asyncio.run(execute(store, model))
+    assert artifact.result.status == "COMPLETED"
+    assert artifact.result.assessment.lean == "STRONGLY_AGAINST"
+    assert data(model.requests[-1])["output_rejection"]["problems"] == [NO_TRADE_LEAN]
+    assert store.load_terminal("run-1") == artifact
 
 
 @pytest.mark.parametrize(

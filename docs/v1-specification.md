@@ -340,7 +340,7 @@ the full normalization, identity, publication, and loading contract.
 
 ## Decision and Risk Outcomes
 
-`TradeDecision` is the final LLM-facing research assessment. It contains qualitative rationale, evidence and counterevidence references, confidence, uncertainties, critic response, abstention reasons, and exactly one of `TRADE|NO_TRADE|ABSTAIN`. It does not own runtime/journal identity, authoritative timestamps, financial arithmetic, execution fields, or references to deterministic trade-level/template contracts. The implemented `TradeTerms` contract remains runtime-owned and is not part of this model-facing schema.
+`TradeDecision` is the final LLM-facing research assessment. It contains qualitative rationale, evidence and counterevidence references, confidence, uncertainties, critic response, abstention reasons, a lean (`STRONGLY_AGAINST|AGAINST|BALANCED|FOR|STRONGLY_FOR`), and exactly one of `TRADE|NO_TRADE|ABSTAIN`. It does not own runtime/journal identity, authoritative timestamps, financial arithmetic, execution fields, or references to deterministic trade-level/template contracts. The implemented `TradeTerms` contract remains runtime-owned and is not part of this model-facing schema.
 
 - `TRADE`: research supports further consideration of the candidate LONG setup. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
 - `NO_TRADE`: Crypteo has enough evidence to actively reject the candidate. It is a substantive research conclusion, not an abstention.
@@ -1137,9 +1137,17 @@ evidence collected in that run.
 permits abstention reasons. `ABSTAIN` requires at least one abstention reason and
 may retain available research results. Confidence is a strict integer from 0 to
 100 expressing confidence in the research conclusion, not a calibrated probability
-of profit. There is no deterministic decision threshold. Every completed
-model assessment, including `ABSTAIN`, also requires a nonblank critic response;
-runtime interruption assessments follow the failure semantics below.
+of profit. There is no deterministic decision threshold. `lean` is the
+assessment's judgment of where the balance of the collected evidence sits for a
+LONG at research time, one of `STRONGLY_AGAINST`, `AGAINST`, `BALANCED`, `FOR` and
+`STRONGLY_FOR`; it is not a probability, forecast or expected return, and the
+workflow computes nothing from it
+([ADR-020](decisions/ADR-020-assessment-states-a-lean.md)). `TRADE` requires `FOR`
+or `STRONGLY_FOR`, `NO_TRADE` requires `AGAINST` or `STRONGLY_AGAINST`, and
+`ABSTAIN` may use any value. Every completed model assessment, including
+`ABSTAIN`, also requires a nonblank critic response and a lean; a runtime
+interruption assessment has no lean and otherwise follows the failure semantics
+below.
 
 ## Bounded Model-backed Research
 
@@ -1192,7 +1200,7 @@ evidence, and selects no pair, time, venue, timeframe, window or tool argument.
 Trader-led requests use `TRADER_SHARED_POLICY` followed by the stage
 instructions shared with opportunity-led requests, with prompt versions
 `trader_investigate_prompt_v1`, `trader_draft_thesis_prompt_v1`,
-`trader_critique_prompt_v2` and `trader_final_assessment_prompt_v1`.
+`trader_critique_prompt_v2` and `trader_final_assessment_prompt_v2`.
 
 Time is checked around model, tool, and cache boundaries and before return.
 Moving the authoritative clock raises an invariant error, including movement
@@ -1420,7 +1428,12 @@ and `trader_critique_prompt_v2`. The critic does not inherit the investigator's
 completion narrative or a provider conversation. Independence is procedural
 only; statistical independence is not claimed.
 Final assessment receives the validated thesis and critique and must address the
-critic explicitly for every completed outcome.
+critic explicitly for every completed outcome. It also states the lean
+defined in [Research Contract Validation](#research-contract-validation). The
+final-assessment instructions are versioned `final_assessment_prompt_v3` and
+`trader_final_assessment_prompt_v2`, and its output schema
+`final_assessment_schema_v2`; the other stage schemas remain
+`<stage>_schema_v1`.
 
 ### Outcomes and failure semantics
 
@@ -1438,10 +1451,10 @@ threshold, calibration guarantee, or probability-of-profit claim.
 | Run status | Assessment origin | Required result |
 | --- | --- | --- |
 | `COMPLETED` | `MODEL` | Investigation completion, validated thesis, critique, and final assessment; no failure |
-| `INTERRUPTED` | `RUNTIME` | Typed failure and deterministic runtime `ABSTAIN` with matching abstention category |
+| `INTERRUPTED` | `RUNTIME` | Typed failure and deterministic runtime `ABSTAIN` with matching abstention category and no lean |
 
 A completed model `ABSTAIN` has passed all research stages and contains a critic
-response. Runtime `ABSTAIN` represents an operational interruption and may retain
+response and a lean. Runtime `ABSTAIN` represents an operational interruption and may retain
 only the stages already produced. It is not a completed model research conclusion.
 Provider failure must never become `NO_TRADE`.
 

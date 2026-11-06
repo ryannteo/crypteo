@@ -1105,7 +1105,8 @@ def test_invalid_json_schema_interrupted_without_retry(content: str) -> None:
 
 
 STAGES = ("investigate", "draft_thesis", "critique", "final_assessment")
-# Project schema identities recorded before Claude wire rendering was added.
+# Project schema identities. Claude wire rendering leaves them unchanged; only the
+# final assessment has moved since it was added (ADR-020).
 STAGE_SCHEMA_DIGESTS = {
     "investigate": "sha256:"
     "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
@@ -1114,7 +1115,13 @@ STAGE_SCHEMA_DIGESTS = {
     "critique": "sha256:"
     "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
     "final_assessment": "sha256:"
-    "54f953c92fd301620f314d8fefb2b2ed037f0aa812c4bf4e39a8a6264d40adcc",
+    "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
+}
+STAGE_SCHEMA_VERSIONS = {
+    "investigate": "investigate_schema_v1",
+    "draft_thesis": "draft_thesis_schema_v1",
+    "critique": "critique_schema_v1",
+    "final_assessment": "final_assessment_schema_v2",
 }
 CONFIDENCE_WIRE = [
     {"type": "integer", "description": "Constraints: minimum 0, maximum 100."},
@@ -1173,10 +1180,44 @@ def test_all_stage_and_tool_wire_schemas_have_no_unsupported_constraints() -> No
     assert [r.stage for r in requests] == list(STAGES[1:])
 
 
-def test_stage_schema_identities_are_unchanged() -> None:
+def test_final_assessment_schema_states_lean_last_on_the_project_and_claude_wire() -> (
+    None
+):
+    request = synthesis_requests()[-1]
+    assert request.stage == "final_assessment"
+    project = request.output_schema.model_dump(mode="json")["json_schema"]
+    wire = render_anthropic_request(request)["output_config"]["format"]["schema"]
+    assert wire == render_anthropic_schema(project)
+    assert not constraint_keywords(wire)
+    for schema in (project, wire):
+        assert list(schema["properties"])[-1] == "lean"
+        assert schema["required"] == list(schema["properties"])
+        assert schema["properties"]["lean"] == {
+            "anyOf": [{"$ref": "#/$defs/EvidenceLean"}, {"type": "null"}]
+        }
+        assert schema["$defs"]["EvidenceLean"] == {
+            "description": (
+                "Judgment of where the balance of the collected evidence sits for "
+                "a LONG.\n\nOrdered from ``STRONGLY_AGAINST`` to ``STRONGLY_FOR``. "
+                "It is a judgment, not\na probability, forecast or expected return."
+            ),
+            "enum": ["STRONGLY_AGAINST", "AGAINST", "BALANCED", "FOR", "STRONGLY_FOR"],
+            "title": "EvidenceLean",
+            "type": "string",
+        }
+        assert schema["description"].endswith(
+            "``lean`` is the assessment's judgment of where the balance of the "
+            "collected\nevidence sits for a LONG at research time. It is not a "
+            "probability, forecast\nor expected return. ``TRADE`` requires ``FOR`` "
+            "or ``STRONGLY_FOR``,\n``NO_TRADE`` requires ``AGAINST`` or "
+            "``STRONGLY_AGAINST``, and ``ABSTAIN``\nmay use any value."
+        )
+
+
+def test_stage_schema_identities() -> None:
     for stage in STAGES:
         identity = structured_schema(stage).identity
-        assert identity.version == f"{stage}_schema_v1"
+        assert identity.version == STAGE_SCHEMA_VERSIONS[stage]
         assert identity.digest == STAGE_SCHEMA_DIGESTS[stage]
 
 

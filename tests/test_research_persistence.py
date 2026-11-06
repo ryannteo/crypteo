@@ -17,6 +17,7 @@ from research_support import (
     BTC,
     CODE,
     ETH,
+    LEAN_BY_OUTCOME,
     MODEL,
     SOL,
     Handler,
@@ -36,6 +37,7 @@ from test_research_journal_claude import rewrite
 
 import crypteo.research_workflow as workflow
 from crypteo.domain.market import TradingPair
+from crypteo.domain.research import EvidenceLean
 from crypteo.domain.research_journal import (
     AbortDiagnostic,
     EventEnvelope,
@@ -44,6 +46,7 @@ from crypteo.domain.research_journal import (
     ResearchArtifact,
     ResearchRunHeader,
     RunAborted,
+    RunFinished,
 )
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
@@ -98,7 +101,9 @@ def test_completed_exact_reload(tmp_path: Path, outcome: str) -> None:
     artifact = asyncio.run(
         execute(store, ObservedModel([tool(), tool()], outcome=outcome))
     )
+    assert artifact.result.assessment.lean == LEAN_BY_OUTCOME[outcome]
     assert store.load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").artifact == artifact
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
     inspection = store.inspect_run("run-1")
     assert inspection.state == "COMPLETED"
@@ -1062,6 +1067,57 @@ def test_unsupported_versions_and_forged_artifact(tmp_path: Path, kind: str) -> 
         connection.execute(trigger)
     with pytest.raises(ResearchStorageError):
         store.load_terminal("run-1")
+
+
+def _terminal_sequence(store: ResearchStore) -> int:
+    with closing(sqlite3.connect(store.path)) as connection:
+        ((sequence,),) = connection.execute(
+            "SELECT sequence FROM research_events_v1 WHERE kind='RUN_FINISHED'"
+        ).fetchall()
+    assert isinstance(sequence, int)
+    return sequence
+
+
+def _forge_terminal_lean(store: ResearchStore, lean: EvidenceLean) -> None:
+    def change(envelope: EventEnvelope) -> EventEnvelope:
+        assert isinstance(envelope.event, RunFinished)
+        assessment = envelope.event.assessment.model_copy(update={"lean": lean})
+        return envelope.model_copy(
+            update={
+                "event": envelope.event.model_copy(update={"assessment": assessment})
+            }
+        )
+
+    rewrite(store, _terminal_sequence(store), change)
+
+
+def _assert_rejected_on_load(store: ResearchStore, cause: str) -> None:
+    for load in (store.load_terminal, store.inspect_run):
+        with pytest.raises(ResearchStorageError) as raised:
+            load("run-1")
+        assert isinstance(raised.value.__cause__, ResearchValidationError)
+        assert str(raised.value.__cause__) == cause
+
+
+def test_stored_runtime_abstain_carrying_a_lean_is_rejected_on_load(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = asyncio.run(execute(store, ObservedModel([RefusalReply(refusal="No")])))
+    assert artifact.result.status == "INTERRUPTED"
+    assert artifact.result.assessment.lean is None
+    assert store.load_terminal("run-1") == artifact
+    _forge_terminal_lean(store, EvidenceLean.BALANCED)
+    _assert_rejected_on_load(store, "runtime assessment differs from failure")
+
+
+def test_stored_terminal_lean_differing_from_the_stage_is_rejected_on_load(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    asyncio.run(execute(store, ObservedModel([tool()])))
+    _forge_terminal_lean(store, EvidenceLean.STRONGLY_FOR)
+    _assert_rejected_on_load(store, "terminal assessment differs from stage")
 
 
 def test_journal_sealed_and_failed_writer_cannot_append(tmp_path: Path) -> None:

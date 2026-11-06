@@ -338,6 +338,8 @@ def _check_stage_output(
     problems = unknown
     if isinstance(output, TradeDecision) and output.critic_response is None:
         problems += ("critic_response: required for every outcome",)
+    if isinstance(output, TradeDecision) and output.lean is None:
+        problems += ("lean: required for every outcome",)
     if unknown:
         return ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE, problems
     return (invalid, problems) if problems else output

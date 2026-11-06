@@ -15,6 +15,7 @@ from pydantic import ValidationError, create_model
 from research_support import (
     BTC,
     ETH,
+    LEAN_BY_OUTCOME,
     SOL,
     ScriptedModel,
     T,
@@ -95,6 +96,7 @@ def test_complete_workflow_and_exact_transitions(outcome: str) -> None:
     assert result.assessment.outcome.value == outcome
     assert result.failure is None
     assert result.assessment.critic_response
+    assert result.assessment.lean == LEAN_BY_OUTCOME[outcome]
     assert [
         (r.source, r.target) for r in result.trace if isinstance(r, NodeTransition)
     ] == [
@@ -282,6 +284,7 @@ def test_tenth_tool_request_interrupts_without_dispatch(
     assert result.failure is not None
     assert result.failure.code == ResearchFailureCode.TOOL_BUDGET_EXHAUSTED
     assert result.assessment.abstention_reasons == (AbstentionReason.BUDGET_EXHAUSTED,)
+    assert result.assessment.lean is None
     assert result.thesis is None and result.critique is None
 
 
@@ -593,6 +596,9 @@ def test_invalid_structured_output_no_repair_or_retry(stage: str, bad: str) -> N
         {"confidence": -1},
         {"critic_response": None},
         {"critic_response": " "},
+        {"lean": None},
+        {"lean": "SLIGHTLY_FOR"},
+        {"lean": 1},
         {"stop": "90"},
         {"quantity": "1"},
     ],
@@ -656,6 +662,7 @@ def test_provider_failure_typed_runtime_abstention_no_retry(
     assert result.failure and result.failure.code.value == code
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert result.assessment.abstention_reasons[0].value == reason
+    assert result.assessment.lean is None
     assert (
         isinstance(result.trace[1], ModelCallRecord) and result.trace[1].reply == reply
     )
@@ -904,6 +911,7 @@ def test_overall_deadline_interrupts(monkeypatch: pytest.MonkeyPatch) -> None:
     result = run(ScriptedModel([jump]))
     assert result.failure and result.failure.code == "WORKFLOW_TIMEOUT"
     assert result.assessment.abstention_reasons == (AbstentionReason.RESEARCH_FAILURE,)
+    assert result.assessment.lean is None
 
 
 def test_oversized_model_input_rejected_without_invocation() -> None:
@@ -961,6 +969,8 @@ def test_deadline_crossed_while_constructing_result_interrupts(
     assert result.failure and result.failure.code == "WORKFLOW_TIMEOUT"
     assert result.thesis and result.critique
     assert result.assessment.outcome.value == "ABSTAIN"
+    # The model stated a lean, but the interruption's assessment is the runtime's.
+    assert result.assessment.lean is None
     assert result.trace[-1].model_dump()["termination_reason"] == "WORKFLOW_TIMEOUT"
 
 
@@ -1105,6 +1115,7 @@ def test_trade_cannot_reach_financial_or_network_authority(
         "key_uncertainties",
         "critic_response",
         "abstention_reasons",
+        "lean",
     }
     assert (
         "portfolio"

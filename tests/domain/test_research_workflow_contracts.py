@@ -17,7 +17,7 @@ from research_support import (
 )
 
 from crypteo.domain.market import TradingPair
-from crypteo.domain.research import AbstentionReason, DecisionOutcome
+from crypteo.domain.research import AbstentionReason, DecisionOutcome, EvidenceLean
 from crypteo.domain.research_workflow import (
     BENCHMARK_ORDER,
     OpportunityResearchContext,
@@ -170,6 +170,23 @@ def test_completed_and_interrupted_results_enforce_required_payloads(
             update={"abstention_reasons": ("BUDGET_EXHAUSTED",)}
         )
     with pytest.raises(ValidationError):
+        ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
+
+
+def test_completed_result_requires_a_lean() -> None:
+    result = run(ScriptedModel([tool()], outcome="ABSTAIN"))
+    assert result.assessment.lean == "BALANCED"
+    bad = result.assessment.model_copy(update={"lean": None})
+    with pytest.raises(ValidationError, match="assessment requires a lean"):
+        ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
+
+
+@pytest.mark.parametrize("lean", list(EvidenceLean))
+def test_runtime_abstain_states_no_lean(lean: EvidenceLean) -> None:
+    result = run(ScriptedModel([RefusalReply(refusal="No")]))
+    assert result.status == "INTERRUPTED" and result.assessment.lean is None
+    bad = result.assessment.model_copy(update={"lean": lean})
+    with pytest.raises(ValidationError, match="runtime ABSTAIN states no lean"):
         ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
 
 

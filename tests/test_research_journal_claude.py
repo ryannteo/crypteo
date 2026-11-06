@@ -122,8 +122,10 @@ def test_durable_claude_run_through_final_assessment_reloads_identically(
     store, artifact = completed(tmp_path)
     result = artifact.result
     assert result.status == "COMPLETED" and result.assessment.outcome == "TRADE"
+    assert result.assessment.lean == "FOR"
     assert store.load_terminal("run-1") == artifact
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").artifact == artifact
     calls = [r for r in result.trace if isinstance(r, ModelCallRecord)]
     assert [c.request.stage for c in calls] == [
         "investigate",

@@ -577,8 +577,9 @@ def plan_windows(
     opportunity a replay starting at its ``observed_at`` admits, provided it was
     available then. A candidate that passes availability, data end and overlap
     is selected only if the baseline would authorize its trade at T, decided
-    through a gateway whose clock is T (ADR-018). Selection never reads
-    outcomes. Failures raise.
+    through a gateway whose clock is T (ADR-018). No replay outcome influences
+    selection, although the overlap check reads later scanner candidates.
+    Failures raise.
     """
     settings = WindowPlanSettings.model_validate(settings.model_dump())
     datasets = tuple(datasets)

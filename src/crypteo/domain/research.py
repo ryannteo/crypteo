@@ -302,6 +302,20 @@ class AbstentionReason(StrEnum):
     VALIDATION_FAILURE = "VALIDATION_FAILURE"
 
 
+class EvidenceLean(StrEnum):
+    """Judgment of where the balance of the collected evidence sits for a LONG.
+
+    Ordered from ``STRONGLY_AGAINST`` to ``STRONGLY_FOR``. It is a judgment, not
+    a probability, forecast or expected return.
+    """
+
+    STRONGLY_AGAINST = "STRONGLY_AGAINST"
+    AGAINST = "AGAINST"
+    BALANCED = "BALANCED"
+    FOR = "FOR"
+    STRONGLY_FOR = "STRONGLY_FOR"
+
+
 Confidence = Annotated[int, Field(strict=True, ge=0, le=100)]
 
 
@@ -311,6 +325,12 @@ class TradeDecision(BaseModel):
     ``confidence`` is Crypteo's self-assessed confidence in its research
     conclusion. It is not probability of profit, probability of a price rise,
     expected return, calibrated forecast probability, or risk-adjusted return.
+
+    ``lean`` is the assessment's judgment of where the balance of the collected
+    evidence sits for a LONG at research time. It is not a probability, forecast
+    or expected return. ``TRADE`` requires ``FOR`` or ``STRONGLY_FOR``,
+    ``NO_TRADE`` requires ``AGAINST`` or ``STRONGLY_AGAINST``, and ``ABSTAIN``
+    may use any value.
     """
 
     model_config = ConfigDict(
@@ -325,6 +345,7 @@ class TradeDecision(BaseModel):
     key_uncertainties: TextEntries = ()
     critic_response: NonBlankText | None = None
     abstention_reasons: tuple[AbstentionReason, ...] = ()
+    lean: EvidenceLean | None = None
 
     @model_validator(mode="after")
     def validate_outcome_requirements(self) -> Self:
@@ -337,6 +358,8 @@ class TradeDecision(BaseModel):
                 raise ValueError("TRADE requires a critic response")
             if self.abstention_reasons:
                 raise ValueError("TRADE must not include abstention reasons")
+            if self.lean not in (EvidenceLean.FOR, EvidenceLean.STRONGLY_FOR):
+                raise ValueError("TRADE requires lean FOR or STRONGLY_FOR")
         elif self.outcome is DecisionOutcome.NO_TRADE:
             if not self.counterevidence_ids:
                 raise ValueError("NO_TRADE requires counterevidence")
@@ -346,6 +369,8 @@ class TradeDecision(BaseModel):
                 raise ValueError("NO_TRADE requires a critic response")
             if self.abstention_reasons:
                 raise ValueError("NO_TRADE must not include abstention reasons")
+            if self.lean not in (EvidenceLean.AGAINST, EvidenceLean.STRONGLY_AGAINST):
+                raise ValueError("NO_TRADE requires lean AGAINST or STRONGLY_AGAINST")
         elif not self.abstention_reasons:
             raise ValueError("ABSTAIN requires at least one abstention reason")
         return self

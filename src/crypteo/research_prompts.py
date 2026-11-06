@@ -75,6 +75,11 @@ ASSESSMENT_INSTRUCTIONS = """Produce the final structured research assessment
 from the exact validated thesis, independent critique, evidence and context.
 Address the critic explicitly in a nonblank critic_response for EVERY outcome,
 including ABSTAIN. Use TRADE, NO_TRADE or ABSTAIN with their research-only meanings.
+Give lean, your judgment of where the balance of the collected evidence sits
+for a LONG at T: STRONGLY_AGAINST, AGAINST, BALANCED, FOR or STRONGLY_FOR.
+TRADE requires FOR or STRONGLY_FOR, NO_TRADE requires AGAINST or
+STRONGLY_AGAINST, and ABSTAIN may use any value. Lean is not a probability or
+a forecast.
 Do not use a deterministic confidence threshold or probability-of-profit claim.
 You have no tools and no trading authority."""
 
@@ -93,13 +98,13 @@ _PROMPT_VERSIONS: dict[ResearchEntry, dict[str, str]] = {
         "investigate": "investigate_prompt_v4",
         "draft_thesis": "draft_thesis_prompt_v2",
         "critique": "critique_prompt_v3",
-        "final_assessment": "final_assessment_prompt_v2",
+        "final_assessment": "final_assessment_prompt_v3",
     },
     "trader": {
         "investigate": "trader_investigate_prompt_v1",
         "draft_thesis": "trader_draft_thesis_prompt_v1",
         "critique": "trader_critique_prompt_v2",
-        "final_assessment": "trader_final_assessment_prompt_v1",
+        "final_assessment": "trader_final_assessment_prompt_v2",
     },
 }
 _SCHEMAS: dict[str, type[BaseModel]] = {
@@ -107,6 +112,12 @@ _SCHEMAS: dict[str, type[BaseModel]] = {
     "draft_thesis": ResearchThesis,
     "critique": Critique,
     "final_assessment": TradeDecision,
+}
+_SCHEMA_VERSIONS: dict[str, str] = {
+    "investigate": "investigate_schema_v1",
+    "draft_thesis": "draft_thesis_schema_v1",
+    "critique": "critique_schema_v1",
+    "final_assessment": "final_assessment_schema_v2",
 }
 
 
@@ -134,7 +145,7 @@ def structured_schema(stage: str) -> StructuredSchema:
         name=_SCHEMAS[stage].__name__,
         json_schema=schema,
         identity=ContentIdentity(
-            version=f"{stage}_schema_v1",
+            version=_SCHEMA_VERSIONS[stage],
             digest=content_digest(render_json(schema)),
         ),
     )

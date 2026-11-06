@@ -49,9 +49,9 @@ _STAGE_INSTRUCTIONS = {
         ),
         (
             "final_assessment",
-            "final_assessment_prompt_v2",
-            "3445cbadac61157d7a500c6ac396a21c3f6429bc7edaa98a4cfda37300d06865",
-            "54f953c92fd301620f314d8fefb2b2ed037f0aa812c4bf4e39a8a6264d40adcc",
+            "final_assessment_prompt_v3",
+            "424d7f664954ad70a8a6993a5be51addb25efde40be59ddcdf5935174514c37c",
+            "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
         ),
     ],
 )
@@ -83,6 +83,40 @@ def test_critic_instructions_are_adr_017_text_wrapped_within_80_columns() -> Non
     end = source.index('"""', start + len('CRITIC_INSTRUCTIONS = """')) + 3
     assert all(len(line) <= 80 for line in source[start:end].splitlines())
     assert all(line == line.strip() for line in CRITIC_INSTRUCTIONS.splitlines())
+
+
+# ADR-020's block quote, line for line.
+ADR_020_LEAN = (
+    "Give lean, your judgment of where the balance of the collected evidence sits\n"
+    "for a LONG at T: STRONGLY_AGAINST, AGAINST, BALANCED, FOR or STRONGLY_FOR.\n"
+    "TRADE requires FOR or STRONGLY_FOR, NO_TRADE requires AGAINST or\n"
+    "STRONGLY_AGAINST, and ABSTAIN may use any value. Lean is not a probability or\n"
+    "a forecast.\n"
+)
+
+
+def test_assessment_instructions_state_adr_020_lean_exactly_once() -> None:
+    assert ASSESSMENT_INSTRUCTIONS.count(ADR_020_LEAN) == 1
+    assert ASSESSMENT_INSTRUCTIONS.count("Give lean") == 1
+    before, after = ASSESSMENT_INSTRUCTIONS.split(ADR_020_LEAN)
+    assert before.endswith("with their research-only meanings.\n")
+    assert after.startswith("Do not use a deterministic confidence threshold")
+    for entry in ("opportunity", "trader"):
+        system = prompt_messages("final_assessment", {}, entry)[0].content
+        assert system.count(ADR_020_LEAN) == 1
+
+
+@pytest.mark.parametrize(
+    "stage,version",
+    [
+        ("investigate", "investigate_schema_v1"),
+        ("draft_thesis", "draft_thesis_schema_v1"),
+        ("critique", "critique_schema_v1"),
+        ("final_assessment", "final_assessment_schema_v2"),
+    ],
+)
+def test_stage_schema_versions(stage: str, version: str) -> None:
+    assert structured_schema(stage).identity.version == version
 
 
 def test_investigation_requires_nonblank_summary_at_budget_boundary() -> None:
@@ -126,8 +160,8 @@ def test_shared_policy_explains_output_rejection_on_every_stage(stage: str) -> N
         ),
         (
             "final_assessment",
-            "trader_final_assessment_prompt_v1",
-            "e74f9604857d4b30d9949b07ef4eacb4081693056fe862dcc2c0e27551ce8d50",
+            "trader_final_assessment_prompt_v2",
+            "fbb787076ca9927f866563227655488616804fd06da5bc452ae1ae903af90976",
         ),
     ],
 )

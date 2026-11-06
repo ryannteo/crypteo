@@ -361,6 +361,8 @@ class ResearchRunResult(ModelContract):
                 raise ValueError(
                     "every completed assessment requires a critic response"
                 )
+            if self.assessment.lean is None:
+                raise ValueError("every completed assessment requires a lean")
         elif (
             self.failure is None
             or self.assessment.outcome is not DecisionOutcome.ABSTAIN
@@ -369,6 +371,8 @@ class ResearchRunResult(ModelContract):
             raise ValueError(
                 "interruption requires typed failure and matching runtime ABSTAIN"
             )
+        elif self.assessment.lean is not None:
+            raise ValueError("runtime ABSTAIN states no lean")
         evidence_ids = {
             record.result.evidence.evidence_id
             for record in self.trace

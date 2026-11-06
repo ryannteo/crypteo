@@ -41,6 +41,7 @@ from crypteo.domain.replay_research import (
 from crypteo.domain.research import (
     Critique,
     DecisionOutcome,
+    EvidenceLean,
     Opportunity,
     ResearchThesis,
     TradeDecision,
@@ -115,10 +116,10 @@ GOLDEN = {
         "sha256:c53eb965e8472b2a126936167e7cc8a28a121356506ca9ce97c132adeae0e0bd"
     ),
     "frozen_research": (
-        "sha256:6304a2f021fdee0c5923c394d1e6b5700ebfe1b1ce74d36cf37421f75c4c2b9d"
+        "sha256:e680a6f3f0fb39bf7a79275d23e4085c25181f893c06b92cffc16ba34c55f726"
     ),
     "claude_artifact": (
-        "sha256:cc579c757bcc6bc23009ae5d3c5bb2ad4f28ed4769b8c67f7e69277a12fcdb63"
+        "sha256:c87a5c07c1995eceaee2de0dd1061121d3b55925bd6c4cb41e2998789ed644d3"
     ),
 }
 
@@ -222,6 +223,7 @@ def stage_output(stage: str, ids: list[str]) -> str:
                 supporting_evidence_ids=evidence,
                 key_uncertainties=("Limited research domains.",),
                 critic_response="The critique's uncertainty is acknowledged.",
+                lean=EvidenceLean.FOR,
             )
         case _:
             raise AssertionError(f"unexpected stage {stage}")
