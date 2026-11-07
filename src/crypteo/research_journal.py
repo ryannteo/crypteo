@@ -144,9 +144,11 @@ def decode_envelope(raw: bytes, body: bytes | None) -> EventEnvelope:
 class ProviderCodec:
     """Pure wire functions an adapter module shares with journal reconstruction."""
 
-    render_request: Callable[[ModelRequest], dict[str, Any]]
+    # Takes the run header's adapter version, so stored layouts still re-derive.
+    render_request: Callable[[ModelRequest, str], dict[str, Any]]
     decode_response_entity: Callable[[bytes, ProviderMetadata], ModelReply]
     decode_http_error: Callable[[bytes, int, str | None, str], FailureReply]
+    adapter_versions: tuple[str, ...]
 
 
 def _anthropic_codec() -> ProviderCodec:
@@ -156,6 +158,7 @@ def _anthropic_codec() -> ProviderCodec:
         anthropic_research.render_anthropic_request,
         anthropic_research.decode_response_entity,
         anthropic_research.decode_http_error,
+        anthropic_research.ADAPTER_VERSIONS,
     )
 
 
@@ -175,7 +178,9 @@ def validate_prepared(request: ModelRequest, header: ResearchRunHeader) -> None:
         raise ResearchValidationError("prepared request lacks provider body")
     codec = provider_codec(header)
     if codec is not None:
-        expected = codec.render_request(request)
+        if header.provider.adapter_version not in codec.adapter_versions:
+            raise ResearchValidationError("unknown provider adapter version")
+        expected = codec.render_request(request, header.provider.adapter_version)
     else:
         # Provider-neutral adapters can use the normalized project request encoding.
         expected = request.model_dump(mode="json") | {"prepared_input_json": None}

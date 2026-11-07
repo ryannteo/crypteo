@@ -29,6 +29,7 @@ import crypteo.anthropic_research as adapter_module
 import crypteo.research_workflow as workflow
 from crypteo.anthropic_research import (
     ADAPTER_VERSION,
+    ADAPTER_VERSIONS,
     ANTHROPIC_VERSION,
     UNSUPPORTED_SCHEMA_CONSTRAINTS,
     AnthropicResearchModel,
@@ -184,6 +185,18 @@ def assert_clean_wire(request: httpx2.Request) -> dict[str, Any]:
     return wire
 
 
+def cached_system(wire: dict[str, Any]) -> str:
+    """The one system block, ending the cached static prefix (tools + system)."""
+    blocks = wire["system"]
+    assert isinstance(blocks, list) and len(blocks) == 1
+    assert set(blocks[0]) == {"type", "text", "cache_control"}
+    assert blocks[0]["type"] == "text"
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    text = blocks[0]["text"]
+    assert isinstance(text, str)
+    return text
+
+
 def test_valid_tool_use_and_exact_wire_metadata() -> None:
     requests: list[httpx2.Request] = []
     response = tool_envelope(tool_use("relative_strength", {"benchmark": "ETH-USD"}))
@@ -229,7 +242,7 @@ def test_valid_tool_use_and_exact_wire_metadata() -> None:
     }
     assert wire["model"] == MODEL
     assert wire["max_tokens"] == 8192
-    assert wire["system"] == request.messages[0].content
+    assert cached_system(wire) == request.messages[0].content
     assert wire["messages"] == [
         {"role": "user", "content": request.messages[1].content}
     ]
@@ -332,8 +345,51 @@ def test_synthesis_wire_has_no_tools_and_maps_effort(effort: str) -> None:
             },
             "effort": effort,
         }
-        assert wire["system"] == request.messages[0].content
+        assert cached_system(wire) == request.messages[0].content
         assert [m["role"] for m in wire["messages"]] == ["user"]
+
+
+def cache_markers(value: Any) -> int:
+    if isinstance(value, dict):
+        return ("cache_control" in value) + sum(map(cache_markers, value.values()))
+    if isinstance(value, list):
+        return sum(map(cache_markers, value))
+    return 0
+
+
+def test_one_cache_breakpoint_ends_the_static_prefix() -> None:
+    model = ScriptedModel([tool()] * 9, provider="anthropic")
+    run(model)
+    wires = [render_anthropic_request(r) for r in model.requests]
+    # Only the system block is marked: tools render before it and share the
+    # entry, while the volatile research data after it is never marked.
+    assert all(cache_markers(w) == 1 for w in wires)
+    assert all(cache_markers(w["system"]) == 1 for w in wires)
+    offered = [w for w in wires if "tools" in w]
+    assert len(offered) == 9
+    # Every tool-offering investigation call repeats the identical prefix, and
+    # the request fields that also key the cache (model, output format, effort,
+    # tool choice) do not vary between them.
+    assert len({render_json([w["tools"], w["system"]]) for w in offered}) == 1
+    keyed = ("model", "output_config", "tool_choice")
+    assert len({render_json([w[k] for k in keyed]) for w in offered}) == 1
+    assert len({render_json(w["messages"]) for w in offered}) == len(offered)
+
+
+def test_v1_layout_still_renders_for_stored_runs() -> None:
+    assert ADAPTER_VERSIONS == ("anthropic_messages_research_v1", ADAPTER_VERSION)
+    for request in [model_request(), *synthesis_requests(effort="high")]:
+        current = render_anthropic_request(request)
+        v1 = render_anthropic_request(request, "anthropic_messages_research_v1")
+        assert v1["system"] == request.messages[0].content
+        assert cache_markers(v1) == 0
+        assert current == v1 | {"system": current["system"]}
+        assert cached_system(current) == v1["system"]
+
+
+def test_unknown_adapter_version_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown Claude adapter version"):
+        render_anthropic_request(model_request(), "anthropic_messages_research_v0")
 
 
 def test_omitted_effort_is_not_sent() -> None:
@@ -381,7 +437,7 @@ def test_leading_system_messages_join_and_users_are_kept() -> None:
         ModelMessage(role="user", content="detail"),
     )
     wire = render_anthropic_request(request.model_copy(update={"messages": messages}))
-    assert wire["system"] == "first\n\nsecond"
+    assert cached_system(wire) == "first\n\nsecond"
     assert wire["messages"] == [
         {"role": "user", "content": "question"},
         {"role": "user", "content": "detail"},
@@ -1074,7 +1130,7 @@ def test_complete_graph_with_mocked_anthropic_transport() -> None:
         f"request-{i}" for i in range(1, 6)
     ]
     assert all(
-        [m["role"] for m in b["messages"]] == ["user"] and isinstance(b["system"], str)
+        [m["role"] for m in b["messages"]] == ["user"] and cached_system(b)
         for b in bodies
     )
     assert all("tools" in b and "tool_choice" in b for b in bodies[:2])

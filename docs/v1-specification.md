@@ -1353,6 +1353,19 @@ The Claude adapter:
 - Is stateless: each request carries the full accumulated context, and returned
   thinking blocks are neither interpreted nor replayed to later calls. Claude's
   thinking tokens count against the output caps below.
+- Sends the system prompt as one text block carrying an ephemeral
+  (five-minute) `cache_control` breakpoint, its only breakpoint. Tools render
+  before system, so the breakpoint covers the static tool-and-policy prefix that
+  every tool-offering investigation call of a run, and every run of the same
+  entry (opportunity-led or trader-led) with the same subject and benchmarks,
+  repeats byte for byte; the research data after it is never marked. Prompt
+  caching changes billing and latency, not model input, and no cache state is
+  retained or relied on. A prefix below Claude's minimum cacheable length is
+  simply not cached. The marked block makes every serialized request body 62
+  bytes longer, and the 128 KiB input budget counts those bytes. Adapter version
+  `anthropic_messages_research_v2` introduced this layout;
+  `anthropic_messages_research_v1` sent the system prompt as a plain string
+  without a breakpoint.
 - Removes constraint keywords that Claude structured outputs reject (`minimum`,
   `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`,
   `maxLength`, `minItems`, `maxItems`, `uniqueItems`) from its wire output and
@@ -1708,9 +1721,12 @@ Loading validates relationships as well as schemas and checksums:
   self-transition without a due re-ask; and any termination other than
   `WORKFLOW_TIMEOUT` while a re-ask is due.
   Provider `anthropic` is the only provider with a registered journal codec: its
-  prepared body must equal the Claude adapter's pure request renderer output,
-  including stripped wire schemas. Other providers compare against the
-  normalized project request encoding.
+  prepared body must equal the Claude adapter's pure request renderer output for
+  the adapter version recorded in the run header, including stripped wire
+  schemas. The renderer still reproduces every earlier adapter version's body
+  layout, so runs stored by `anthropic_messages_research_v1` load unchanged; an
+  adapter version the codec does not know is rejected. Other providers compare
+  against the normalized project request encoding.
 - Provider observation versus normalized reply using the registered provider's
   pure decoders: every reply except a network failure or timeout requires an
   observed entity, its text encoding must be `utf-8`, an HTTP status of 400 or

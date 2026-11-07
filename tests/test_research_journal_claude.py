@@ -18,6 +18,7 @@ from test_anthropic_research import (
     graph_responses,
 )
 
+import crypteo.anthropic_research as adapter_module
 from crypteo.domain.research_journal import (
     EventEnvelope,
     ModelRequestPrepared,
@@ -32,6 +33,7 @@ from crypteo.research_journal import (
     decode_envelope,
     event_checksum,
     project,
+    validate_prepared,
 )
 from crypteo.research_model import FailureReply, render_json
 from crypteo.research_persistence import ResearchStore
@@ -187,6 +189,61 @@ def test_tampered_stored_prepared_body_is_rejected_on_load(tmp_path: Path) -> No
 
     rewrite(store, prepared.sequence, reinsert_minimum)
     assert_load_rejects(store, "prepared body differs from normalized request")
+
+
+def test_run_stored_by_v1_adapter_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    v1 = "anthropic_messages_research_v1"
+    monkeypatch.setattr(adapter_module, "ADAPTER_VERSION", v1)
+    store, artifact = completed(tmp_path)
+    monkeypatch.undo()
+    assert v1 != adapter_module.ADAPTER_VERSION
+    assert artifact.result.provider.adapter_version == v1
+    bodies = [
+        json.loads(e.event.request.prepared_input_json or "{}")
+        for e in events_of(store, ModelRequestPrepared)
+        if isinstance(e.event, ModelRequestPrepared)
+    ]
+    assert len(bodies) == 5 and all(isinstance(b["system"], str) for b in bodies)
+    assert all("cache_control" not in render_json(b) for b in bodies)
+    assert ResearchStore(store.path).load_terminal("run-1") == artifact
+
+
+def test_current_run_stores_cache_breakpoint_and_header_version_binds_it(
+    tmp_path: Path,
+) -> None:
+    store, artifact = completed(tmp_path)
+    header = store.inspect_run("run-1").header
+    assert header.provider.adapter_version == adapter_module.ADAPTER_VERSION
+    prepared = [
+        e.event.request
+        for e in events_of(store, ModelRequestPrepared)
+        if isinstance(e.event, ModelRequestPrepared)
+    ]
+    for request in prepared:
+        body = json.loads(request.prepared_input_json or "{}")
+        assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+        validate_prepared(request, header)
+    # A stored layout is only valid for the adapter version its header records.
+    as_v1 = header.model_copy(
+        update={
+            "provider": header.provider.model_copy(
+                update={"adapter_version": "anthropic_messages_research_v1"}
+            )
+        }
+    )
+    with pytest.raises(ResearchValidationError, match="prepared body differs"):
+        validate_prepared(prepared[0], as_v1)
+    unknown = header.model_copy(
+        update={
+            "provider": header.provider.model_copy(
+                update={"adapter_version": "anthropic_messages_research_v9"}
+            )
+        }
+    )
+    with pytest.raises(ResearchValidationError, match="unknown provider adapter"):
+        validate_prepared(prepared[0], unknown)
 
 
 def test_claude_http_error_reconciles_and_tampering_is_rejected(

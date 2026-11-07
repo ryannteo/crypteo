@@ -32,7 +32,16 @@ from crypteo.research_model import (
     validate_unicode,
 )
 
-ADAPTER_VERSION = "anthropic_messages_research_v1"
+ADAPTER_VERSION = "anthropic_messages_research_v2"
+# Every version whose stored request bodies this renderer can still reproduce.
+# v1 sent the system prompt as a plain string with no cache breakpoint.
+ADAPTER_VERSIONS = ("anthropic_messages_research_v1", ADAPTER_VERSION)
+# Prompt caching never changes what the model sees, only billing and latency.
+# The breakpoint ends the static prefix (tools render before system), so every
+# later call of a stage with the same tool set can read it; volatile research
+# data follows it, uncached. Each model call has a 180-second deadline, so calls
+# within a run normally start inside the five-minute cache lifetime.
+_CACHE_BREAKPOINT = {"type": "ephemeral"}
 # Sent per request, so client default headers and the environment cannot change it.
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -131,8 +140,15 @@ def _shell(value: Any) -> Any:
     return value
 
 
-def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
-    """Exact credential-free wire body, retained with every adapter result."""
+def render_anthropic_request(
+    request: ModelRequest, adapter_version: str = ADAPTER_VERSION
+) -> dict[str, Any]:
+    """Exact credential-free wire body, retained with every adapter result.
+
+    ``adapter_version`` selects an earlier body layout so stored runs re-derive.
+    """
+    if adapter_version not in ADAPTER_VERSIONS:
+        raise ValueError(f"unknown Claude adapter version {adapter_version!r}")
     request = ModelRequest.model_validate(request)
     if request.configuration.provider != "anthropic":
         raise ValueError("Claude adapter requires provider=anthropic")
@@ -163,7 +179,13 @@ def render_anthropic_request(request: ModelRequest) -> dict[str, Any]:
         "output_config": output_config,
     }
     if system:
-        body["system"] = "\n\n".join(system)
+        prompt = "\n\n".join(system)
+        if adapter_version == "anthropic_messages_research_v1":
+            body["system"] = prompt
+        else:
+            body["system"] = [
+                {"type": "text", "text": prompt, "cache_control": _CACHE_BREAKPOINT}
+            ]
     if request.tools:
         body["tools"] = [
             {
@@ -201,7 +223,7 @@ class AnthropicResearchModel:
             request.model_copy(
                 update={
                     "prepared_input_json": render_json(
-                        render_anthropic_request(request)
+                        render_anthropic_request(request, ADAPTER_VERSION)
                     ),
                 }
             )

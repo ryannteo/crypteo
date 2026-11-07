@@ -380,11 +380,11 @@ def test_internal_metadata_does_not_count_as_provider_input_and_body_is_prepared
     rendered = 0
     original = render_anthropic_request
 
-    def render_once(request: ModelRequest) -> dict[str, Any]:
+    def render_once(request: ModelRequest, adapter_version: str) -> dict[str, Any]:
         nonlocal rendered
         rendered += 1
         assert rendered == 1, "invoke must not independently render the prepared body"
-        return original(request)
+        return original(request, adapter_version)
 
     monkeypatch.setattr(anthropic_adapter, "render_anthropic_request", render_once)
 

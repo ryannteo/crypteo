@@ -119,7 +119,7 @@ GOLDEN = {
         "sha256:e680a6f3f0fb39bf7a79275d23e4085c25181f893c06b92cffc16ba34c55f726"
     ),
     "claude_artifact": (
-        "sha256:c87a5c07c1995eceaee2de0dd1061121d3b55925bd6c4cb41e2998789ed644d3"
+        "sha256:af167b7f335725f47afb1de5cba38f88a4d48314e7db7795144dbb1e0fc39b09"
     ),
 }
 
