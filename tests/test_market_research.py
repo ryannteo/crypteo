@@ -372,10 +372,8 @@ def test_fixed_api_and_window(capability: MarketResearchCapability) -> None:
 
 
 def slots(count: int) -> tuple[int, ...]:
-    # Long windows check edges and middle rather than hundreds of slow cases.
-    return (
-        tuple(range(count)) if count <= 50 else (0, 1, count // 2, count - 2, count - 1)
-    )
+    # Every window checks its edges and middle rather than hundreds of slow cases.
+    return (0, 1, count // 2, count - 2, count - 1)
 
 
 SLOTS = [

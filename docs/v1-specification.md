@@ -1197,8 +1197,11 @@ research conclusion could not be formed. Code never parses direction, pair or
 time from the question. The question reaches the model only inside
 `research_data.context` as untrusted data. It cannot be cited, produces no
 evidence, and selects no pair, time, venue, timeframe, window or tool argument.
-Trader-led requests use `TRADER_SHARED_POLICY` followed by the stage
-instructions shared with opportunity-led requests, with prompt versions
+Opportunity-led requests use `SHARED_POLICY` followed by the stage
+instructions, with prompt versions `investigate_prompt_v4`,
+`draft_thesis_prompt_v2`, `critique_prompt_v3` and
+`final_assessment_prompt_v3`. Trader-led requests use `TRADER_SHARED_POLICY`
+followed by the same stage instructions, with prompt versions
 `trader_investigate_prompt_v1`, `trader_draft_thesis_prompt_v1`,
 `trader_critique_prompt_v2` and `trader_final_assessment_prompt_v2`.
 

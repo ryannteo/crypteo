@@ -40,7 +40,8 @@ ADAPTER_VERSIONS = ("anthropic_messages_research_v1", ADAPTER_VERSION)
 # The breakpoint ends the static prefix (tools render before system), so every
 # later call of a stage with the same tool set can read it; volatile research
 # data follows it, uncached. Each model call has a 180-second deadline, so calls
-# within a run normally start inside the five-minute cache lifetime.
+# within a run normally start inside the five-minute cache lifetime. Each body
+# gets its own copy, so mutating a returned body cannot reach this or a later render.
 _CACHE_BREAKPOINT = {"type": "ephemeral"}
 # Sent per request, so client default headers and the environment cannot change it.
 ANTHROPIC_VERSION = "2023-06-01"
@@ -184,7 +185,11 @@ def render_anthropic_request(
             body["system"] = prompt
         else:
             body["system"] = [
-                {"type": "text", "text": prompt, "cache_control": _CACHE_BREAKPOINT}
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": dict(_CACHE_BREAKPOINT),
+                }
             ]
     if request.tools:
         body["tools"] = [

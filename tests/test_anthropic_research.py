@@ -376,6 +376,21 @@ def test_one_cache_breakpoint_ends_the_static_prefix() -> None:
     assert len({render_json(w["messages"]) for w in offered}) == len(offered)
 
 
+def test_rendered_cache_marker_is_not_shared() -> None:
+    request = model_request()
+    first = render_anthropic_request(request)
+    second = render_anthropic_request(request)
+    assert first == second
+    marker = first["system"][0]["cache_control"]
+    assert marker == {"type": "ephemeral"}
+    assert marker is not second["system"][0]["cache_control"]
+    marker["mutated"] = True
+    assert second["system"][0]["cache_control"] == {"type": "ephemeral"}
+    third = render_anthropic_request(request)
+    assert third["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert adapter_module._CACHE_BREAKPOINT == {"type": "ephemeral"}
+
+
 def test_v1_layout_still_renders_for_stored_runs() -> None:
     assert ADAPTER_VERSIONS == ("anthropic_messages_research_v1", ADAPTER_VERSION)
     for request in [model_request(), *synthesis_requests(effort="high")]:
