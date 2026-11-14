@@ -5,6 +5,8 @@
 Accepted. Narrowly supersedes the stop clause of
 [ADR-019](ADR-019-pre-registered-baseline-study.md) for ranking trials only.
 
+Trial 1 is complete; see its [record](../evaluations/v2-ranking-trial-1.md).
+
 ## Context
 
 Research declined every candidate in trials 5 to 8, so comparing its `TRADE`
