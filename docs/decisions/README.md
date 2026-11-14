@@ -65,3 +65,4 @@ durable decision actually changes.
 | [019](ADR-019-pre-registered-baseline-study.md) | Baseline strategy changes are chosen by a pre-registered study | Accepted; stop clause narrowly superseded by ADR-021 for ranking trials |
 | [020](ADR-020-assessment-states-a-lean.md) | The assessment states a graded lean on the evidence | Accepted |
 | [021](ADR-021-pre-registered-ranking-measure.md) | Research ranking is measured by a pre-registered two-stage trial | Accepted; trial 1 complete |
+| [022](ADR-022-local-run-viewer.md) | Stored research is shown by a local read-only viewer over pinned exports | Accepted |
