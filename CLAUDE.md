@@ -29,7 +29,7 @@ python -m pytest tests/test_research_workflow.py -k budget
 
 `tests/` is on `pythonpath`, so test modules import helpers from each other: `tests/research_support.py` (`ScriptedModel`, fixtures, `CODE`) and `tests/test_replay.py` (`bar`, `history`, `dataset`, `config`). No test touches the network: Coinbase goes through an injected `HttpTransport`; Claude uses a real `AsyncAnthropic` over `httpx2.MockTransport` (`research_support.anthropic_client`).
 
-There is no CLI or app entrypoint. Everything is a Python API (see README for the public replay and research entrypoints).
+`crypteo` has no CLI or app entrypoint; the only command-line entry is `python -m crypteo_viewer`, a local read-only viewer outside `crypteo` (ADR-022). Everything else is a Python API (see README for the public replay and research entrypoints).
 
 ## Architecture
 

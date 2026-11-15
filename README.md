@@ -229,6 +229,75 @@ Durable semantics are defined in the
 [lifecycle specification](docs/v1-specification.md#durable-research-lifecycle)
 and [ADR-010](docs/decisions/ADR-010-durable-research-lifecycle.md).
 
+## Local run viewer
+
+`crypteo_viewer` is a local, read-only viewer over stored evaluations and their
+research runs ([ADR-022](docs/decisions/ADR-022-local-run-viewer.md)). It shows a
+trial's evaluations with their plan, metrics and windows (signal time, pair,
+decision, confidence, lean, baseline outcome and net P&L, research outcome), and
+each run's candidate and terms, trace of model and tool calls with evidence,
+re-asks and request rejections, investigation, thesis, critique, assessment,
+journal events, and tokens per call with a list-price cost estimate. Values appear
+as stored; the cost estimate is the only computed value.
+
+It has two steps, run from the checkout:
+
+```bash
+python -m crypteo_viewer export SPEC.json    # writes artifacts/viewer/<bundle>/bundle
+python -m crypteo_viewer render BUNDLE_DIR   # writes artifacts/viewer/<bundle>/site
+```
+
+`export` copies every named input to a private temporary directory, loads only
+the copies through `load_evaluation` and `ResearchStore`, and writes a bundle of
+JSON files with a manifest: format `run_viewer_bundle_v1`, the exporting commit
+and source digest, the price table, each original input's base name and SHA-256,
+and each bundle file's SHA-256. It fails as a whole, writing nothing, if any
+input is missing, any evaluation or linked run fails to load, or any original
+changes. Export at a commit where the runs still load: a later prompt, schema or
+tool change stops them loading, while a bundle keeps rendering. `render` reads
+only a bundle, verifies every hash first, and writes `index.html`, one page per
+evaluation and per run, and a stylesheet. Open `index.html` directly from disk;
+pages link to each other relatively and contain no script or external reference.
+Both outputs must be new or empty directories under `artifacts/`; `--out`
+chooses another directory there.
+
+The spec is a JSON file the owner writes. Paths are relative to the spec;
+several evaluations may share a store. Prices are decimal strings in USD per
+million input, output, cache-write and cache-read tokens. A model missing from
+the table gets no estimate, and a run with calls lacking provider-reported usage
+is marked.
+
+```json
+{
+  "bundle": "ranking-trial-1",
+  "prices": {
+    "claude-opus-5-5": {
+      "input": "5", "output": "25", "cache_write": "6.25", "cache_read": "0.5"
+    }
+  },
+  "trials": [
+    {
+      "name": "ranking trial 1",
+      "evaluations": [
+        {"label": "stage 1", "evaluation": "stage-1/evaluation.json",
+         "store": "research.sqlite"},
+        {"label": "stage 2b", "evaluation": "stage-2b/evaluation.json",
+         "store": "research.sqlite"}
+      ],
+      "attachments": ["analysis.json"]
+    }
+  ]
+}
+```
+
+The prices above illustrate the format; take current list prices from the
+provider. Neither step needs an API key, constructs a model client or makes a
+network request, and both refuse to run while `ANTHROPIC_API_KEY` is set.
+Bundles and pages hold works derived from Coinbase market data, so they stay
+under the ignored `artifacts/` directory and are never committed, published or
+hosted. A pre-registered trial is exported only after its analysis is written, so
+the viewer never shows outcomes beside leans while a trial runs.
+
 ## Documentation
 
 Documentation describes the system that exists at HEAD.

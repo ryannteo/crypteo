@@ -307,6 +307,20 @@ Exact contracts live in the
 [baseline specification](v1-specification.md#scanner-only-replay) and
 [research replay specification](v1-specification.md#historical-research-replay).
 
+## Local run viewer
+
+`crypteo_viewer` lives under `src/` beside `crypteo`, outside its source digest
+and code identity, and is a read-only consumer of it
+([ADR-022](decisions/ADR-022-local-run-viewer.md)). `crypteo` never imports it,
+and replay, evaluation and research never read a bundle or a page. Its export
+step reads copies of stored evaluations and research stores through
+`load_evaluation`, `ResearchStore.load_terminal` and `ResearchStore.inspect_run`
+and writes a hashed JSON bundle under `artifacts/`; its own encoding is not one of
+`crypteo`'s identity encodings. Its render step uses only the standard library,
+never imports `crypteo`, verifies the bundle, and writes static pages. The only
+command-line entry is `python -m crypteo_viewer`; neither step constructs a model
+client or makes a network request.
+
 ## Research extension boundary
 
 Two entries share one evidence, thesis, critique, and assessment engine
