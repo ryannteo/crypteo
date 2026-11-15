@@ -66,3 +66,4 @@ durable decision actually changes.
 | [020](ADR-020-assessment-states-a-lean.md) | The assessment states a graded lean on the evidence | Accepted |
 | [021](ADR-021-pre-registered-ranking-measure.md) | Research ranking is measured by a pre-registered two-stage trial | Accepted; trial 1 complete |
 | [022](ADR-022-local-run-viewer.md) | Stored research is shown by a local read-only viewer over pinned exports | Accepted |
+| [023](ADR-023-pre-registered-bar-length-study.md) | Longer-bar candidate sources are chosen by a pre-registered study | Accepted |
