@@ -4,6 +4,9 @@
 
 Accepted
 
+The study is complete and stopped; see its
+[record](../evaluations/v2-bar-length-study.md).
+
 ## Context
 
 Every candidate so far comes from one scanner: an hourly close crossing below
