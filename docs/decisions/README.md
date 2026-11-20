@@ -67,3 +67,4 @@ durable decision actually changes.
 | [021](ADR-021-pre-registered-ranking-measure.md) | Research ranking is measured by a pre-registered two-stage trial | Accepted; trial 1 complete |
 | [022](ADR-022-local-run-viewer.md) | Stored research is shown by a local read-only viewer over pinned exports | Accepted |
 | [023](ADR-023-pre-registered-bar-length-study.md) | Longer-bar candidate sources are chosen by a pre-registered study | Accepted; study complete |
+| [024](ADR-024-crossing-scanner-stays-candidate-source.md) | V2 keeps the crossing scanner and ends the candidate-source search | Accepted |
