@@ -180,9 +180,11 @@ def test_round_trip_shows_every_window_and_run_with_stored_values(
         confidence = candidate["confidence"]
         assert row[3] == ("—" if confidence is None else str(confidence))
         assert row[4] == (assessment["lean"] or "—")
-        assert row[5] == candidate["baseline"]["status"] == "CLOSED"
-        assert row[6] == candidate["baseline"]["exit_reason"]
-        assert row[7] == candidate["baseline"]["net_pnl"]
+        # The peer comparison sits beside the lean (ADR-025).
+        assert row[5] == assessment["peer_comparison"] == "SIMILAR"
+        assert row[6] == candidate["baseline"]["status"] == "CLOSED"
+        assert row[7] == candidate["baseline"]["exit_reason"]
+        assert row[8] == candidate["baseline"]["net_pnl"]
         run_html = (built.site / run_page(run_id)).read_text()
         assert f"../{run_page(run_id)}" in page
         evidence = next(
@@ -202,6 +204,10 @@ def test_round_trip_shows_every_window_and_run_with_stored_values(
             assert text in run_html
         if assessment["lean"] is not None:
             assert f"<td>{assessment['lean']}</td>" in run_html
+        assert (
+            f"<th>lean</th><td>{assessment['lean']}</td></tr>"
+            f"<tr><th>peer_comparison</th><td>{assessment['peer_comparison']}</td>"
+        ) in run_html
         if assessment["confidence"] is not None:
             assert f"<td>{assessment['confidence']}</td>" in run_html
         assert [e["sequence"] for e in run["events"]] == list(range(len(run["events"])))
@@ -711,6 +717,65 @@ def with_runs(built: Built, tmp_path: Path, runs: list[dict[str, Any]]) -> Path:
     reseal(bundle)
     render_site(bundle, tmp_path / "site")
     return tmp_path / "site"
+
+
+def windows_header(page: str) -> list[str]:
+    table = page.split("<h2>Windows</h2>", 1)[1].split("</table>", 1)[0]
+    return re.findall(r"<th>(.*?)</th>", table)
+
+
+def test_windows_table_shows_peer_comparison_beside_the_lean(built: Built) -> None:
+    (evaluation,) = (built.site / "evaluations").iterdir()
+    header = windows_header(evaluation.read_text())
+    assert header[header.index("lean") + 1] == "peer comparison"
+
+
+NOT_STORED = '<span class="none">not stored</span>'
+
+
+def test_bundle_exported_before_adr_025_renders_without_peer_comparison(
+    built: Built, tmp_path: Path
+) -> None:
+    """Bundles such as trial 1's carry no peer_comparison key and still render."""
+    bundle = Path(shutil.copytree(built.bundle, tmp_path / "bundle"))
+    leans = {}
+    for path in sorted((bundle / "runs").iterdir()):
+        run = json.loads(path.read_bytes())
+        assessment = run["artifact"]["result"]["assessment"]
+        del assessment["peer_comparison"]
+        leans[run["research_run_id"]] = assessment["lean"]
+        path.write_bytes(encode(run))
+    reseal(bundle)
+    render_site(bundle, tmp_path / "site")
+    site = tmp_path / "site"
+    (evaluation,) = (site / "evaluations").iterdir()
+    page = evaluation.read_text()
+    rows = windows_rows(page)
+    (entry,) = load(bundle, "index.json")["trials"][0]["evaluations"]
+    order = [w["research_run_id"] for w in load(bundle, entry["file"])["windows"]]
+    assert len(rows) == len(leans) == len(order) == 3
+    assert [row[4] for row in rows] == [leans[run_id] or "—" for run_id in order]
+    assert [row[5] for row in rows] == ["not stored"] * 3
+    assert page.count(f"<td>{NOT_STORED}</td>") == 3
+    for run_id, lean in leans.items():
+        run_html = (site / run_page(run_id)).read_text()
+        assert f"<th>lean</th><td>{lean}</td>" in run_html
+        assert f"<th>peer_comparison</th><td>{NOT_STORED}</td>" in run_html
+    assert_isolated(site)
+
+
+def test_null_peer_comparison_renders_as_stored(built: Built, tmp_path: Path) -> None:
+    """A stored null (trader-led or runtime abstention) is not "not stored"."""
+    bundle = Path(shutil.copytree(built.bundle, tmp_path / "bundle"))
+    path = run_file(bundle)
+    run = json.loads(path.read_bytes())
+    run["artifact"]["result"]["assessment"]["peer_comparison"] = None
+    path.write_bytes(encode(run))
+    reseal(bundle)
+    render_site(bundle, tmp_path / "site")
+    html = (tmp_path / "site" / "runs" / (path.stem + ".html")).read_text()
+    assert '<th>peer_comparison</th><td><span class="none">—</span></td>' in html
+    assert NOT_STORED not in html
 
 
 def test_run_page_shows_reasks_with_their_problems(

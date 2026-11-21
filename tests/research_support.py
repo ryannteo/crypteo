@@ -166,7 +166,10 @@ def critique() -> Critique:
 LEAN_BY_OUTCOME = {"TRADE": "FOR", "NO_TRADE": "AGAINST", "ABSTAIN": "BALANCED"}
 
 
-def assessment(outcome: str, ids: tuple[str, ...]) -> TradeDecision:
+def assessment(
+    outcome: str, ids: tuple[str, ...], peer_comparison: str | None = "SIMILAR"
+) -> TradeDecision:
+    """An opportunity-led assessment; pass ``peer_comparison=None`` for a trader."""
     return TradeDecision.model_validate(
         dict(
             outcome=outcome,
@@ -180,8 +183,15 @@ def assessment(outcome: str, ids: tuple[str, ...]) -> TradeDecision:
             if outcome == "ABSTAIN"
             else (),
             lean=LEAN_BY_OUTCOME[outcome],
+            peer_comparison=peer_comparison,
         )
     )
+
+
+def peer_comparison_for(request: ModelRequest) -> str | None:
+    """What a valid reply states: a level for an opportunity, null for a question."""
+    data = json.loads(request.messages[-1].content)["research_data"]
+    return "SIMILAR" if "opportunity" in data["context"]["request"] else None
 
 
 type Step = ModelReply | Callable[[ModelRequest], ModelReply]
@@ -229,7 +239,9 @@ class ScriptedModel:
             case "critique":
                 return structured(critique())
             case "final_assessment":
-                return structured(assessment(self.outcome, ids))
+                return structured(
+                    assessment(self.outcome, ids, peer_comparison_for(request))
+                )
 
 
 def run(

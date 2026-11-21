@@ -88,8 +88,18 @@ def _folded(summary: str, value: Any) -> str:
     return f"<details><summary>{_e(summary)}</summary>{_pre(value)}</details>"
 
 
+# Stands for a key a bundle predates: peer_comparison before ADR-025.
+NOT_STORED = object()
+
+
+def _peer_comparison(assessment: dict[str, Any]) -> Any:
+    return assessment.get("peer_comparison", NOT_STORED)
+
+
 def _show(value: Any) -> str:
     """A stored value as stored: strings verbatim, lists as items, objects nested."""
+    if value is NOT_STORED:
+        return '<span class="none">not stored</span>'
     if value is None:
         return '<span class="none">—</span>'
     if isinstance(value, bool):
@@ -243,8 +253,8 @@ class _Site:
                 )
         return _page(f"Run viewer: {self.index['bundle']}", 0, body)
 
-    def _lean(self, run_id: str) -> Any:
-        return self.runs[run_id]["artifact"]["result"]["assessment"]["lean"]
+    def _assessment(self, run_id: str) -> Any:
+        return self.runs[run_id]["artifact"]["result"]["assessment"]
 
     def evaluation_html(self, trial: Any, entry: Any, evaluation: Any) -> bytes:
         plan = evaluation["plan"]
@@ -357,13 +367,15 @@ class _Site:
         for number, window in enumerate(evaluation["windows"], 1):
             candidate, run_id = window["candidate"], window["research_run_id"]
             baseline, research = candidate["baseline"], candidate["research"]
+            assessment = self._assessment(run_id)
             rows.append(
                 (
                     _link(f"#window-{number}", candidate["observed_at"]),
                     _e(candidate["pair"]),
                     _e(candidate["outcome"]),
                     _show(candidate["confidence"]),
-                    _show(self._lean(run_id)),
+                    _show(assessment["lean"]),
+                    _show(_peer_comparison(assessment)),
                     _e(baseline["status"]),
                     _show(baseline["exit_reason"]),
                     _show(baseline["net_pnl"]),
@@ -383,6 +395,7 @@ class _Site:
                 "decision",
                 "confidence",
                 "lean",
+                "peer comparison",
                 "baseline status",
                 "exit",
                 "net P&L",
@@ -482,11 +495,19 @@ class _Site:
             body.append(f"<h2>{heading}</h2>")
             body.append(_show(result[key]))
         assessment = result["assessment"]
-        first = ("outcome", "confidence", "lean", "rationale", "key_uncertainties")
+        first = (
+            "outcome",
+            "confidence",
+            "lean",
+            "peer_comparison",
+            "rationale",
+            "key_uncertainties",
+        )
+        shown = assessment | {"peer_comparison": _peer_comparison(assessment)}
         body += [
             "<h2>Assessment</h2>",
             _kv(
-                [(k, assessment[k]) for k in first]
+                [(k, shown[k]) for k in first]
                 + sorted((k, v) for k, v in assessment.items() if k not in first)
             ),
             "<h2>Tokens and cost</h2>",

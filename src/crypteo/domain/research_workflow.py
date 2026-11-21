@@ -363,6 +363,15 @@ class ResearchRunResult(ModelContract):
                 )
             if self.assessment.lean is None:
                 raise ValueError("every completed assessment requires a lean")
+            # Only opportunity-led research has peers from a discovery rule.
+            if self.context.entry == "opportunity":
+                if self.assessment.peer_comparison is None:
+                    raise ValueError(
+                        "every completed opportunity-led assessment requires "
+                        "a peer comparison"
+                    )
+            elif self.assessment.peer_comparison is not None:
+                raise ValueError("trader-led assessment states no peer comparison")
         elif (
             self.failure is None
             or self.assessment.outcome is not DecisionOutcome.ABSTAIN
@@ -373,6 +382,8 @@ class ResearchRunResult(ModelContract):
             )
         elif self.assessment.lean is not None:
             raise ValueError("runtime ABSTAIN states no lean")
+        elif self.assessment.peer_comparison is not None:
+            raise ValueError("runtime ABSTAIN states no peer comparison")
         evidence_ids = {
             record.result.evidence.evidence_id
             for record in self.trace

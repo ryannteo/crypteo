@@ -31,7 +31,12 @@ from research_support import (
     workflow_config,
 )
 from test_research_journal_claude import rewrite
-from test_research_persistence import ObservedModel
+from test_research_persistence import (
+    ObservedModel,
+    assert_rejected_on_load,
+    forge_peer_comparison,
+)
+from test_research_reasks import final_with, graph
 from test_research_replay import WORKFLOW, execute, frozen
 from test_research_workflow import data, records
 
@@ -39,6 +44,7 @@ import crypteo.research_replay as integration
 from crypteo.domain.market import TradingPair
 from crypteo.domain.market_research import ResearchToolSuccess, ResearchToolUnavailable
 from crypteo.domain.replay_research import ReplayResearchRecord
+from crypteo.domain.research import PeerComparison
 from crypteo.domain.research_journal import (
     EventEnvelope,
     ModelRequestPrepared,
@@ -187,9 +193,11 @@ def test_trader_run_completes_through_all_five_nodes(outcome: str) -> None:
     assert result.assessment.outcome.value == outcome
     assert result.failure is None and result.assessment.critic_response
     assert result.assessment.lean == LEAN_BY_OUTCOME[outcome]
+    # A trader's question has no peers from a discovery rule (ADR-025).
+    assert result.assessment.peer_comparison is None
     assert model.requests[-1].stage == "final_assessment"
     assert model.requests[-1].prompt_identity.version == (
-        "trader_final_assessment_prompt_v2"
+        "trader_final_assessment_prompt_v3"
     )
     context = result.context
     assert isinstance(context, TraderResearchContext)
@@ -334,7 +342,7 @@ def test_question_evidence_id_cannot_be_cited(stage: str) -> None:
             completion(),
             structured(thesis()),
             structured(critique()),
-            structured(assessment("TRADE", (FAKE_ID,))),
+            structured(assessment("TRADE", (FAKE_ID,), None)),
         ]
     model = ScriptedModel(steps + steps[-1:])
     result = run_trader(model, request=trader_request(question=HOSTILE))
@@ -461,6 +469,100 @@ def test_durable_trader_run_round_trips(tmp_path: Path) -> None:
         "pair": "BTC-USD",
         "question": QUESTION,
     }
+
+
+MUST_BE_NULL = "peer_comparison: must be null for a trader-led question"
+
+
+@pytest.mark.parametrize("outcome", ["TRADE", "NO_TRADE", "ABSTAIN"])
+@pytest.mark.parametrize("peer_comparison", list(PeerComparison))
+def test_trader_reply_with_a_peer_comparison_is_reasked(
+    peer_comparison: PeerComparison, outcome: str
+) -> None:
+    model = ScriptedModel(
+        graph(
+            ("final_assessment", final_with(outcome, peer_comparison=peer_comparison)),
+            ("final_assessment", final_with(outcome, peer_comparison=None)),
+        )
+    )
+    result = run_trader(model)
+    assert result.status == "COMPLETED" and result.failure is None
+    assert result.assessment.outcome == outcome
+    assert result.assessment.peer_comparison is None
+    first, reask = model.requests[-2:]
+    assert first.stage == reask.stage == "final_assessment"
+    assert data(reask)["output_rejection"] == {
+        "call_id": first.call_id,
+        "problems": [MUST_BE_NULL],
+    }
+    assert "output_rejection" not in data(first)
+
+
+def test_trader_reply_with_null_peer_comparison_is_accepted_first_time() -> None:
+    final = final_with("NO_TRADE", peer_comparison=None)
+    model = ScriptedModel(graph(("final_assessment", final)))
+    result = run_trader(model)
+    assert result.status == "COMPLETED" and len(model.requests) == 5
+    assert all("output_rejection" not in data(r) for r in model.requests)
+    assert result.assessment.peer_comparison is None
+
+
+def test_two_trader_replies_with_a_peer_comparison_exhaust_the_reask_budget() -> None:
+    bad = final_with("ABSTAIN", peer_comparison="SIMILAR")
+    model = ScriptedModel(graph(("final_assessment", bad), ("final_assessment", bad)))
+    result = run_trader(model)
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.failure is not None
+    assert result.failure.code == "INVALID_MODEL_OUTPUT"
+    assert result.assessment.peer_comparison is None
+
+
+@pytest.mark.parametrize("peer_comparison", list(PeerComparison))
+def test_retained_trader_result_with_a_peer_comparison_is_rejected(
+    peer_comparison: PeerComparison,
+) -> None:
+    result = run_trader(ScriptedModel([tool()], outcome="ABSTAIN"))
+    assert result.status == "COMPLETED"
+    bad = result.assessment.model_copy(update={"peer_comparison": peer_comparison})
+    with pytest.raises(
+        ValidationError, match="trader-led assessment states no peer comparison"
+    ):
+        ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
+
+
+def test_reasked_trader_peer_comparison_round_trips_through_the_journal(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    model = ObservedModel(
+        graph(
+            ("final_assessment", final_with("TRADE", peer_comparison="BETTER")),
+            ("final_assessment", final_with("TRADE", peer_comparison=None)),
+        )
+    )
+    artifact = durable_trader(store, model=model)
+    assert artifact.result.status == "COMPLETED"
+    assert artifact.result.assessment.peer_comparison is None
+    assert data(model.requests[-1])["output_rejection"]["problems"] == [MUST_BE_NULL]
+    assert store.load_terminal("trader-1") == artifact
+    assert store.inspect_run("trader-1").artifact == artifact
+
+
+@pytest.mark.parametrize(
+    "with_reply,cause",
+    [
+        (False, "terminal assessment differs from stage"),
+        (True, "stage output differs from producing reply"),
+    ],
+)
+def test_stored_trader_assessment_given_a_peer_comparison_fails_to_load(
+    tmp_path: Path, with_reply: bool, cause: str
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = durable_trader(store)
+    assert artifact.result.assessment.peer_comparison is None
+    forge_peer_comparison(store, PeerComparison.BETTER, with_reply=with_reply)
+    assert_rejected_on_load(store, cause, "trader-1")
 
 
 def _rewrite_header(store: ResearchStore, header: ResearchRunHeader) -> None:

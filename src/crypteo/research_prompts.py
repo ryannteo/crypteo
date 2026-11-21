@@ -80,6 +80,14 @@ for a LONG at T: STRONGLY_AGAINST, AGAINST, BALANCED, FOR or STRONGLY_FOR.
 TRADE requires FOR or STRONGLY_FOR, NO_TRADE requires AGAINST or
 STRONGLY_AGAINST, and ABSTAIN may use any value. Lean is not a probability or
 a forecast.
+When context.request holds an opportunity, give peer_comparison, your
+judgment of how this candidate, as a LONG at T, compares with this pair's
+earlier lower-band crossings as the collected evidence reports them:
+MUCH_WORSE, WORSE, SIMILAR, BETTER or MUCH_BETTER. It has no required
+relation to outcome or lean, and it is not a probability or a forecast. Use
+SIMILAR when the collected evidence does not set this candidate apart from
+those crossings. When context.request holds a question, set peer_comparison
+to null.
 Do not use a deterministic confidence threshold or probability-of-profit claim.
 You have no tools and no trading authority."""
 
@@ -98,13 +106,13 @@ _PROMPT_VERSIONS: dict[ResearchEntry, dict[str, str]] = {
         "investigate": "investigate_prompt_v4",
         "draft_thesis": "draft_thesis_prompt_v2",
         "critique": "critique_prompt_v3",
-        "final_assessment": "final_assessment_prompt_v3",
+        "final_assessment": "final_assessment_prompt_v4",
     },
     "trader": {
         "investigate": "trader_investigate_prompt_v1",
         "draft_thesis": "trader_draft_thesis_prompt_v1",
         "critique": "trader_critique_prompt_v2",
-        "final_assessment": "trader_final_assessment_prompt_v2",
+        "final_assessment": "trader_final_assessment_prompt_v3",
     },
 }
 _SCHEMAS: dict[str, type[BaseModel]] = {
@@ -117,7 +125,7 @@ _SCHEMA_VERSIONS: dict[str, str] = {
     "investigate": "investigate_schema_v1",
     "draft_thesis": "draft_thesis_schema_v1",
     "critique": "critique_schema_v1",
-    "final_assessment": "final_assessment_schema_v2",
+    "final_assessment": "final_assessment_schema_v3",
 }
 
 

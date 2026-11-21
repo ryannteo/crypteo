@@ -37,16 +37,18 @@ from test_research_journal_claude import rewrite
 
 import crypteo.research_workflow as workflow
 from crypteo.domain.market import TradingPair
-from crypteo.domain.research import EvidenceLean
+from crypteo.domain.research import EvidenceLean, PeerComparison, TradeDecision
 from crypteo.domain.research_journal import (
     AbortDiagnostic,
     EventEnvelope,
+    ModelCallFinished,
     ModelRequestPrepared,
     ModelResponseObserved,
     ResearchArtifact,
     ResearchRunHeader,
     RunAborted,
     RunFinished,
+    StageCompleted,
 )
 from crypteo.domain.research_workflow import (
     ModelCallRecord,
@@ -66,6 +68,7 @@ from crypteo.research_model import (
     ProviderFailureCode,
     RefusalReply,
     ResponseObserver,
+    StructuredReply,
     render_json,
 )
 from crypteo.research_persistence import ResearchStore
@@ -102,6 +105,7 @@ def test_completed_exact_reload(tmp_path: Path, outcome: str) -> None:
         execute(store, ObservedModel([tool(), tool()], outcome=outcome))
     )
     assert artifact.result.assessment.lean == LEAN_BY_OUTCOME[outcome]
+    assert artifact.result.assessment.peer_comparison == "SIMILAR"
     assert store.load_terminal("run-1") == artifact
     assert store.inspect_run("run-1").artifact == artifact
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
@@ -1091,12 +1095,68 @@ def _forge_terminal_lean(store: ResearchStore, lean: EvidenceLean) -> None:
     rewrite(store, _terminal_sequence(store), change)
 
 
-def _assert_rejected_on_load(store: ResearchStore, cause: str) -> None:
+def assert_rejected_on_load(
+    store: ResearchStore, cause: str, run_id: str = "run-1"
+) -> None:
     for load in (store.load_terminal, store.inspect_run):
         with pytest.raises(ResearchStorageError) as raised:
-            load("run-1")
+            load(run_id)
         assert isinstance(raised.value.__cause__, ResearchValidationError)
         assert str(raised.value.__cause__) == cause
+
+
+def _sequences(store: ResearchStore, kind: str) -> list[int]:
+    with closing(sqlite3.connect(store.path)) as connection:
+        rows = connection.execute(
+            "SELECT sequence FROM research_events_v1 WHERE kind=? ORDER BY sequence",
+            (kind,),
+        ).fetchall()
+    return [sequence for (sequence,) in rows]
+
+
+def forge_peer_comparison(
+    store: ResearchStore, value: PeerComparison | None, *, with_reply: bool = False
+) -> None:
+    """Forge the terminal peer comparison; ``with_reply`` forges the final
+    assessment's reply and stage output to match, with valid checksums."""
+
+    def assessment(decision: TradeDecision) -> TradeDecision:
+        return decision.model_copy(update={"peer_comparison": value})
+
+    def terminal(envelope: EventEnvelope) -> EventEnvelope:
+        event = envelope.event
+        assert isinstance(event, RunFinished)
+        update = {"assessment": assessment(event.assessment)}
+        return envelope.model_copy(update={"event": event.model_copy(update=update)})
+
+    def reply(envelope: EventEnvelope) -> EventEnvelope:
+        event = envelope.event
+        assert isinstance(event, ModelCallFinished)
+        assert event.record.request.stage == "final_assessment"
+        assert isinstance(event.record.reply, StructuredReply)
+        content = json.loads(event.record.reply.content)
+        forged = StructuredReply(
+            content=json.dumps(content | {"peer_comparison": value})
+        )
+        record = event.record.model_copy(update={"reply": forged})
+        return envelope.model_copy(
+            update={"event": event.model_copy(update={"record": record})}
+        )
+
+    def stage(envelope: EventEnvelope) -> EventEnvelope:
+        event = envelope.event
+        assert isinstance(event, StageCompleted)
+        assert event.value.stage == "final_assessment"
+        output = assessment(event.value.output)
+        value_update = {"value": event.value.model_copy(update={"output": output})}
+        return envelope.model_copy(
+            update={"event": event.model_copy(update=value_update)}
+        )
+
+    if with_reply:
+        rewrite(store, _sequences(store, "MODEL_CALL_FINISHED")[-1], reply)
+        rewrite(store, _sequences(store, "STAGE_COMPLETED")[-1], stage)
+    rewrite(store, _terminal_sequence(store), terminal)
 
 
 def test_stored_runtime_abstain_carrying_a_lean_is_rejected_on_load(
@@ -1108,7 +1168,7 @@ def test_stored_runtime_abstain_carrying_a_lean_is_rejected_on_load(
     assert artifact.result.assessment.lean is None
     assert store.load_terminal("run-1") == artifact
     _forge_terminal_lean(store, EvidenceLean.BALANCED)
-    _assert_rejected_on_load(store, "runtime assessment differs from failure")
+    assert_rejected_on_load(store, "runtime assessment differs from failure")
 
 
 def test_stored_terminal_lean_differing_from_the_stage_is_rejected_on_load(
@@ -1117,7 +1177,38 @@ def test_stored_terminal_lean_differing_from_the_stage_is_rejected_on_load(
     store = ResearchStore(tmp_path / "r.sqlite")
     asyncio.run(execute(store, ObservedModel([tool()])))
     _forge_terminal_lean(store, EvidenceLean.STRONGLY_FOR)
-    _assert_rejected_on_load(store, "terminal assessment differs from stage")
+    assert_rejected_on_load(store, "terminal assessment differs from stage")
+
+
+@pytest.mark.parametrize(
+    "value,with_reply,cause",
+    [
+        (PeerComparison.BETTER, False, "terminal assessment differs from stage"),
+        (None, False, "terminal assessment differs from stage"),
+        (None, True, "stage output differs from producing reply"),
+    ],
+)
+def test_stored_opportunity_peer_comparison_tampered_is_rejected_on_load(
+    tmp_path: Path, value: PeerComparison | None, with_reply: bool, cause: str
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = asyncio.run(execute(store, ObservedModel([tool()])))
+    assert artifact.result.assessment.peer_comparison == "SIMILAR"
+    assert store.load_terminal("run-1") == artifact
+    forge_peer_comparison(store, value, with_reply=with_reply)
+    assert_rejected_on_load(store, cause)
+
+
+@pytest.mark.parametrize("value", list(PeerComparison))
+def test_stored_runtime_abstain_carrying_a_peer_comparison_is_rejected_on_load(
+    tmp_path: Path, value: PeerComparison
+) -> None:
+    store = ResearchStore(tmp_path / "r.sqlite")
+    artifact = asyncio.run(execute(store, ObservedModel([RefusalReply(refusal="No")])))
+    assert artifact.result.status == "INTERRUPTED"
+    assert artifact.result.assessment.peer_comparison is None
+    forge_peer_comparison(store, value)
+    assert_rejected_on_load(store, "runtime assessment differs from failure")
 
 
 def test_journal_sealed_and_failed_writer_cannot_append(tmp_path: Path) -> None:

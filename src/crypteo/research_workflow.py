@@ -426,7 +426,9 @@ class _ResearchRuntime:
             return {**state, "action": reply}
         if not isinstance(reply, StructuredReply):
             raise ResearchInvariantError("unexpected model reply variant")
-        output = validate_stage_output(state["trace"], reply, InvestigationCompletion)
+        output = validate_stage_output(
+            state["trace"], reply, InvestigationCompletion, state["context"].entry
+        )
         if isinstance(output, ResearchFailureCode):
             return self.reask_or_fail(state, output)
         if not isinstance(output, InvestigationCompletion):
@@ -585,7 +587,9 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = validate_stage_output(state["trace"], reply, ResearchThesis)
+        output = validate_stage_output(
+            state["trace"], reply, ResearchThesis, state["context"].entry
+        )
         if isinstance(output, ResearchFailureCode):
             return self.reask_or_fail(state, output)
         if not isinstance(output, ResearchThesis):
@@ -604,7 +608,9 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = validate_stage_output(state["trace"], reply, Critique)
+        output = validate_stage_output(
+            state["trace"], reply, Critique, state["context"].entry
+        )
         if isinstance(output, ResearchFailureCode):
             return self.reask_or_fail(state, output)
         if not isinstance(output, Critique):
@@ -623,7 +629,9 @@ class _ResearchRuntime:
             return state
         if not isinstance(reply, StructuredReply):
             return self.invalid_output(state, ResearchFailureCode.INVALID_MODEL_OUTPUT)
-        output = validate_stage_output(state["trace"], reply, TradeDecision)
+        output = validate_stage_output(
+            state["trace"], reply, TradeDecision, state["context"].entry
+        )
         if isinstance(output, ResearchFailureCode):
             return self.reask_or_fail(state, output)
         if not isinstance(output, TradeDecision):

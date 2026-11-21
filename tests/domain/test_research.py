@@ -17,6 +17,7 @@ from crypteo.domain.research import (
     EvidenceQuality,
     FrozenJsonObject,
     Opportunity,
+    PeerComparison,
     ResearchThesis,
     TradeDecision,
 )
@@ -754,11 +755,57 @@ def test_lean_consistency_matrix(
             TradeDecision.model_validate(data)
 
 
-def test_lean_defaults_to_none_and_is_the_last_field() -> None:
+def test_lean_defaults_to_none_and_precedes_only_the_peer_comparison() -> None:
     data = decision_data(DecisionOutcome.ABSTAIN)
     del data["lean"]
     assert TradeDecision.model_validate(data).lean is None
-    assert list(TradeDecision.model_fields)[-1] == "lean"
+    assert list(TradeDecision.model_fields)[-2:] == ["lean", "peer_comparison"]
+
+
+def test_peer_comparison_values_are_stable_and_ordered() -> None:
+    assert [item.value for item in PeerComparison] == [
+        "MUCH_WORSE",
+        "WORSE",
+        "SIMILAR",
+        "BETTER",
+        "MUCH_BETTER",
+    ]
+
+
+def test_peer_comparison_defaults_to_none_and_is_the_last_field() -> None:
+    data = decision_data(DecisionOutcome.TRADE)
+    assert "peer_comparison" not in data
+    assert TradeDecision.model_validate(data).peer_comparison is None
+    assert list(TradeDecision.model_fields)[-1] == "peer_comparison"
+
+
+@pytest.mark.parametrize("peer_comparison", [*PeerComparison, None])
+@pytest.mark.parametrize(
+    ("outcome", "lean"),
+    [
+        (outcome, lean)
+        for outcome, leans in LEAN_ACCEPTED.items()
+        for lean in leans
+        if lean is not None
+    ],
+)
+def test_peer_comparison_is_untied_to_outcome_and_lean(
+    outcome: DecisionOutcome,
+    lean: EvidenceLean,
+    peer_comparison: PeerComparison | None,
+) -> None:
+    """No contract rule links the peer comparison to the decision (ADR-025)."""
+    data = decision_data(outcome, lean=lean, peer_comparison=peer_comparison)
+    decision = TradeDecision.model_validate(data)
+    assert (decision.outcome, decision.lean) == (outcome, lean)
+    assert decision.peer_comparison is peer_comparison
+
+
+def test_decision_rejects_unknown_peer_comparison() -> None:
+    with pytest.raises(ValidationError, match="peer_comparison"):
+        TradeDecision.model_validate(
+            decision_data(DecisionOutcome.ABSTAIN, peer_comparison="SLIGHTLY_BETTER")
+        )
 
 
 @pytest.mark.parametrize(

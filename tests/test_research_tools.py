@@ -16,6 +16,7 @@ from crypteo.domain.market_research import (
 )
 from crypteo.domain.replay_research import research_policy
 from crypteo.domain.research_workflow import BENCHMARK_ORDER, ToolRejection
+from crypteo.experiment import identity
 from crypteo.research_tools import (
     TOOL_DESCRIPTIONS,
     TOOL_VERSION,
@@ -184,31 +185,39 @@ def test_policy_identity_pins_prompts_and_schemas() -> None:
         "bounded_research_v3",
         "compact_research_view_v2",
     )
-    # The critic moved under ADR-017; the final assessment under ADR-020.
+    # The critic moved under ADR-017; the final assessment under ADR-020 and
+    # ADR-025.
     assert [p.version for p in policy.prompts] == [
         "investigate_prompt_v4",
         "draft_thesis_prompt_v2",
         "critique_prompt_v3",
-        "final_assessment_prompt_v3",
+        "final_assessment_prompt_v4",
     ]
     assert [p.digest.removeprefix("sha256:") for p in policy.prompts] == [
         "850412dde6c09ce5b9ba74c1deec75cbd5a05a6ab766978aac6c91d530294172",
         "991afdb1f18f04a095cdaff07577e0a445ac9885a3deaf01685a7e2d1b791792",
         "1b08b4c44e2a25b75e6d2be484759f410f43ddde72a4c823613d24d50b784fc4",
-        "424d7f664954ad70a8a6993a5be51addb25efde40be59ddcdf5935174514c37c",
+        "64bb06443e770f5e0ffdc4d353e4f231221957675990dd995df68fd7a38fbb51",
     ]
     assert [s.version for s in policy.schemas] == [
         "investigate_schema_v1",
         "draft_thesis_schema_v1",
         "critique_schema_v1",
-        "final_assessment_schema_v2",
+        "final_assessment_schema_v3",
     ]
     assert [s.digest.removeprefix("sha256:") for s in policy.schemas] == [
         "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
         "7a62eaa5f8f91a3a94a93b32477db6c287f1a2d586258f071a8fdccc9472da26",
         "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
-        "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
+        "2499e168ec6973357a70a702ccacdfb7b542de3d16737359fcfff44dfe2f9811",
     ]
+    # ADR-025 moved the policy identity from its ADR-020 value.
+    assert identity(policy) == (
+        "sha256:66d521ae4f08fb1917326afacf8c3c77dcaa809f3b16feed863ffbc158fb597b"
+    )
+    assert identity(policy) != (
+        "sha256:7df989602fd435993168ba4aabe6e096e4051d66afb5bfb1c01ec40bd1ec1b38"
+    )
     # Tool identities are unchanged: BTC offers carry the pinned v6 snapshots.
     offers = {
         offer.benchmarks: [d.digest.removeprefix("sha256:") for d in offer.definitions]

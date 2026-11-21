@@ -1177,7 +1177,7 @@ def test_invalid_json_schema_interrupted_without_retry(content: str) -> None:
 
 STAGES = ("investigate", "draft_thesis", "critique", "final_assessment")
 # Project schema identities. Claude wire rendering leaves them unchanged; only the
-# final assessment has moved since it was added (ADR-020).
+# final assessment has moved since it was added (ADR-020, ADR-025).
 STAGE_SCHEMA_DIGESTS = {
     "investigate": "sha256:"
     "10a1bb6d0fbfb18dfac09e4864265aeafccc228c3f9765fea0e3fb6f14bdb84f",
@@ -1186,13 +1186,13 @@ STAGE_SCHEMA_DIGESTS = {
     "critique": "sha256:"
     "498c2f78279c95bd030323aa8411a16a7399c61c841480653b47e9e122ed2664",
     "final_assessment": "sha256:"
-    "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
+    "2499e168ec6973357a70a702ccacdfb7b542de3d16737359fcfff44dfe2f9811",
 }
 STAGE_SCHEMA_VERSIONS = {
     "investigate": "investigate_schema_v1",
     "draft_thesis": "draft_thesis_schema_v1",
     "critique": "critique_schema_v1",
-    "final_assessment": "final_assessment_schema_v2",
+    "final_assessment": "final_assessment_schema_v3",
 }
 CONFIDENCE_WIRE = [
     {"type": "integer", "description": "Constraints: minimum 0, maximum 100."},
@@ -1251,9 +1251,44 @@ def test_all_stage_and_tool_wire_schemas_have_no_unsupported_constraints() -> No
     assert [r.stage for r in requests] == list(STAGES[1:])
 
 
-def test_final_assessment_schema_states_lean_last_on_the_project_and_claude_wire() -> (
-    None
-):
+LEAN_PARAGRAPH = (
+    "``lean`` is the assessment's judgment of where the balance of the "
+    "collected\nevidence sits for a LONG at research time. It is not a "
+    "probability, forecast\nor expected return. ``TRADE`` requires ``FOR`` "
+    "or ``STRONGLY_FOR``,\n``NO_TRADE`` requires ``AGAINST`` or "
+    "``STRONGLY_AGAINST``, and ``ABSTAIN``\nmay use any value."
+)
+PEER_COMPARISON_PARAGRAPH = (
+    "``peer_comparison`` is the assessment's judgment of how the candidate, as "
+    "a\nLONG at research time, compares with earlier candidates of its kind "
+    "from the\nsame discovery rule. It is not a probability, forecast or "
+    "expected return,\nand no rule ties it to the outcome or the lean. "
+    "Research that no discovery\nrule started states none."
+)
+PEER_COMPARISON_DEFINITION = {
+    "description": (
+        "Judgment of how a candidate compares with earlier candidates of its "
+        "kind.\n\nThe peers are earlier candidates from the same discovery rule. "
+        "Ordered from\n``MUCH_WORSE`` to ``MUCH_BETTER``. It is a judgment, not a "
+        "probability,\nforecast or expected return, and no rule ties it to the "
+        "outcome or the lean."
+    ),
+    "enum": ["MUCH_WORSE", "WORSE", "SIMILAR", "BETTER", "MUCH_BETTER"],
+    "title": "PeerComparison",
+    "type": "string",
+}
+# The schema describes peers from a discovery rule and names no candidate source;
+# only the versioned instruction names the crossings (ADR-025).
+CANDIDATE_SOURCE_NAMES = (
+    "lower-band",
+    "lower band",
+    "bollinger",
+    "crossing",
+    "scanner",
+)
+
+
+def test_final_assessment_schema_states_peer_comparison_last_on_both_schemas() -> None:
     request = synthesis_requests()[-1]
     assert request.stage == "final_assessment"
     project = request.output_schema.model_dump(mode="json")["json_schema"]
@@ -1261,7 +1296,7 @@ def test_final_assessment_schema_states_lean_last_on_the_project_and_claude_wire
     assert wire == render_anthropic_schema(project)
     assert not constraint_keywords(wire)
     for schema in (project, wire):
-        assert list(schema["properties"])[-1] == "lean"
+        assert list(schema["properties"])[-2:] == ["lean", "peer_comparison"]
         assert schema["required"] == list(schema["properties"])
         assert schema["properties"]["lean"] == {
             "anyOf": [{"$ref": "#/$defs/EvidenceLean"}, {"type": "null"}]
@@ -1276,13 +1311,15 @@ def test_final_assessment_schema_states_lean_last_on_the_project_and_claude_wire
             "title": "EvidenceLean",
             "type": "string",
         }
+        assert schema["properties"]["peer_comparison"] == {
+            "anyOf": [{"$ref": "#/$defs/PeerComparison"}, {"type": "null"}]
+        }
+        assert schema["$defs"]["PeerComparison"] == PEER_COMPARISON_DEFINITION
         assert schema["description"].endswith(
-            "``lean`` is the assessment's judgment of where the balance of the "
-            "collected\nevidence sits for a LONG at research time. It is not a "
-            "probability, forecast\nor expected return. ``TRADE`` requires ``FOR`` "
-            "or ``STRONGLY_FOR``,\n``NO_TRADE`` requires ``AGAINST`` or "
-            "``STRONGLY_AGAINST``, and ``ABSTAIN``\nmay use any value."
+            LEAN_PARAGRAPH + "\n\n" + PEER_COMPARISON_PARAGRAPH
         )
+        texts = render_json(schema).lower()
+        assert not [name for name in CANDIDATE_SOURCE_NAMES if name in texts]
 
 
 def test_stage_schema_identities() -> None:

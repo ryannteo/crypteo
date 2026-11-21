@@ -234,11 +234,13 @@ and [ADR-010](docs/decisions/ADR-010-durable-research-lifecycle.md).
 `crypteo_viewer` is a local, read-only viewer over stored evaluations and their
 research runs ([ADR-022](docs/decisions/ADR-022-local-run-viewer.md)). It shows a
 trial's evaluations with their plan, metrics and windows (signal time, pair,
-decision, confidence, lean, baseline outcome and net P&L, research outcome), and
-each run's candidate and terms, trace of model and tool calls with evidence,
-re-asks and request rejections, investigation, thesis, critique, assessment,
-journal events, and tokens per call with a list-price cost estimate. Values appear
-as stored; the cost estimate is the only computed value.
+decision, confidence, lean, peer comparison, baseline outcome and net P&L,
+research outcome), and each run's candidate and terms, trace of model and tool
+calls with evidence, re-asks and request rejections, investigation, thesis,
+critique, assessment, journal events, and tokens per call with a list-price cost
+estimate. Values appear as stored; the cost estimate is the only computed value.
+Runs stored before ADR-025 have no peer comparison, and their pages show it as
+"not stored".
 
 It has two steps, run from the checkout:
 

@@ -1,6 +1,7 @@
 """Content snapshots protect stable identities from unversioned prompt drift."""
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -49,9 +50,9 @@ _STAGE_INSTRUCTIONS = {
         ),
         (
             "final_assessment",
-            "final_assessment_prompt_v3",
-            "424d7f664954ad70a8a6993a5be51addb25efde40be59ddcdf5935174514c37c",
-            "d0f2ec6f9ce888f6b014a23f995de35b488494ea691cee9c94c884161c84653b",
+            "final_assessment_prompt_v4",
+            "64bb06443e770f5e0ffdc4d353e4f231221957675990dd995df68fd7a38fbb51",
+            "2499e168ec6973357a70a702ccacdfb7b542de3d16737359fcfff44dfe2f9811",
         ),
     ],
 )
@@ -95,15 +96,63 @@ ADR_020_LEAN = (
 )
 
 
+# ADR-025's block quote, line for line.
+ADR_025_PEER_COMPARISON = (
+    "When context.request holds an opportunity, give peer_comparison, your\n"
+    "judgment of how this candidate, as a LONG at T, compares with this pair's\n"
+    "earlier lower-band crossings as the collected evidence reports them:\n"
+    "MUCH_WORSE, WORSE, SIMILAR, BETTER or MUCH_BETTER. It has no required\n"
+    "relation to outcome or lean, and it is not a probability or a forecast. Use\n"
+    "SIMILAR when the collected evidence does not set this candidate apart from\n"
+    "those crossings. When context.request holds a question, set peer_comparison\n"
+    "to null.\n"
+)
+ADR_025 = (
+    Path(__file__).parents[1]
+    / "docs/decisions/ADR-025-peer-comparison-and-ranking-trial-2.md"
+)
+
+
 def test_assessment_instructions_state_adr_020_lean_exactly_once() -> None:
     assert ASSESSMENT_INSTRUCTIONS.count(ADR_020_LEAN) == 1
     assert ASSESSMENT_INSTRUCTIONS.count("Give lean") == 1
     before, after = ASSESSMENT_INSTRUCTIONS.split(ADR_020_LEAN)
     assert before.endswith("with their research-only meanings.\n")
-    assert after.startswith("Do not use a deterministic confidence threshold")
+    # ADR-025's sentences follow the lean block immediately (ADR-025).
+    assert after.startswith(ADR_025_PEER_COMPARISON)
     for entry in ("opportunity", "trader"):
         system = prompt_messages("final_assessment", {}, entry)[0].content
         assert system.count(ADR_020_LEAN) == 1
+
+
+def test_peer_comparison_block_is_adr_025_text_line_for_line() -> None:
+    lines = ADR_025.read_text(encoding="utf-8").splitlines()
+    start = lines.index(
+        "> When context.request holds an opportunity, give peer_comparison, your"
+    )
+    quoted = []
+    for line in lines[start:]:
+        if not line.startswith("> "):
+            break
+        quoted.append(line.removeprefix("> ") + "\n")
+    assert "".join(quoted) == ADR_025_PEER_COMPARISON
+
+
+def test_assessment_instructions_state_adr_025_peer_comparison_exactly_once() -> None:
+    assert ASSESSMENT_INSTRUCTIONS.count(ADR_025_PEER_COMPARISON) == 1
+    assert ASSESSMENT_INSTRUCTIONS.count("peer_comparison") == 2
+    before, after = ASSESSMENT_INSTRUCTIONS.split(ADR_025_PEER_COMPARISON)
+    assert before.endswith(ADR_020_LEAN)
+    assert after.startswith("Do not use a deterministic confidence threshold")
+    # Stage instructions stay shared by both entry modes (ADR-014).
+    for entry in ("opportunity", "trader"):
+        system = prompt_messages("final_assessment", {}, entry)[0].content
+        assert system.count(ADR_025_PEER_COMPARISON) == 1
+        assert system.endswith("\n\n" + ASSESSMENT_INSTRUCTIONS)
+    # Only the final assessment's instructions mention the field.
+    for stage, instructions in _STAGE_INSTRUCTIONS.items():
+        if stage != "final_assessment":
+            assert "peer_comparison" not in instructions
 
 
 @pytest.mark.parametrize(
@@ -112,7 +161,7 @@ def test_assessment_instructions_state_adr_020_lean_exactly_once() -> None:
         ("investigate", "investigate_schema_v1"),
         ("draft_thesis", "draft_thesis_schema_v1"),
         ("critique", "critique_schema_v1"),
-        ("final_assessment", "final_assessment_schema_v2"),
+        ("final_assessment", "final_assessment_schema_v3"),
     ],
 )
 def test_stage_schema_versions(stage: str, version: str) -> None:
@@ -160,8 +209,8 @@ def test_shared_policy_explains_output_rejection_on_every_stage(stage: str) -> N
         ),
         (
             "final_assessment",
-            "trader_final_assessment_prompt_v2",
-            "fbb787076ca9927f866563227655488616804fd06da5bc452ae1ae903af90976",
+            "trader_final_assessment_prompt_v3",
+            "b0aa65c7aece78b042df347554c1eb4e2111becf63a264213161152818eabd8e",
         ),
     ],
 )

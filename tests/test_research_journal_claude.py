@@ -125,6 +125,7 @@ def test_durable_claude_run_through_final_assessment_reloads_identically(
     result = artifact.result
     assert result.status == "COMPLETED" and result.assessment.outcome == "TRADE"
     assert result.assessment.lean == "FOR"
+    assert result.assessment.peer_comparison == "SIMILAR"
     assert store.load_terminal("run-1") == artifact
     assert ResearchStore(store.path).load_terminal("run-1") == artifact
     assert store.inspect_run("run-1").artifact == artifact

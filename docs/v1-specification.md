@@ -340,7 +340,7 @@ the full normalization, identity, publication, and loading contract.
 
 ## Decision and Risk Outcomes
 
-`TradeDecision` is the final LLM-facing research assessment. It contains qualitative rationale, evidence and counterevidence references, confidence, uncertainties, critic response, abstention reasons, a lean (`STRONGLY_AGAINST|AGAINST|BALANCED|FOR|STRONGLY_FOR`), and exactly one of `TRADE|NO_TRADE|ABSTAIN`. It does not own runtime/journal identity, authoritative timestamps, financial arithmetic, execution fields, or references to deterministic trade-level/template contracts. The implemented `TradeTerms` contract remains runtime-owned and is not part of this model-facing schema.
+`TradeDecision` is the final LLM-facing research assessment. It contains qualitative rationale, evidence and counterevidence references, confidence, uncertainties, critic response, abstention reasons, a lean (`STRONGLY_AGAINST|AGAINST|BALANCED|FOR|STRONGLY_FOR`), a peer comparison (`MUCH_WORSE|WORSE|SIMILAR|BETTER|MUCH_BETTER`) in opportunity-led research and none in trader-led research, and exactly one of `TRADE|NO_TRADE|ABSTAIN`. It does not own runtime/journal identity, authoritative timestamps, financial arithmetic, execution fields, or references to deterministic trade-level/template contracts. The implemented `TradeTerms` contract remains runtime-owned and is not part of this model-facing schema.
 
 - `TRADE`: research supports further consideration of the candidate LONG setup. It is not an order, execution authorization, risk approval, sizing approval, or portfolio authorization.
 - `NO_TRADE`: Crypteo has enough evidence to actively reject the candidate. It is a substantive research conclusion, not an abstention.
@@ -1144,10 +1144,24 @@ LONG at research time, one of `STRONGLY_AGAINST`, `AGAINST`, `BALANCED`, `FOR` a
 workflow computes nothing from it
 ([ADR-020](decisions/ADR-020-assessment-states-a-lean.md)). `TRADE` requires `FOR`
 or `STRONGLY_FOR`, `NO_TRADE` requires `AGAINST` or `STRONGLY_AGAINST`, and
-`ABSTAIN` may use any value. Every completed model assessment, including
-`ABSTAIN`, also requires a nonblank critic response and a lean; a runtime
-interruption assessment has no lean and otherwise follows the failure semantics
-below.
+`ABSTAIN` may use any value. `peer_comparison` is the assessment's judgment of
+how the candidate, as a LONG at research time, compares with earlier candidates
+of its kind from the same discovery rule, one of `MUCH_WORSE`, `WORSE`,
+`SIMILAR`, `BETTER` and `MUCH_BETTER`; for V2's one candidate source those are
+the pair's earlier lower-band crossings as the collected evidence reports them.
+It is not a probability, forecast or expected return, no rule ties it to the
+outcome or the lean, and the workflow computes nothing from it
+([ADR-025](decisions/ADR-025-peer-comparison-and-ranking-trial-2.md)). Its schema
+texts name no candidate source; only the versioned instruction names the
+crossings. Every completed model assessment, including `ABSTAIN`, also requires
+a nonblank critic response and a lean. Every completed opportunity-led model
+assessment requires a peer comparison, and a trader-led one must state none,
+because a trader's question comes from no discovery rule. Code enforces this
+where the entry mode is known: an opportunity-led reply without a peer
+comparison, or a trader-led reply with one, is invalid output and is re-asked,
+and retained `ResearchRunResult` and stored-journal validation apply the same
+rules. A runtime interruption assessment has no lean and no peer comparison and
+otherwise follows the failure semantics below.
 
 ## Bounded Model-backed Research
 
@@ -1200,10 +1214,10 @@ evidence, and selects no pair, time, venue, timeframe, window or tool argument.
 Opportunity-led requests use `SHARED_POLICY` followed by the stage
 instructions, with prompt versions `investigate_prompt_v4`,
 `draft_thesis_prompt_v2`, `critique_prompt_v3` and
-`final_assessment_prompt_v3`. Trader-led requests use `TRADER_SHARED_POLICY`
+`final_assessment_prompt_v4`. Trader-led requests use `TRADER_SHARED_POLICY`
 followed by the same stage instructions, with prompt versions
 `trader_investigate_prompt_v1`, `trader_draft_thesis_prompt_v1`,
-`trader_critique_prompt_v2` and `trader_final_assessment_prompt_v2`.
+`trader_critique_prompt_v2` and `trader_final_assessment_prompt_v3`.
 
 Time is checked around model, tool, and cache boundaries and before return.
 Moving the authoritative clock raises an invariant error, including movement
@@ -1444,11 +1458,13 @@ and `trader_critique_prompt_v2`. The critic does not inherit the investigator's
 completion narrative or a provider conversation. Independence is procedural
 only; statistical independence is not claimed.
 Final assessment receives the validated thesis and critique and must address the
-critic explicitly for every completed outcome. It also states the lean
-defined in [Research Contract Validation](#research-contract-validation). The
-final-assessment instructions are versioned `final_assessment_prompt_v3` and
-`trader_final_assessment_prompt_v2`, and its output schema
-`final_assessment_schema_v2`; the other stage schemas remain
+critic explicitly for every completed outcome. It also states the lean and,
+for an opportunity, the peer comparison defined in
+[Research Contract Validation](#research-contract-validation); the shared
+instructions tell it to set `peer_comparison` to null for a question. The
+final-assessment instructions are versioned `final_assessment_prompt_v4` and
+`trader_final_assessment_prompt_v3`, and its output schema
+`final_assessment_schema_v3`; the other stage schemas remain
 `<stage>_schema_v1`.
 
 ### Outcomes and failure semantics
@@ -1466,11 +1482,11 @@ threshold, calibration guarantee, or probability-of-profit claim.
 
 | Run status | Assessment origin | Required result |
 | --- | --- | --- |
-| `COMPLETED` | `MODEL` | Investigation completion, validated thesis, critique, and final assessment; no failure |
-| `INTERRUPTED` | `RUNTIME` | Typed failure and deterministic runtime `ABSTAIN` with matching abstention category and no lean |
+| `COMPLETED` | `MODEL` | Investigation completion, validated thesis, critique, and final assessment with a lean, and with a peer comparison exactly when opportunity-led; no failure |
+| `INTERRUPTED` | `RUNTIME` | Typed failure and deterministic runtime `ABSTAIN` with matching abstention category, no lean and no peer comparison |
 
 A completed model `ABSTAIN` has passed all research stages and contains a critic
-response and a lean. Runtime `ABSTAIN` represents an operational interruption and may retain
+response, a lean and, when opportunity-led, a peer comparison. Runtime `ABSTAIN` represents an operational interruption and may retain
 only the stages already produced. It is not a completed model research conclusion.
 Provider failure must never become `NO_TRADE`.
 

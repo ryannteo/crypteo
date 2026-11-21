@@ -20,6 +20,7 @@ from research_support import (
     completion,
     critique,
     opportunity,
+    peer_comparison_for,
     run,
     service,
     structured,
@@ -91,6 +92,7 @@ EMPTY = {
         "critic_response": None,
         "abstention_reasons": ["INSUFFICIENT_EVIDENCE"],
         "lean": "BALANCED",
+        "peer_comparison": "SIMILAR",
     },
 }
 PROBLEMS = {
@@ -134,7 +136,9 @@ def valid(stage: str) -> Step:
             "investigate": completion(ids),
             "draft_thesis": structured(thesis(ids)),
             "critique": structured(critique()),
-            "final_assessment": structured(assessment("TRADE", ids)),
+            "final_assessment": structured(
+                assessment("TRADE", ids, peer_comparison_for(request))
+            ),
         }[stage]
 
     return reply
@@ -287,10 +291,12 @@ def test_unknown_evidence_reference_is_reasked() -> None:
 
 
 def final_with(outcome: str, **changes: Any) -> Step:
-    """A final assessment citing the request's evidence, then changed."""
+    """A valid final assessment citing the request's evidence, then changed."""
 
     def reply(request: ModelRequest) -> ModelReply:
-        decision = assessment(outcome, evidence_ids(request)).model_dump(mode="json")
+        decision = assessment(
+            outcome, evidence_ids(request), peer_comparison_for(request)
+        ).model_dump(mode="json")
         return structured(decision | changes)
 
     return reply
@@ -375,6 +381,104 @@ def test_reasked_lean_round_trips_through_the_journal(tmp_path: Path) -> None:
     assert artifact.result.assessment.lean == "STRONGLY_AGAINST"
     assert data(model.requests[-1])["output_rejection"]["problems"] == [NO_TRADE_LEAN]
     assert store.load_terminal("run-1") == artifact
+
+
+LEAN_ALLOWED = {
+    "TRADE": ("FOR", "STRONGLY_FOR"),
+    "NO_TRADE": ("AGAINST", "STRONGLY_AGAINST"),
+    "ABSTAIN": ("STRONGLY_AGAINST", "AGAINST", "BALANCED", "FOR", "STRONGLY_FOR"),
+}
+PEER_COMPARISONS = ("MUCH_WORSE", "WORSE", "SIMILAR", "BETTER", "MUCH_BETTER")
+UNSTATED_PEER_COMPARISON = "peer_comparison: required for every opportunity-led outcome"
+
+
+@pytest.mark.parametrize("peer_comparison", PEER_COMPARISONS)
+@pytest.mark.parametrize(
+    "outcome,lean",
+    [(outcome, lean) for outcome, leans in LEAN_ALLOWED.items() for lean in leans],
+)
+def test_opportunity_reply_states_any_peer_comparison_with_any_allowed_lean(
+    outcome: str, lean: str, peer_comparison: str
+) -> None:
+    final = final_with(outcome, lean=lean, peer_comparison=peer_comparison)
+    model = ScriptedModel(graph(("final_assessment", final)))
+    result = run(model)
+    assert result.status == "COMPLETED" and len(model.requests) == 5
+    assert "output_rejection" not in data(model.requests[-1])
+    assert result.assessment.outcome == outcome and result.assessment.lean == lean
+    assert result.assessment.peer_comparison == peer_comparison
+
+
+def final_without_peer_comparison(request: ModelRequest) -> ModelReply:
+    decision = assessment("TRADE", evidence_ids(request)).model_dump(mode="json")
+    del decision["peer_comparison"]
+    return structured(decision)
+
+
+@pytest.mark.parametrize(
+    "bad,problems",
+    [
+        (final_without_peer_comparison, ["peer_comparison: missing"]),
+        (final_with("TRADE", peer_comparison=None), [UNSTATED_PEER_COMPARISON]),
+        (final_with("NO_TRADE", peer_comparison=None), [UNSTATED_PEER_COMPARISON]),
+        (final_with("ABSTAIN", peer_comparison=None), [UNSTATED_PEER_COMPARISON]),
+        (
+            final_with("ABSTAIN", peer_comparison="SLIGHTLY_BETTER"),
+            ["peer_comparison: enum"],
+        ),
+        (
+            final_with("ABSTAIN", lean=None, peer_comparison=None),
+            [UNSTATED_LEAN, UNSTATED_PEER_COMPARISON],
+        ),
+    ],
+)
+def test_opportunity_reply_without_peer_comparison_is_reasked(
+    bad: Step, problems: list[str]
+) -> None:
+    model = ScriptedModel(
+        graph(
+            ("final_assessment", bad),
+            ("final_assessment", final_with("NO_TRADE", peer_comparison="BETTER")),
+        )
+    )
+    result = run(model)
+    assert result.status == "COMPLETED" and result.failure is None
+    assert result.assessment.peer_comparison == "BETTER"
+    rejection = data(model.requests[-1])["output_rejection"]
+    assert rejection == {"call_id": model.requests[-2].call_id, "problems": problems}
+    assert ("final_assessment", "final_assessment") in transitions(result)
+
+
+def test_two_replies_without_peer_comparison_exhaust_the_reask_budget() -> None:
+    bad = final_with("ABSTAIN", peer_comparison=None)
+    model = ScriptedModel(graph(("final_assessment", bad), ("final_assessment", bad)))
+    result = run(model)
+    assert len(model.requests) == 6
+    assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
+    assert result.failure is not None
+    assert result.failure.code == "INVALID_MODEL_OUTPUT"
+    assert result.assessment.outcome == "ABSTAIN"
+    assert result.assessment.peer_comparison is None
+
+
+def test_reasked_peer_comparison_round_trips_through_the_journal(
+    tmp_path: Path,
+) -> None:
+    store = ResearchStore(tmp_path / "research.sqlite")
+    model = ObservedModel(
+        graph(
+            ("final_assessment", final_with("ABSTAIN", peer_comparison=None)),
+            ("final_assessment", final_with("ABSTAIN", peer_comparison="MUCH_WORSE")),
+        )
+    )
+    artifact = asyncio.run(execute(store, model))
+    assert artifact.result.status == "COMPLETED"
+    assert artifact.result.assessment.peer_comparison == "MUCH_WORSE"
+    assert data(model.requests[-1])["output_rejection"]["problems"] == [
+        UNSTATED_PEER_COMPARISON
+    ]
+    assert store.load_terminal("run-1") == artifact
+    assert store.inspect_run("run-1").artifact == artifact
 
 
 @pytest.mark.parametrize(

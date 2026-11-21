@@ -24,6 +24,7 @@ from crypteo.domain.research_workflow import (
     ModelCallRecord,
     ModelRequestRejection,
     ResearchContext,
+    ResearchEntry,
     ResearchFailure,
     ResearchFailureCode,
     ResearchWorkflowConfig,
@@ -118,7 +119,7 @@ def validate_trace_relationships(
             # Only the call after an invalid structured first reply re-asks it.
             rejected = None
             if isinstance(last_work, ModelCallRecord):
-                rejected = output_rejection(trace[:index], last_work)
+                rejected = output_rejection(trace[:index], last_work, context.entry)
                 if rejected is not None and (
                     request_rejection(last_work.request) is not None
                     or last_work.request.stage != request.stage
@@ -302,6 +303,7 @@ def _check_stage_output(
     trace: tuple[TraceRecord, ...],
     reply: StructuredReply,
     schema: type[BaseModel],
+    entry: ResearchEntry,
 ) -> BaseModel | tuple[ResearchFailureCode, tuple[str, ...]]:
     invalid = ResearchFailureCode.INVALID_MODEL_OUTPUT
     try:
@@ -340,6 +342,15 @@ def _check_stage_output(
         problems += ("critic_response: required for every outcome",)
     if isinstance(output, TradeDecision) and output.lean is None:
         problems += ("lean: required for every outcome",)
+    # Only opportunity-led research has peers from a discovery rule (ADR-025).
+    if isinstance(output, TradeDecision) and (output.peer_comparison is None) != (
+        entry == "trader"
+    ):
+        problems += (
+            "peer_comparison: required for every opportunity-led outcome"
+            if entry == "opportunity"
+            else "peer_comparison: must be null for a trader-led question",
+        )
     if unknown:
         return ResearchFailureCode.UNKNOWN_EVIDENCE_REFERENCE, problems
     return (invalid, problems) if problems else output
@@ -349,19 +360,20 @@ def validate_stage_output(
     trace: tuple[TraceRecord, ...],
     reply: StructuredReply,
     schema: type[BaseModel],
+    entry: ResearchEntry,
 ) -> BaseModel | ResearchFailureCode:
-    checked = _check_stage_output(trace, reply, schema)
+    checked = _check_stage_output(trace, reply, schema, entry)
     return checked[0] if isinstance(checked, tuple) else checked
 
 
 def output_rejection(
-    trace: tuple[TraceRecord, ...], record: ModelCallRecord
+    trace: tuple[TraceRecord, ...], record: ModelCallRecord, entry: ResearchEntry
 ) -> dict[str, Any] | None:
     """Code-derived re-ask feedback for a structured reply failing validation."""
     if not isinstance(record.reply, StructuredReply):
         return None
     checked = _check_stage_output(
-        trace, record.reply, _OUTPUT_SCHEMAS[record.request.stage]
+        trace, record.reply, _OUTPUT_SCHEMAS[record.request.stage], entry
     )
     if not isinstance(checked, tuple):
         return None
@@ -420,7 +432,7 @@ def research_data(
             raise ResearchInvariantError("stage lacks validated prerequisite")
         data[key] = stages[prerequisite].model_dump(mode="json")
     if rejected is not None:
-        rejection = output_rejection(trace, rejected)
+        rejection = output_rejection(trace, rejected, context.entry)
         if rejection is None or rejected.request.stage != stage:
             raise ResearchInvariantError("re-ask lacks a rejected structured reply")
         data["output_rejection"] = rejection

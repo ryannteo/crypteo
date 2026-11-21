@@ -312,7 +312,9 @@ class JournalProjection:
         )
         if reasks >= 2 or self.calls >= 15:
             return None
-        return record if output_rejection(self.trace, record) is not None else None
+        entry = self.header.context.entry
+        rejection = output_rejection(self.trace, record, entry)
+        return record if rejection is not None else None
 
     def validate_request(self, request: ModelRequest) -> None:
         config, context = self.header.configuration, self.header.context
@@ -396,7 +398,12 @@ class JournalProjection:
             "critique": Critique,
             "final_assessment": TradeDecision,
         }
-        output = validate_stage_output(self.trace, reply, schemas[record.request.stage])
+        output = validate_stage_output(
+            self.trace,
+            reply,
+            schemas[record.request.stage],
+            self.header.context.entry,
+        )
         if not isinstance(output, ResearchFailureCode) or (
             self.rejected_call() is not None
         ):
@@ -555,7 +562,12 @@ class JournalProjection:
             ):
                 raise ResearchValidationError("stage lacks producing model reply")
             if (
-                validate_stage_output(self.trace, call.reply, type(event.value.output))
+                validate_stage_output(
+                    self.trace,
+                    call.reply,
+                    type(event.value.output),
+                    self.header.context.entry,
+                )
                 != event.value.output
             ):
                 raise ResearchValidationError(

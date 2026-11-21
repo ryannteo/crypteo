@@ -97,6 +97,7 @@ def test_complete_workflow_and_exact_transitions(outcome: str) -> None:
     assert result.failure is None
     assert result.assessment.critic_response
     assert result.assessment.lean == LEAN_BY_OUTCOME[outcome]
+    assert result.assessment.peer_comparison == "SIMILAR"
     assert [
         (r.source, r.target) for r in result.trace if isinstance(r, NodeTransition)
     ] == [
@@ -285,6 +286,7 @@ def test_tenth_tool_request_interrupts_without_dispatch(
     assert result.failure.code == ResearchFailureCode.TOOL_BUDGET_EXHAUSTED
     assert result.assessment.abstention_reasons == (AbstentionReason.BUDGET_EXHAUSTED,)
     assert result.assessment.lean is None
+    assert result.assessment.peer_comparison is None
     assert result.thesis is None and result.critique is None
 
 
@@ -599,6 +601,9 @@ def test_invalid_structured_output_no_repair_or_retry(stage: str, bad: str) -> N
         {"lean": None},
         {"lean": "SLIGHTLY_FOR"},
         {"lean": 1},
+        {"peer_comparison": None},
+        {"peer_comparison": "SLIGHTLY_BETTER"},
+        {"peer_comparison": 1},
         {"stop": "90"},
         {"quantity": "1"},
     ],
@@ -663,6 +668,7 @@ def test_provider_failure_typed_runtime_abstention_no_retry(
     assert result.status == "INTERRUPTED" and result.assessment_origin == "RUNTIME"
     assert result.assessment.abstention_reasons[0].value == reason
     assert result.assessment.lean is None
+    assert result.assessment.peer_comparison is None
     assert (
         isinstance(result.trace[1], ModelCallRecord) and result.trace[1].reply == reply
     )
@@ -969,8 +975,10 @@ def test_deadline_crossed_while_constructing_result_interrupts(
     assert result.failure and result.failure.code == "WORKFLOW_TIMEOUT"
     assert result.thesis and result.critique
     assert result.assessment.outcome.value == "ABSTAIN"
-    # The model stated a lean, but the interruption's assessment is the runtime's.
+    # The model stated a lean and a peer comparison, but the interruption's
+    # assessment is the runtime's.
     assert result.assessment.lean is None
+    assert result.assessment.peer_comparison is None
     assert result.trace[-1].model_dump()["termination_reason"] == "WORKFLOW_TIMEOUT"
 
 
@@ -1116,6 +1124,7 @@ def test_trade_cannot_reach_financial_or_network_authority(
         "critic_response",
         "abstention_reasons",
         "lean",
+        "peer_comparison",
     }
     assert (
         "portfolio"

@@ -17,7 +17,12 @@ from research_support import (
 )
 
 from crypteo.domain.market import TradingPair
-from crypteo.domain.research import AbstentionReason, DecisionOutcome, EvidenceLean
+from crypteo.domain.research import (
+    AbstentionReason,
+    DecisionOutcome,
+    EvidenceLean,
+    PeerComparison,
+)
 from crypteo.domain.research_workflow import (
     BENCHMARK_ORDER,
     OpportunityResearchContext,
@@ -187,6 +192,33 @@ def test_runtime_abstain_states_no_lean(lean: EvidenceLean) -> None:
     assert result.status == "INTERRUPTED" and result.assessment.lean is None
     bad = result.assessment.model_copy(update={"lean": lean})
     with pytest.raises(ValidationError, match="runtime ABSTAIN states no lean"):
+        ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
+
+
+@pytest.mark.parametrize("outcome", ["TRADE", "NO_TRADE", "ABSTAIN"])
+def test_completed_opportunity_result_requires_a_peer_comparison(outcome: str) -> None:
+    result = run(ScriptedModel([tool()], outcome=outcome))
+    assert result.context.entry == "opportunity"
+    assert result.assessment.peer_comparison == "SIMILAR"
+    bad = result.assessment.model_copy(update={"peer_comparison": None})
+    with pytest.raises(
+        ValidationError,
+        match="opportunity-led assessment requires a peer comparison",
+    ):
+        ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
+
+
+@pytest.mark.parametrize("peer_comparison", list(PeerComparison))
+def test_runtime_abstain_states_no_peer_comparison(
+    peer_comparison: PeerComparison,
+) -> None:
+    result = run(ScriptedModel([RefusalReply(refusal="No")]))
+    assert result.status == "INTERRUPTED"
+    assert result.assessment.peer_comparison is None
+    bad = result.assessment.model_copy(update={"peer_comparison": peer_comparison})
+    with pytest.raises(
+        ValidationError, match="runtime ABSTAIN states no peer comparison"
+    ):
         ResearchRunResult.model_validate(result.model_copy(update={"assessment": bad}))
 
 

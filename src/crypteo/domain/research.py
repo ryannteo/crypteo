@@ -316,6 +316,21 @@ class EvidenceLean(StrEnum):
     STRONGLY_FOR = "STRONGLY_FOR"
 
 
+class PeerComparison(StrEnum):
+    """Judgment of how a candidate compares with earlier candidates of its kind.
+
+    The peers are earlier candidates from the same discovery rule. Ordered from
+    ``MUCH_WORSE`` to ``MUCH_BETTER``. It is a judgment, not a probability,
+    forecast or expected return, and no rule ties it to the outcome or the lean.
+    """
+
+    MUCH_WORSE = "MUCH_WORSE"
+    WORSE = "WORSE"
+    SIMILAR = "SIMILAR"
+    BETTER = "BETTER"
+    MUCH_BETTER = "MUCH_BETTER"
+
+
 Confidence = Annotated[int, Field(strict=True, ge=0, le=100)]
 
 
@@ -331,6 +346,12 @@ class TradeDecision(BaseModel):
     or expected return. ``TRADE`` requires ``FOR`` or ``STRONGLY_FOR``,
     ``NO_TRADE`` requires ``AGAINST`` or ``STRONGLY_AGAINST``, and ``ABSTAIN``
     may use any value.
+
+    ``peer_comparison`` is the assessment's judgment of how the candidate, as a
+    LONG at research time, compares with earlier candidates of its kind from the
+    same discovery rule. It is not a probability, forecast or expected return,
+    and no rule ties it to the outcome or the lean. Research that no discovery
+    rule started states none.
     """
 
     model_config = ConfigDict(
@@ -346,6 +367,7 @@ class TradeDecision(BaseModel):
     critic_response: NonBlankText | None = None
     abstention_reasons: tuple[AbstentionReason, ...] = ()
     lean: EvidenceLean | None = None
+    peer_comparison: PeerComparison | None = None
 
     @model_validator(mode="after")
     def validate_outcome_requirements(self) -> Self:
