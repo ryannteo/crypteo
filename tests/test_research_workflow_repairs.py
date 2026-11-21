@@ -138,19 +138,24 @@ def test_provider_cancellation_behavior_cannot_defeat_deadline(
 def test_shorter_remaining_overall_deadline_keeps_workflow_timeout_taxonomy(
     short_deadlines: Callable[[float, float], None],
 ) -> None:
-    short_deadlines(0.25, 0.04)
+    # The overall deadline (0.4 s) is shorter than the per-call deadline (2.5 s),
+    # so the one model call is cut off by the overall deadline. Setup before that
+    # call (about 8 ms locally) and teardown get roughly 10x the margins of a
+    # loaded CI runner, while a run limited by the per-call deadline could not
+    # return within 2.0 s.
+    short_deadlines(2.5, 0.4)
 
     async def scenario() -> None:
         model = CancellationModel("wait")
         started = time.monotonic()
         try:
-            result = await asyncio.wait_for(execute(model), 0.3)
+            result = await asyncio.wait_for(execute(model), 3.0)
             assert result.failure and result.failure.code == "WORKFLOW_TIMEOUT"
-            assert time.monotonic() - started < 0.2
+            assert time.monotonic() - started < 2.0
             assert len(model.requests) == 1
         finally:
             model.release.set()
-        await asyncio.wait_for(model.finished.wait(), 0.2)
+        await asyncio.wait_for(model.finished.wait(), 2.0)
         await asyncio.sleep(0)
 
     asyncio.run(scenario())
