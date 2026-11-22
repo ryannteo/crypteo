@@ -4,6 +4,9 @@
 
 Accepted
 
+Trial 2 stopped at futility after stage 1; see its
+[record](../evaluations/v2-ranking-trial-2.md).
+
 ## Context
 
 [ADR-020](ADR-020-assessment-states-a-lean.md) added `lean` to every model
