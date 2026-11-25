@@ -8,6 +8,34 @@ trade theses, and surface uncertainty to support informed trading decisions.
 Trading decisions remain with the user. The long-term product is a live research
 assistant; historical replay and paper trading provide its evaluation lab.
 
+## Try it
+
+After installing the package (`python -m pip install .`, or the development
+setup below), one command runs the whole pipeline with no data download, no API
+key and no network:
+
+```bash
+python -m crypteo_demo            # writes artifacts/demo-N; or pass an empty directory
+```
+
+It ingests seeded synthetic hourly candles for BTC-USD, ETH-USD and SOL-USD
+through the canonical-dataset path, plans four `PLUMBING` windows, runs a durable
+evaluation with a scripted model that calls two tools and writes a thesis, a
+critique and an assessment with a lean and a peer comparison, reproduces it from
+the stored artifacts with no model, and renders the result with the run viewer.
+It prints the windows, each scripted decision (`TRADE`, `NO_TRADE` and
+`ABSTAIN`), whether reproduction matched, and the path of the viewer's
+`index.html`. It takes about ten seconds and refuses to run while
+`ANTHROPIC_API_KEY` or a LangSmith tracing variable is set.
+
+**This is a demo, not a result.** The data is synthetic, dated January 2000
+before these markets existed, and is not Coinbase data. The model is a script:
+it assigns `TRADE` to every BTC-USD candidate, `NO_TRADE` to every ETH-USD one
+and `ABSTAIN` to every SOL-USD one, so its decisions are fixed text, not
+research, and nothing it produces is an evaluation result. Its records carry a
+placeholder code identity, an all-zero commit and source digest, not a real
+commit. The printed output and the rendered pages say so.
+
 ## V2 results
 
 V2 turned the research replay into an evaluation lab and ran it on Coinbase data
@@ -63,6 +91,8 @@ The repository implements deterministic foundations and bounded AI research:
   resumable evaluation runner with frozen reproduction.
 - A local read-only run viewer, `crypteo_viewer`, over exported evaluations and
   research runs.
+- A one-command demo, `crypteo_demo`, of the whole pipeline on synthetic data
+  with a scripted model.
 
 ## V2 release run
 
@@ -338,10 +368,12 @@ is marked.
 The prices above illustrate the format; take current list prices from the
 provider. Neither step needs an API key, constructs a model client or makes a
 network request, and both refuse to run while `ANTHROPIC_API_KEY` is set.
-Bundles and pages hold works derived from Coinbase market data, so they stay
-under the ignored `artifacts/` directory and are never committed, published or
-hosted. A pre-registered trial is exported only after its analysis is written, so
-the viewer never shows outcomes beside leans while a trial runs.
+Exports of stored runs on real data hold works derived from Coinbase market
+data, so their bundles and pages stay under the ignored `artifacts/` directory
+and are never committed, published or hosted. The synthetic demo's pages hold
+no real market data and may be shown publicly (see [Try it](#try-it)). A
+pre-registered trial is exported only after its analysis is written, so the
+viewer never shows outcomes beside leans while a trial runs.
 
 ## Documentation
 

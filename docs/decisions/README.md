@@ -65,7 +65,7 @@ durable decision actually changes.
 | [019](ADR-019-pre-registered-baseline-study.md) | Baseline strategy changes are chosen by a pre-registered study | Accepted; stop clause narrowly superseded by ADR-021 for ranking trials |
 | [020](ADR-020-assessment-states-a-lean.md) | The assessment states a graded lean on the evidence | Accepted |
 | [021](ADR-021-pre-registered-ranking-measure.md) | Research ranking is measured by a pre-registered two-stage trial | Accepted; trial 1 complete |
-| [022](ADR-022-local-run-viewer.md) | Stored research is shown by a local read-only viewer over pinned exports | Accepted |
+| [022](ADR-022-local-run-viewer.md) | Stored research is shown by a local read-only viewer over pinned exports | Accepted; local-only rule covers real market data, not the synthetic demo |
 | [023](ADR-023-pre-registered-bar-length-study.md) | Longer-bar candidate sources are chosen by a pre-registered study | Accepted; study complete |
 | [024](ADR-024-crossing-scanner-stays-candidate-source.md) | V2 keeps the crossing scanner and ends the candidate-source search | Accepted |
 | [025](ADR-025-peer-comparison-and-ranking-trial-2.md) | The assessment compares the candidate with its peers, and ranking trial 2 measures it | Accepted; trial 2 stopped at futility |

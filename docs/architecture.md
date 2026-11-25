@@ -317,9 +317,36 @@ step reads copies of stored evaluations and research stores through
 `load_evaluation`, `ResearchStore.load_terminal` and `ResearchStore.inspect_run`
 and writes a hashed JSON bundle under `artifacts/`; its own encoding is not one of
 `crypteo`'s identity encodings. Its render step uses only the standard library,
-never imports `crypteo`, verifies the bundle, and writes static pages. The only
-command-line entry is `python -m crypteo_viewer`; neither step constructs a model
+never imports `crypteo`, verifies the bundle, and writes static pages. The viewer's
+only command-line entry is `python -m crypteo_viewer`; neither step constructs a model
 client or makes a network request.
+
+## Synthetic demo
+
+`crypteo_demo` also lives under `src/` beside `crypteo`, outside its source digest
+and code identity. `crypteo` and `crypteo_viewer` never import it; it imports only
+`crypteo`'s public API, the viewer's `export_bundle` and `render_site`, Pydantic
+and the standard library, never test code. `python -m crypteo_demo [OUTPUT]`
+writes everything beneath one new or empty directory (default: the first unused
+`artifacts/demo-N` under the current directory):
+
+1. Seeded synthetic hourly candles for BTC-USD, ETH-USD and SOL-USD, dated
+   January 2000, served by an in-process transport and ingested through
+   `ingest_coinbase_candles` and `load_dataset`, so they are raw, canonical and
+   acquisition artifacts like downloaded data.
+2. A `PLUMBING` plan from `plan_windows`, a durable `run_evaluation` with a
+   scripted model under provider `"fake"` (two tool calls, then fixed stage
+   outputs; the assessment depends only on the pair), and a `reproduce_evaluation`
+   with no model whose metrics and candidates must equal the original's.
+3. The viewer's export and render of that evaluation and its runs.
+
+The demo passes an explicit placeholder `CodeIdentity` with an all-zero commit
+and source digest, so it runs from a wheel without a git checkout and its
+records name no real commit. It refuses to run while `ANTHROPIC_API_KEY` or a
+LangSmith tracing variable is set, constructs no model client, and makes no
+network request. Its outputs contain no Coinbase data, so unlike trial bundles
+they may be written outside `artifacts/` and shown publicly. Two runs into
+fresh directories are byte-identical on one interpreter and library set.
 
 ## Research extension boundary
 

@@ -4,6 +4,10 @@
 
 Accepted
 
+The local-only rule applies to exports of stored runs on real market data.
+The synthetic demo's (`crypteo_demo`) output contains none and may be shown
+publicly; see [architecture](../architecture.md#synthetic-demo).
+
 ## Context
 
 Stored research runs and evaluations can be read only through the Python API
