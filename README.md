@@ -8,6 +8,27 @@ trade theses, and surface uncertainty to support informed trading decisions.
 Trading decisions remain with the user. The long-term product is a live research
 assistant; historical replay and paper trading provide its evaluation lab.
 
+## V2 results
+
+V2 turned the research replay into an evaluation lab and ran it on Coinbase data
+from after the research model's training cutoff
+([ADR-013](docs/decisions/ADR-013-v2-evaluation-scope.md)). In every model-backed
+evaluation trial, trials 5 to 8 and both ranking trials, research declined every
+candidate it assessed, with no `TRADE`; a constant "never trade" rule gives the
+same result, so selection quality is unmeasured. Two pre-registered studies and an
+exploration found no edge after costs in any tested variant of the candidate
+source, in the samples that trade every candidate or take trades one at a time
+([ADR-024](docs/decisions/ADR-024-crossing-scanner-stays-candidate-source.md)).
+Ranking was not shown either: the lean mirrored the decision in
+[ranking trial 1](docs/evaluations/v2-ranking-trial-1.md) (ρ = −0.085206,
+p ≈ 0.716), and the peer comparison was `SIMILAR` in 27 of 30 windows of
+[ranking trial 2](docs/evaluations/v2-ranking-trial-2.md), which stopped it at
+futility. What V2 does show is that the harness works end to end: every
+model-backed evaluation run reproduced from its stored artifacts with no API key.
+On this candidate source, V2 cannot tell whether research improves or worsens
+trade selection; the [V2 summary](docs/evaluations/v2-summary.md) gives the
+counts, spend and what stays open.
+
 ## Current status
 
 The repository implements deterministic foundations and bounded AI research:
@@ -37,6 +58,11 @@ The repository implements deterministic foundations and bounded AI research:
   and frozen validated-artifact modes, marked equity, and financial/research metrics.
 - Mandatory durable research journaling and an explicit positive research-run cap
   for fresh replay; strict provenance-compatible frozen reproduction.
+- An evaluation harness: outcome-blind planning of single-candidate windows the
+  baseline would trade, a paired baseline/research comparison artifact, and a
+  resumable evaluation runner with frozen reproduction.
+- A local read-only run viewer, `crypteo_viewer`, over exported evaluations and
+  research runs.
 
 ## V2 release run
 
@@ -59,6 +85,20 @@ candidate and returned NO_TRADE with confidence 58. That is one decision (n=1), 
 a performance result. See the [release-run record](docs/releases/v1.0.0.md).
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    DATA[Canonical Coinbase data] --> GW[Simulation clock and point-in-time gateway]
+    GW --> SCAN[Scanner]
+    subgraph RESEARCH[Bounded research]
+        TOOLS[Deterministic tools] --> THESIS[Thesis] --> CRITIQUE[Critique] --> ASSESS[Assessment]
+    end
+    SCAN -->|research| TOOLS
+    SCAN -->|baseline| FIN[Terms, risk and simulated execution]
+    ASSESS -->|TRADE only| FIN
+    FIN --> RECORDS[Replay, comparison and evaluation records]
+    ASSESS -->|NO_TRADE or ABSTAIN| RECORDS
+```
 
 Crypteo is a Python modular monolith. Canonical Coinbase data feeds an authoritative
 clock and point-in-time gateway shared by scanning, research tools, deterministic
@@ -86,12 +126,15 @@ artifacts improve reproducibility without resolving that limitation.
 - Market-derived research and one shared deterministic scanner and financial
   lifecycle across replay modes.
 - One bounded research workflow serves opportunity-led and standalone trader-led
-  research. Interactive research/chat, live mode, UI, non-market research,
-  specialist agents, and memory/RAG are deferred.
-- No integrated evaluation/reporting harness, statistical model-performance
-  evaluation, or automatic replay crash resume. A paired baseline/research
-  comparison artifact, a mechanical single-candidate evaluation window planner,
-  and a resumable evaluation runner with frozen reproduction are implemented.
+  research. Interactive research/chat, live mode, a UI beyond the local read-only
+  run viewer, non-market research, specialist agents, and memory/RAG are
+  deferred.
+- An evaluation harness is implemented: a mechanical single-candidate window
+  planner, a paired baseline/research comparison artifact, and a resumable
+  evaluation runner with frozen reproduction. Statistics, an integrated reporting
+  harness, statistical model-performance evaluation, and automatic replay crash
+  resume are not; the ranking trials' statistics ran in scripts outside the
+  repository.
 - No real-money trading, real order path, exchange trading credentials, private
   keys, or withdrawal capabilities.
 
@@ -312,6 +355,8 @@ Git preserves implementation history.
 - [Data pipeline](docs/data-pipeline.md): Coinbase acquisition, identity,
   provenance, persistence, and failure behavior.
 - [ADRs](docs/decisions/README.md): durable decisions, rationale, and trade-offs.
+- [V2 summary](docs/evaluations/v2-summary.md): what V2 built, what its
+  evaluation found, its spend, and what stays open.
 - [V2 release run](docs/releases/v2.0.0.md): the `v2.0.0` end-to-end run on the V1
   release candidate, its checks, identities, and limitations.
 - [V1 release run](docs/releases/v1.0.0.md): the `v1.0.0` end-to-end run on real
