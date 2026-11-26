@@ -94,6 +94,19 @@ The repository implements deterministic foundations and bounded AI research:
 - A one-command demo, `crypteo_demo`, of the whole pipeline on synthetic data
   with a scripted model.
 
+## 2.1.0 release run
+
+2.1.0, V2's wrap-up release, was checked at its release commit without calling
+a model. CI passed, a fresh clone reproduced the code identity, a wheel built
+from it ran the synthetic demo twice outside any checkout with byte-identical
+output, and the release smoke passed from that wheel. A fresh download of the
+V1 release range was complete but reproduced none of v2.0.0's dataset versions:
+Coinbase had revised historical prices, including candles in the release window.
+The run therefore stopped before any spend, and no research was repeated; ranking
+trial 2 had already run this research policy live. A fresh download is not
+guaranteed to reproduce an earlier dataset; a stored dataset is what makes a run
+reproducible. See the [release-run record](docs/releases/v2.1.0.md).
+
 ## V2 release run
 
 V2 was verified end to end at the `v2.0.0` tag on the same Coinbase data and
@@ -389,6 +402,9 @@ Git preserves implementation history.
 - [ADRs](docs/decisions/README.md): durable decisions, rationale, and trade-offs.
 - [V2 summary](docs/evaluations/v2-summary.md): what V2 built, what its
   evaluation found, its spend, and what stays open.
+- [2.1.0 release run](docs/releases/v2.1.0.md): the 2.1.0 release checks, the
+  Coinbase price revision that stopped it before any model call, and its
+  limitations.
 - [V2 release run](docs/releases/v2.0.0.md): the `v2.0.0` end-to-end run on the V1
   release candidate, its checks, identities, and limitations.
 - [V1 release run](docs/releases/v1.0.0.md): the `v1.0.0` end-to-end run on real

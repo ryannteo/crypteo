@@ -154,6 +154,14 @@ Equivalent numeric spellings, raw formatting, response order, and request chunki
 therefore reuse a dataset version when they yield the same canonical content.
 Requested bounds do not distinguish otherwise identical empty datasets.
 
+A dataset version identifies content, not a requested range. A later download of
+the same range reuses an earlier dataset version only if Coinbase returns the same
+canonical rows, and Coinbase can revise historical candles: the
+[2.1.0 release run](releases/v2.1.0.md#the-dataset-revision) found revised prices
+in the V1 release range. A fresh download is therefore not guaranteed to reproduce
+an earlier dataset version; the stored canonical dataset is what makes a run
+reproducible.
+
 ## Acquisition records and missing slots
 
 `CoinbaseHistoricalDataset.acquisition` contains an immutable
